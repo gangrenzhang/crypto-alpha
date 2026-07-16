@@ -1,0 +1,35 @@
+# ===== 核心数据/科学计算 =====
+numpy>=1.26,<2.2
+pandas>=2.1
+scipy>=1.11
+pyarrow>=15.0          # parquet 存储
+pyyaml>=6.0
+tqdm>=4.66
+
+# ===== 数据获取 =====
+ccxt>=4.3              # 交易所统一接口(OHLCV/资金费率/持仓量)
+
+# ===== 专家1: GBDT =====
+lightgbm>=4.3
+catboost>=1.2          # 可选第二种 GBDT
+scikit-learn>=1.4      # 元学习器/校准/指标
+
+# ===== 专家3: 深度时序 (PatchTST 风格, 纯 PyTorch 自实现) =====
+# torch 请按你的 CUDA 版本单独安装, 见 README
+# torch>=2.2
+
+# ===== 回测/可视化 =====
+matplotlib>=3.8
+
+# ===== 可选专家2: 时序基础模型 (TSFM) =====
+# chronos-forecasting>=1.4      # Amazon Chronos
+# 或 timesfm                    # Google TimesFM
+# transformers>=4.40
+# accelerate>=0.30
+
+# ===== 可选专家4: LLM (Qwen2.5-72B QLoRA) =====
+# transformers>=4.44
+# peft>=0.11
+# bitsandbytes>=0.43           # 4-bit 量化
+# accelerate>=0.30
+# datasets>=2.19

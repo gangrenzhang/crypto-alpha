@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crypto-alpha"
+version = "0.1.0"
+description = "BTC/ETH 多专家集成 方向概率 + 风控 预测系统"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26,<2.2",
+    "pandas>=2.1",
+    "scipy>=1.11",
+    "pyarrow>=15.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+    "scikit-learn>=1.4",
+    "lightgbm>=4.3",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+data = ["ccxt>=4.3"]
+deep = ["torch>=2.2"]
+sentiment = ["transformers>=4.40", "torch>=2.2"]  # CryptoBERT/FinBERT 情绪打分
+tsfm = ["chronos-forecasting>=1.4", "transformers>=4.40", "accelerate>=0.30"]
+llm = ["transformers>=4.44", "peft>=0.11", "bitsandbytes>=0.43", "accelerate>=0.30", "datasets>=2.19"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml"]

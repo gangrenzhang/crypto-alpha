@@ -1,0 +1,200 @@
+# ============================================================
+# 加密货币多专家集成预测系统 — 全局配置
+# 所有脚本从此文件读取参数, 保证可复现
+# ============================================================
+
+project:
+  name: crypto-alpha
+  data_dir: data          # 原始/中间数据落盘目录
+  artifacts_dir: artifacts # 模型/结果落盘目录
+  random_seed: 42
+
+# ---------------- 数据 ----------------
+data:
+  exchange: binance
+  symbols: ["BTC/USDT", "ETH/USDT"]
+  # 主时间框架用于建模; 其余用于多周期特征
+  timeframe: "1h"
+  aux_timeframes: ["4h", "1d"]
+  since: "2020-01-01T00:00:00Z"   # 真实数据回填起点(多年回测)
+  # 无网络/无 key 时使用合成数据把整条流水线跑通
+  use_synthetic: true
+  synthetic_bars: 20000
+  # 真实数据缓存: 落盘 data/raw/<SYMBOL>.parquet, 复用避免重复拉取(合成模式不缓存)
+  cache: true
+  incremental_update: true        # 每次运行只增量拉取缓存之后的新 bar
+  # 衍生品数据(资金费率/持仓量), 部分交易所/接口可能不可用, 会优雅降级
+  fetch_derivatives: true
+
+# ---------------- 新闻(喂给 LLM 专家) ----------------
+news:
+  use_synthetic: true          # 无网络/无 key 时用合成新闻跑通链路
+  use_history: false           # true=优先用回填的历史原始库聚合(支撑几年期回测)
+  output_dir: data/news        # 每币种落盘 <SYMBOL>.parquet
+  # 历史回填(多年期回测): 分页/分窗抓取真实历史新闻 -> 追加去重到原始语料库
+  history:
+    raw_dir: data/news_raw     # 原始语料库(corpus.parquet)+续跑检查点目录
+    start: "2021-01-01T00:00:00Z"  # 回填起点
+    end: null                  # 回填终点(null=至今)
+    providers: ["synthetic"]   # synthetic / cryptocompare(lTs分页) / gdelt(日期窗)
+    window_days: 7             # GDELT 分窗宽度(每窗<=250条)
+    rate_limit_sec: 5.0        # 每次请求间隔(对公共API友好, 防封)
+    max_windows: 400           # GDELT 窗口数安全上限
+    max_pages: 400             # CryptoCompare 分页数安全上限
+    gdelt_query: "(bitcoin OR ethereum)"
+    synthetic_per_day: 8       # 合成历史: 日均条数(泊松均值)
+  bucket: "1h"                 # 摘要聚合粒度(建议对齐主时间框架)
+  top_k: 3                     # 每个 bucket 摘要保留的头条数
+  buffer_minutes: 5            # 传播缓冲: 只用 publish_time+buffer<=bar_time 的新闻(防泄漏)
+  dedup_window_hours: 48       # 互证归并的时间窗: 仅合并窗内多源报道(防多年语料塌缩)
+  # 把新闻数值特征并入所有专家(GBDT/深度时序), 而不止喂 LLM
+  as_feature: true
+  feature_ttl_hours: 24        # 新闻超过此时长视为过期, 数值归零
+  feature_halflife_hours: 6    # 新闻影响的指数衰减半衰期
+  feature_ema_span: 12         # 新闻情绪 EMA 平滑跨度(bar)
+  # 来源权威分层(tier 越小越权威)对应的权重
+  tier_weights: {1: 1.0, 2: 0.7, 3: 0.4, 4: 0.15}
+  # 情绪打分后端: lexicon / cryptobert / finbert / chinese / multilingual(中英双模型融合)
+  sentiment:
+    backend: lexicon           # 有 GPU+transformers 时: 英文改 cryptobert, 中英混合改 multilingual
+    model_name: null           # 单模型时覆盖默认模型名
+    label_map: null            # 可选: 显式 {标签: 符号}, 处理 LABEL_0/1 类无语义标签
+    device: auto               # auto/cpu/cuda
+    batch_size: 32
+    max_length: 128
+    cache: true                # 磁盘缓存到 artifacts/sentiment_cache.json
+    # --- multilingual(中英双模型)专用 ---
+    en_backend: cryptobert     # 英文文本用的后端
+    en_model_name: null
+    zh_backend: chinese        # 中文文本用的后端(默认 Erlangshen 中文情绪)
+    zh_model_name: null
+    zh_label_map: null         # 中文模型若为 LABEL_0/1, 可设 {LABEL_0: -1, LABEL_1: 1}
+    fusion: route              # route(按语言路由, 混合融合) / average(两模型全量加权平均)
+    fusion_weights: {en: 0.5, zh: 0.5}
+  # 真实来源(use_synthetic=false 时启用); 缺 key/网络的源会自动跳过
+  sources:
+    - {name: "SEC",           type: "rss",           tier: 1, url: "https://www.sec.gov/news/pressreleases.rss"}
+    - {name: "CoinDesk",      type: "rss",           tier: 2, url: "https://www.coindesk.com/arc/outboundfeeds/rss/"}
+    - {name: "Cointelegraph", type: "rss",           tier: 3, url: "https://cointelegraph.com/rss"}
+    - {name: "CryptoCompare", type: "cryptocompare", tier: 2, url: "https://min-api.cryptocompare.com/data/v2/news/?lang=EN", api_key_env: "CRYPTOCOMPARE_KEY"}
+    - {name: "CryptoPanic",   type: "cryptopanic",   tier: 2, url: "https://cryptopanic.com/api/v1/posts/", api_key_env: "CRYPTOPANIC_KEY"}
+    - {name: "GDELT",         type: "gdelt",         tier: 2}
+
+# ---------------- 特征 ----------------
+features:
+  # 分数阶差分 (López de Prado): 平稳且保留记忆
+  frac_diff_d: 0.4
+  frac_diff_thres: 1.0e-4
+  # 技术指标窗口
+  windows: [7, 14, 28, 56]
+  vol_window: 50            # 波动率(用于止盈止损/标签)估计窗口
+
+# ---------------- 标注: 三重障碍 + 元标签 ----------------
+labeling:
+  # 止盈/止损相对波动率的倍数 [pt, sl]
+  pt_sl: [1.5, 1.5]
+  # 垂直障碍(最大持有期), 单位=主时间框架的 bar 数
+  vertical_barrier_bars: 24
+  # 最小收益阈值(触发建仓的最小目标波动)
+  min_ret: 0.0
+  # 主模型信号来源: momentum(动量) / meanrev(均值回归)
+  primary_signal: momentum
+  primary_lookback: 24
+
+# ---------------- 验证: Purged CV / CPCV ----------------
+validation:
+  n_splits: 6              # CPCV 的分组数 N
+  n_test_groups: 2         # 每次测试选取的组数 k (CPCV)
+  embargo_pct: 0.01        # 禁运比例
+
+# ---------------- 专家模型 ----------------
+experts:
+  enabled: ["gbdt", "deep_ts"]   # 主干先跑这两个; 后续加 "tsfm", "llm"
+  gbdt:
+    n_estimators: 400
+    learning_rate: 0.03
+    num_leaves: 31
+    max_depth: -1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    min_child_samples: 50
+  deep_ts:
+    lookback: 64           # 输入序列长度
+    d_model: 64
+    n_heads: 4
+    n_layers: 2
+    patch_len: 8
+    dropout: 0.1
+    epochs: 15
+    batch_size: 256
+    lr: 1.0e-3
+    device: auto           # auto/cpu/cuda
+  tsfm:
+    backend: chronos        # chronos / timesfm / naive(离线兜底)
+    model_name: amazon/chronos-bolt-base
+    context_length: 512
+    horizon: 24             # 基线预测步数(对齐持有期)
+    head: logistic          # 概率头: logistic / gbdt
+    covariate_cols: auto    # auto=面板中的新闻数值特征; 或显式列名列表
+  llm:
+    model_name: Qwen/Qwen2.5-72B-Instruct
+    load_in_4bit: true
+    adapter_path: artifacts/qwen_qlora_adapter   # 微调产物; 推理时加载
+    # --- LoRA ---
+    lora_r: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+    lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj",
+                          "gate_proj", "up_proj", "down_proj"]
+    # --- QLoRA 训练超参 (单张 80GB 卡) ---
+    epochs: 2
+    per_device_batch_size: 4
+    grad_accum: 8                # 有效 batch = 4*8 = 32
+    lr: 1.0e-4
+    warmup_ratio: 0.03
+    weight_decay: 0.0
+    max_seq_len: 1024
+    val_frac: 0.15               # 按时间切分的验证集比例(无泄漏)
+    gradient_checkpointing: true
+    bf16: true
+    logging_steps: 20
+    save_steps: 200
+    use_sample_weight: true      # 用样本唯一性权重加权 SFT 损失
+    news_path: null              # 可选: 事件时间->新闻文本 的 parquet(列: text)
+
+# ---------------- 集成 (Stacking) ----------------
+ensemble:
+  meta_learner: logistic   # logistic / gbdt
+  # 元学习器 C 正则
+  C: 1.0
+
+# ---------------- 校准 / 保形预测 ----------------
+calibration:
+  method: isotonic         # isotonic / sigmoid
+  conformal_alpha: 0.1     # 保形预测显著性(1-覆盖率)
+
+# ---------------- 回测 ----------------
+backtest:
+  fee_bps: 5.0             # 单边手续费(基点)
+  slippage_bps: 2.0        # 滑点(基点)
+  funding_bps_per_bar: 0.0 # 资金费率近似(基点/bar), 简化
+  prob_threshold: 0.55     # 低于此概率则观望
+
+# ---------------- 实时服务 / 播报 ----------------
+serve:
+  symbols: null              # null = 复用 data.symbols
+  poll_seconds: 3600         # 轮询间隔(秒), 建议对齐主时间框架(1h=3600)
+  retrain_every_cycles: 24   # 每 N 次轮询重训一次模型(应对概念漂移)
+  notify_hold: false         # 观望(HOLD)是否也推送(默认只推 LONG/SHORT)
+  dedupe: true               # 同一币种相同信号不重复推送
+  telegram:
+    enabled: false           # 置 true 并配置好 token/chat 后启用
+    bot_token_env: TELEGRAM_BOT_TOKEN   # 从该环境变量读取 Bot Token
+    chat_id_env: TELEGRAM_CHAT_ID       # 从该环境变量读取 Chat ID
+
+# ---------------- 风控 ----------------
+risk:
+  kelly_fraction: 0.5      # 半 Kelly
+  max_position_pct: 0.30   # 单币最大仓位
+  atr_stop_mult: 1.5       # ATR 止损倍数
+  daily_max_drawdown: 0.05 # 日内熔断
