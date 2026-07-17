@@ -62,18 +62,24 @@ class LLMExpert(BaseExpert):
     _news_df = None
     _news_buffer = 5
     _news_ttl = 24.0
+    _decision_delta = None  # 主周期长度; 与数值新闻特征决策时刻对齐
 
-    def set_news(self, news_df, buffer_minutes: int = 5, ttl_hours: float = 24.0) -> None:
-        """提供新闻摘要面板(索引=发布时间), 推理时按事件时间做无泄漏 as-of 对齐。"""
+    def set_news(
+        self, news_df, buffer_minutes: int = 5, ttl_hours: float = 24.0,
+        decision_delta=None,
+    ) -> None:
+        """提供新闻摘要面板; 推理时按**决策时刻**(开盘+decision_delta)做 as-of 对齐。"""
         self._news_df = news_df
         self._news_buffer = int(buffer_minutes)
         self._news_ttl = float(ttl_hours)
+        self._decision_delta = decision_delta
 
     def clone(self) -> "LLMExpert":
         obj = super().clone()
         obj._news_df = self._news_df
         obj._news_buffer = self._news_buffer
         obj._news_ttl = self._news_ttl
+        obj._decision_delta = self._decision_delta
         return obj
 
     def _load(self):
@@ -121,7 +127,10 @@ class LLMExpert(BaseExpert):
         panel = self._panel
         sides = X["side"].values if "side" in X.columns else np.ones(len(X))
         news_map = (
-            align_news_asof(self._news_df, X.index, self._news_buffer, ttl_hours=self._news_ttl)
+            align_news_asof(
+                self._news_df, X.index, self._news_buffer,
+                ttl_hours=self._news_ttl, decision_delta=self._decision_delta,
+            )
             if self._news_df is not None else {}
         )
         probs = np.full(len(X), 0.5, dtype=float)

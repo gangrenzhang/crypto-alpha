@@ -34,6 +34,17 @@ def build_feature_matrix(
 
     feat = add_technical_features(df, windows, vol_window)
 
+    # 衍生品不可用时特征已填 0; 记 degradations 供看板/审计(不阻断主流程)
+    degradations: list[str] = list(getattr(feat, "attrs", {}).get("degradations") or [])
+    if "funding_rate" in df.columns and df["funding_rate"].isna().all():
+        tag = "derivatives_funding_unavailable"
+        if tag not in degradations:
+            degradations.append(tag)
+    if "open_interest" in df.columns and df["open_interest"].isna().all():
+        tag = "derivatives_oi_unavailable"
+        if tag not in degradations:
+            degradations.append(tag)
+
     # 分数阶差分(对 log 价格), 平稳且保留记忆
     logprice = np.log(df["close"])
     logprice.name = "logprice"
@@ -51,6 +62,8 @@ def build_feature_matrix(
             feat = add_mtf_features(feat, frames, cfg, main_tf=cfg["data"]["timeframe"])
 
     feat = feat.replace([np.inf, -np.inf], np.nan)
+    if degradations:
+        feat.attrs["degradations"] = degradations
     return feat
 
 

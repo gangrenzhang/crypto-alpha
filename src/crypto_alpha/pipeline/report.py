@@ -129,7 +129,12 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
             "合成" if cfg["data"].get("use_synthetic", False) else "真实",
         )
         if trained.get("degradations"):
-            results["meta"]["degradations"] = trained["degradations"]
+            # 多币种累加, 避免后者覆盖前者
+            prev = list(results["meta"].get("degradations") or [])
+            for tag in trained["degradations"]:
+                if tag not in prev:
+                    prev.append(tag)
+            results["meta"]["degradations"] = prev
 
         eq = trained["backtest"]["equity"]
         entry = {
@@ -346,17 +351,30 @@ def _render_symbol(d: dict) -> str:
     p.append(_kpi("交易数", str(bt["n_trades"])))
     p.append("</div></div>")
 
-    # 专家对比表(高亮最优 AUC)
+    # 降级 / degradations(透明度纪律)
+    deg = list(d.get("degradations") or [])
+    if deg:
+        p.append("<div class='card caveat'><b>Degradations</b><ul>")
+        for tag in deg:
+            p.append(f"<li>{html.escape(str(tag))}</li>")
+        p.append("</ul></div>")
+
+    # 专家对比表(高亮最优 AUC; 伪 OOF 不参与 best)
     reps = d["expert_reports"]
-    best_auc = max((r.get("auc", float("nan")) for r in reps.values()
-                    if not np.isnan(r.get("auc", float("nan")))), default=float("nan"))
+    best_auc = max(
+        (r.get("auc", float("nan")) for r in reps.values()
+         if not r.get("pseudo_oof") and not np.isnan(r.get("auc", float("nan")))),
+        default=float("nan"),
+    )
     p.append("<div class='card'><table><thead><tr><th>专家</th><th>AUC</th>"
              "<th>Brier</th><th>准确率</th><th>样本</th></tr></thead><tbody>")
     for name, r in reps.items():
         auc = r.get("auc", float("nan"))
-        is_best = (not np.isnan(auc)) and abs(auc - best_auc) < 1e-9
+        is_pseudo = bool(r.get("pseudo_oof"))
+        is_best = (not is_pseudo) and (not np.isnan(auc)) and abs(auc - best_auc) < 1e-9
         cls = " class='best'" if is_best else ""
-        p.append(f"<tr><td>{html.escape(name)}</td><td{cls}>{_fmt(auc)}</td>"
+        label = html.escape(name) + (" <i>(pseudo OOF)</i>" if is_pseudo else "")
+        p.append(f"<tr><td>{label}</td><td{cls}>{_fmt(auc)}</td>"
                  f"<td>{_fmt(r.get('brier'))}</td><td>{_fmt(r.get('accuracy'), pct=True)}</td>"
                  f"<td>{r.get('n','—')}</td></tr>")
     p.append(f"<tr><td><b>集成(stacking)</b></td><td class='best'>{_fmt(ens.get('auc'))}</td>"

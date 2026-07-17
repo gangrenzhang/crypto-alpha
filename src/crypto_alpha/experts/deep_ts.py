@@ -96,23 +96,23 @@ class DeepTSExpert(BaseExpert):
         g.manual_seed(self.seed)
 
         Xw = self._windows(X.index)
-        # 标准化(按训练集统计), 保存供推理使用
-        self.mu_ = Xw.reshape(-1, Xw.shape[-1]).mean(0)
-        self.sd_ = Xw.reshape(-1, Xw.shape[-1]).std(0) + 1e-8
+        w = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, dtype=np.float32)
+        # 时间切分验证集(非随机), 用于 early stopping; 标准化仅用训练段统计
+        n = len(y)
+        val_frac = float(p.get("val_frac", 0.15))
+        patience = int(p.get("early_stop_patience", 3))
+        n_val = max(int(n * val_frac), 1) if n >= 40 and patience > 0 else 0
+        n_tr = n - n_val if n_val else n
+
+        tr_flat = Xw[:n_tr].reshape(-1, Xw.shape[-1])
+        self.mu_ = tr_flat.mean(0)
+        self.sd_ = tr_flat.std(0) + 1e-8
         Xw = (Xw - self.mu_) / self.sd_
 
         n_feats = Xw.shape[-1]
         self.model = self._build_model(n_feats).to(device)
         opt = torch.optim.AdamW(self.model.parameters(), lr=float(p.get("lr", 1e-3)))
         loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
-
-        w = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, dtype=np.float32)
-        # 时间切分验证集(非随机), 用于 early stopping, 降低短样本过拟合
-        n = len(y)
-        val_frac = float(p.get("val_frac", 0.15))
-        patience = int(p.get("early_stop_patience", 3))
-        n_val = max(int(n * val_frac), 1) if n >= 40 and patience > 0 else 0
-        n_tr = n - n_val if n_val else n
 
         def _run_epoch(loader, train: bool) -> float:
             self.model.train(train)
@@ -123,7 +123,9 @@ class DeepTSExpert(BaseExpert):
                     opt.zero_grad()
                 logit = self.model(xb)
                 loss_vec = loss_fn(logit, yb) * wb
-                loss = loss_vec.mean()
+                # 与日志一致: 加权均值 sum(loss*w)/sum(w), 避免 batch 大小稀释权重
+                w_batch = wb.sum().clamp_min(1e-8)
+                loss = loss_vec.sum() / w_batch
                 if train:
                     loss.backward()
                     opt.step()

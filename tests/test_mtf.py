@@ -76,9 +76,9 @@ def test_mtf_no_lookahead_alignment():
 
     aligned = _align_one_tf(main.index, aux_feat, "1h", "4h")
 
-    # 09:00 主 bar: decision=10:00, 4h 尚未收盘
+    # 09:00 主 bar: decision=10:00, 4h 尚未收盘 → 必须为 NaN(对齐层不填 0)
     v_0900 = aligned.loc[pd.Timestamp("2024-01-01 09:00", tz="UTC"), "tf4h_sentinel"]
-    assert pd.isna(v_0900) or v_0900 != 99.0, f"09:00 不应看到未收盘 4h, 得到 {v_0900}"
+    assert pd.isna(v_0900), f"09:00 不应看到未收盘 4h, 得到 {v_0900}"
 
     # 11:00 主 bar: decision=12:00, 刚好 4h 收盘 → 可见
     v_1100 = aligned.loc[pd.Timestamp("2024-01-01 11:00", tz="UTC"), "tf4h_sentinel"]
@@ -86,7 +86,7 @@ def test_mtf_no_lookahead_alignment():
 
     # 08:00 主 bar: decision=09:00 < 12:00 → 不可见
     v_0800 = aligned.loc[pd.Timestamp("2024-01-01 08:00", tz="UTC"), "tf4h_sentinel"]
-    assert pd.isna(v_0800) or v_0800 != 99.0
+    assert pd.isna(v_0800), f"08:00 不应看到未收盘 4h, 得到 {v_0800}"
 
 
 def test_mtf_reject_finer_than_main():

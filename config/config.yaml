@@ -49,8 +49,10 @@ news:
     synthetic_per_day: 8       # 合成历史: 日均条数(泊松均值)
   bucket: "1h"                 # 摘要聚合粒度(建议对齐主时间框架)
   top_k: 3                     # 每个 bucket 摘要保留的头条数
-  buffer_minutes: 5            # 传播缓冲: 只用 publish_time+buffer<=bar_time 的新闻(防泄漏)
+  buffer_minutes: 5            # 传播缓冲: 只用 publish_time+buffer<=决策时刻(开盘+主周期)的新闻
   dedup_window_hours: 48       # 互证归并的时间窗: 仅合并窗内多源报道(防多年语料塌缩)
+  auto_build_panel: true       # 缺面板时 prepare_dataset 自动 build_news_panel 并落盘
+  require_panel: false         # true=缺面板且构建为空时 fail-fast(默认 warn+空特征)
   # 把新闻数值特征并入所有专家(GBDT/深度时序), 而不止喂 LLM
   as_feature: true
   feature_ttl_hours: 24        # 新闻超过此时长视为过期, 数值归零

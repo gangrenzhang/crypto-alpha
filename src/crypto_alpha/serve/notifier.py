@@ -7,12 +7,39 @@ import urllib.parse
 import urllib.request
 
 
+def _hold_reason_text(d: dict) -> str:
+    """按决策 reason / degradations 生成 HOLD 说明(勿一律写「低于阈值」)。"""
+    reason = str(d.get("reason") or "")
+    deg = list(d.get("degradations") or [])
+    joined = " ".join(str(x) for x in deg)
+    mapping = {
+        "feature_schema_mismatch": "特征 schema 与训练不一致, 强制观望",
+        "not_cusum_event": "非 CUSUM 事件 bar, 与训练开仓门控对齐",
+        "no_valid_feature_bar": "无完整特征 bar",
+        "low_confidence_conformal": "保形预测弃权(不自信)",
+        "prob_below_threshold": "盈利概率未达入场阈值",
+        "kelly_non_positive_after_cost": "扣成本后 Kelly 仓位非正",
+        "no_side": "无有效主信号方向",
+    }
+    for key, text in mapping.items():
+        if key in reason or key in joined:
+            return text
+    if d.get("confident") is False:
+        return mapping["low_confidence_conformal"]
+    if reason:
+        return f"原因: {reason}"
+    return "观望(未满足开仓条件)"
+
+
 def format_decision(d: dict) -> str:
     """把决策 JSON 格式化为可读播报文本。"""
     sig = d.get("signal", "HOLD")
     if sig == "HOLD":
         head = f"[观望] {d.get('symbol')}"
-        return f"{head}\n概率={d.get('win_probability')}  (低于阈值, 建议不入场)\n时间: {d.get('timestamp')}"
+        return (
+            f"{head}\n概率={d.get('win_probability')}  ({_hold_reason_text(d)})\n"
+            f"时间: {d.get('timestamp')}"
+        )
     arrow = "做多 LONG" if sig == "LONG" else "做空 SHORT"
     return (
         f"[{arrow}] {d.get('symbol')}\n"

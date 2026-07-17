@@ -40,7 +40,7 @@ def test_news_asof_no_future_leak(monkeypatch):
         index=news_ts,
     )
     news_panel.index.name = "timestamp"
-    monkeypatch.setattr(news_mod, "load_news_panel", lambda cfg, symbol: news_panel)
+    monkeypatch.setattr(news_mod, "ensure_news_panel", lambda cfg, symbol: news_panel)
 
     feat = pd.DataFrame({"close": np.arange(5, dtype=float)}, index=idx)
     out = add_news_features(feat, cfg, "BTC/USDT")

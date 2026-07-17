@@ -1,9 +1,10 @@
 """组合式净化交叉验证 (Combinatorial Purged Cross-Validation, CPCV)。
 
 出处: López de Prado, AFML, ch.12。
-目的: 把样本切成 N 组, 每次取 k 组作为测试集, 遍历 C(N,k) 种组合。
-相比单一路径的 walk-forward, CPCV 能生成 φ = C(N,k)*k/N 条互不相同的回测路径,
-从而得到夏普比率的分布, 用于计算去偏夏普(DSR)与回测过拟合概率(PBO)。
+目的: 把样本切成 N 组, 每次取 k 组作为测试集, 遍历 C(N,k) 种**测试组合**。
+本类 ``split()`` 产出的是 combo(train, test), **不是** φ 条拼接完整权益路径;
+理论路径数 φ = C(N,k)*k/N 见 ``n_paths`` / 评估层 ``n_paths_theoretical``,
+仅供参考。组合级夏普分布用于 DSR / PBO(见 pipeline.evaluate 的 caveats)。
 """
 from __future__ import annotations
 
@@ -46,16 +47,16 @@ class CombinatorialPurgedCV:
             train_mask = np.ones(n, dtype=bool)
             train_mask[test_idx] = False
 
-            # 对每个测试组分别做清洗 + 禁运
+            # 对每个测试组分别做清洗 + 禁运(禁运从 max(t1) 之后起算, 与 PurgedKFold 一致)
             for g in combo:
                 gi = groups[g]
                 t0 = times[gi[0]]
                 test_end_time = self.t1.iloc[gi].max()
                 overlap = (self.t1 >= t0).values & (self.t1.index <= test_end_time)
                 train_mask &= ~overlap
-                end = gi[-1] + 1
-                # 与 PurgedKFold 一致: 禁运带 clamp 到 n, 近末组也不得整段跳过
-                if embargo > 0 and end < n:
-                    train_mask[end : min(end + embargo, n)] = False
+                if embargo > 0:
+                    after = np.where(times > test_end_time)[0]
+                    if len(after):
+                        train_mask[after[:embargo]] = False
 
             yield np.where(train_mask)[0], test_idx, combo

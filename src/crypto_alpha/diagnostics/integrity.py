@@ -294,7 +294,7 @@ def count_cv_overlaps(
 
 
 def embargo_gap_ok(t1: pd.Series, n_splits: int = 5, embargo_pct: float = 0.05) -> bool:
-    """禁运有效性: 每个测试段结束后, 紧邻的 embargo 根(clamp 到末尾)不得进入训练集。"""
+    """禁运有效性: 每个测试段 max(t1) 之后紧邻的 embargo 根不得进入训练集。"""
     from ..validation.purged_kfold import PurgedKFold
 
     n = len(t1)
@@ -302,12 +302,13 @@ def embargo_gap_ok(t1: pd.Series, n_splits: int = 5, embargo_pct: float = 0.05) 
     if embargo <= 0:
         return True
     X = pd.DataFrame(index=t1.index)
+    times = t1.index
     for tr, te in PurgedKFold(n_splits, t1, embargo_pct).split(X):
-        end = int(te[-1]) + 1
-        ban_end = min(end + embargo, n)
-        if end >= ban_end:
-            continue  # 最后一折之后无样本可禁运
-        banned = set(range(end, ban_end))
+        test_end_time = t1.iloc[te].max()
+        after = np.where(times > test_end_time)[0]
+        if not len(after):
+            continue
+        banned = set(after[:embargo].tolist())
         if banned & set(tr.tolist()):
             return False
     return True

@@ -125,22 +125,46 @@ def test_portfolio_additive_not_multiplicative_compounding():
 
 
 def test_embargo_clamps_near_end():
-    """近末折禁运不得整段跳过: 测试段后剩余样本即使 < embargo 也必须剔除。"""
+    """近末折禁运不得整段跳过: max(t1) 后剩余样本即使 < embargo 也必须剔除。"""
     from crypto_alpha.validation.purged_kfold import PurgedKFold
 
     n = 100
     idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
-    t1 = pd.Series(idx, index=idx)  # 零持有期, 专注禁运
+    t1 = pd.Series(idx, index=idx)  # 零持有期: max(t1)=末样本 t0, 与折边界对齐
     X = pd.DataFrame({"f": np.arange(n)}, index=idx)
     pkf = PurgedKFold(n_splits=5, t1=t1, embargo_pct=0.1)  # embargo=10
     folds = list(pkf.split(X))
-    # 倒数第二折: te 结束后应禁运 min(10, 剩余) 根
     tr, te = folds[-2]
-    end = int(te[-1]) + 1
-    ban_end = min(end + 10, n)
-    banned = set(range(end, ban_end))
+    test_end_time = t1.iloc[te].max()
+    after = np.where(idx > test_end_time)[0]
+    banned = set(after[:10].tolist())
     assert banned, "应存在禁运带"
     assert not (banned & set(tr.tolist()))
+
+
+def test_embargo_starts_after_max_t1():
+    """禁运从测试段 max(t1) 之后起算, 而非折内最后一个样本下标。"""
+    from crypto_alpha.validation.purged_kfold import PurgedKFold
+
+    n = 100
+    idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
+    # 每条标签向后延伸 10 根, 使 max(t1) 远超折边界
+    t1 = pd.Series(idx + pd.Timedelta(hours=10), index=idx)
+    X = pd.DataFrame({"f": np.arange(n)}, index=idx)
+    pkf = PurgedKFold(n_splits=5, t1=t1, embargo_pct=0.05)  # embargo=5
+    folds = list(pkf.split(X))
+    tr, te = folds[0]
+    test_end_time = t1.iloc[te].max()
+    after = np.where(idx > test_end_time)[0]
+    assert len(after) >= 5
+    banned = set(after[:5].tolist())
+    assert not (banned & set(tr.tolist()))
+    # 折边界之后、max(t1) 之前的样本已被 purge 或仍可能在 train;
+    # 关键: max(t1) 之后的禁运带不得在 train
+    fold_end = int(te[-1]) + 1
+    if fold_end < after[0]:
+        # 若折边界早于 max(t1) 后第一根, 禁运不应贴在 fold_end
+        assert fold_end not in banned or after[0] == fold_end
 
 
 def test_log1p_barrier_matches_price_space_stop():
@@ -364,7 +388,7 @@ def test_expert_oof_calibrator_conformal_uses_oof_not_insample():
     assert oof.shape == (n,)
     assert np.isfinite(oof).sum() >= 40
     p_raw = fitted.predict_proba(X.iloc[-10:])
-    p_cal, flags = _apply_deploy_cal_conformal(
+    p_cal, flags, _tags = _apply_deploy_cal_conformal(
         oof, y, p_raw, method="sigmoid", alpha=0.2, conformal_frac=0.3,
     )
     assert p_cal.shape == (10,)
@@ -396,7 +420,7 @@ def test_cpcv_cal_conformal_time_split_differs_from_same_batch():
     y = (rng.uniform(size=n) < oof).astype(int)
     p_te = np.clip(rng.uniform(0.2, 0.8, size=15), 0.01, 0.99)
 
-    p_split, flags_split = _apply_deploy_cal_conformal(
+    p_split, flags_split, _tags = _apply_deploy_cal_conformal(
         oof, y, p_te, method="isotonic", alpha=0.15, conformal_frac=0.3,
     )
     cal_all = ProbabilityCalibrator("isotonic").fit(oof, y)
@@ -404,9 +428,10 @@ def test_cpcv_cal_conformal_time_split_differs_from_same_batch():
     p_same = cal_all.transform(p_te)
     flags_same = conf_all.predict_set(p_same)["confident"]
 
-    cal_dep, conf_dep = fit_deploy_calibrator_and_conformal(
+    cal_dep, conf_dep, dep_tags = fit_deploy_calibrator_and_conformal(
         oof, y, method="isotonic", alpha=0.15, conformal_frac=0.3,
     )
+    assert dep_tags == []  # n=120 足够时间切分, 无同批回退
     # _apply 与 fit_deploy 同口径(本回归的硬约束)
     assert np.allclose(p_split, cal_dep.transform(p_te))
     assert np.array_equal(flags_split, conf_dep.predict_set(p_split)["confident"])
@@ -580,15 +605,15 @@ def test_news_sparse_coverage_records_degradation():
     idx = pd.date_range("2023-01-01", periods=48, freq="1h", tz="UTC")
     feat = pd.DataFrame({"close": np.linspace(100, 110, 48)}, index=idx)
 
-    # monkeypatch load_news_panel → 空
+    # monkeypatch ensure_news_panel → 空(覆盖 load + auto_build)
     import crypto_alpha.data.news as news_mod
 
-    orig = news_mod.load_news_panel
-    news_mod.load_news_panel = lambda *a, **k: None
+    orig = news_mod.ensure_news_panel
+    news_mod.ensure_news_panel = lambda *a, **k: None
     try:
         out = add_news_features(feat.copy(), cfg, "BTC/USDT")
     finally:
-        news_mod.load_news_panel = orig
+        news_mod.ensure_news_panel = orig
 
     assert float(out["has_recent_news"].mean()) == 0.0
     assert out.attrs.get("news_feature_coverage", 1.0) == 0.0
@@ -597,11 +622,11 @@ def test_news_sparse_coverage_records_degradation():
 
     # 关闭告警阈值后不写 degradations
     cfg.raw["news"]["min_coverage_warn"] = 0.0
-    news_mod.load_news_panel = lambda *a, **k: None
+    news_mod.ensure_news_panel = lambda *a, **k: None
     try:
         out2 = add_news_features(feat.copy(), cfg, "BTC/USDT")
     finally:
-        news_mod.load_news_panel = orig
+        news_mod.ensure_news_panel = orig
     assert not (out2.attrs.get("degradations") or [])
 
 
@@ -630,7 +655,215 @@ def test_dashboard_includes_research_disclaimers():
     assert "walk-forward" in html_out
     assert "close_fill" in html_out
     for line in RESEARCH_DISCLAIMERS:
-        assert line[:20] in html_out or "OOF" in html_out
+        assert line in html_out, f"缺失 disclaimer: {line[:40]}…"
+
+
+def test_dedup_corroborate_point_in_time():
+    """互证不得把未来跟进源的权威度回写到首发时刻。"""
+    from crypto_alpha.data.news import dedup_corroborate
+
+    t0 = pd.Timestamp("2023-01-01 10:00", tz="UTC")
+    t1 = pd.Timestamp("2023-01-01 16:00", tz="UTC")
+    items = [
+        {"published_at": t0, "title": "bitcoin etf approval rumors surge today",
+         "tier": 3, "symbols": ["BTC/USDT"], "source": "blog:a"},
+        {"published_at": t1, "title": "bitcoin etf approval rumors surge today",
+         "tier": 1, "symbols": ["BTC/USDT"], "source": "sec:b"},
+    ]
+    out = dedup_corroborate(items, jaccard=0.5, window_hours=48)
+    assert len(out) == 2
+    by_t = {r["published_at"]: r for r in out}
+    assert by_t[t0]["corroboration"] == 1
+    assert by_t[t0]["tier"] == 3
+    assert by_t[t1]["corroboration"] == 2
+    assert by_t[t1]["tier"] == 1
+
+
+def test_derivatives_nan_does_not_wipe_samples():
+    """衍生品全 NaN 时 funding_z/oi_change 填 0, 且记 degradations。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.features.build import build_feature_matrix, feature_columns
+
+    cfg = Config.load()
+    cfg.raw["features"]["mtf_enabled"] = False
+    n = 2500  # 足够 FFD 窗口 + 滚动指标冷启动
+    idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
+    rng = np.random.default_rng(0)
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+    df = pd.DataFrame({
+        "open": close, "high": close * 1.01, "low": close * 0.99,
+        "close": close, "volume": rng.uniform(1, 10, n),
+        "funding_rate": np.nan, "open_interest": np.nan,
+    }, index=idx)
+    feat = build_feature_matrix(df, cfg, symbol=None)
+    assert (feat["funding_z"] == 0.0).all()
+    assert (feat["oi_change"] == 0.0).all()
+    deg = feat.attrs.get("degradations") or []
+    assert "derivatives_funding_unavailable" in deg
+    assert "derivatives_oi_unavailable" in deg
+    fcols = feature_columns(feat)
+    # 冷启动后应有非空建模行(衍生品填 0 不再拖垮 notna().all)
+    assert feat[fcols].notna().all(axis=1).sum() > 50
+
+
+def test_confident_false_skips_all_trades():
+    """保形弃权掩码: confident=False 时回测不开仓。"""
+    from crypto_alpha.backtest.engine import backtest_events
+
+    idx = pd.date_range("2023-01-01", periods=5, freq="1h", tz="UTC")
+    events = pd.DataFrame({
+        "ret": [0.02, -0.01, 0.03, 0.01, -0.02],
+        "side": [1, 1, -1, 1, -1],
+        "t1": idx,
+        "bars_held": [1, 1, 1, 1, 1],
+    }, index=idx)
+    prob = np.array([0.9, 0.9, 0.9, 0.9, 0.9])
+    bt_cfg = {
+        "prob_threshold": 0.55, "portfolio_mode": True,
+        "max_gross_exposure": 1.0, "min_position_pct": 0.01,
+        "fee_bps": 0.0, "slippage_bps": 0.0, "funding_bps_per_bar": 0.0,
+    }
+    risk_cfg = {
+        "kelly_fraction": 0.5, "max_position_pct": 0.25,
+        "roundtrip_cost_frac": 0.0, "execution_assumption": "close_fill",
+    }
+    out = backtest_events(
+        events, prob, bt_cfg, risk_cfg, payoff=1.0,
+        confident=np.zeros(5, dtype=bool),
+    )
+    assert out["metrics"]["n_trades"] == 0
+    assert float(out["equity"].iloc[-1]) == pytest.approx(1.0)
+
+
+def test_triple_barrier_ignores_t0_bar_extremes():
+    """入场 bar(t0) 的 high/low 触及障碍也不应触发; 从下一根起扫。"""
+    from crypto_alpha.labeling.triple_barrier import get_events, get_bins
+
+    idx = pd.date_range("2023-01-01", periods=5, freq="1h", tz="UTC")
+    # t0 当根 low 已击穿止损, 但扫描从下一根开始 → 不应因 t0 判损
+    close = pd.Series([100.0, 100.0, 100.0, 100.0, 100.0], index=idx)
+    high = pd.Series([100.0, 100.0, 100.0, 100.0, 100.0], index=idx)
+    low = pd.Series([90.0, 100.0, 100.0, 100.0, 100.0], index=idx)  # 仅 t0 击穿
+    trgt = pd.Series(0.05, index=idx)
+    side = pd.Series(1, index=idx)
+    events = get_events(close, high, low, idx[:1], (1.0, 1.0), trgt, 3, side, 0.0)
+    assert len(events) == 1
+    assert pd.isna(events["sl_touch"].iloc[0])
+    bins = get_bins(events, close, (1.0, 1.0))
+    # 垂直到期且收益为 0 → bin=0
+    assert bins["bin"].iloc[0] == 0
+
+
+def test_ffd_causal_no_future_shock():
+    """未来价格冲击不得改变过去时刻的 FFD 值。"""
+    from crypto_alpha.features.frac_diff import frac_diff_ffd
+
+    idx = pd.date_range("2023-01-01", periods=80, freq="1h", tz="UTC")
+    base = pd.Series(np.linspace(1.0, 2.0, 80), index=idx, name="logprice")
+    fd0 = frac_diff_ffd(base, d=0.4, thres=1e-4)
+    shocked = base.copy()
+    shocked.iloc[-1] = shocked.iloc[-1] + 10.0
+    fd1 = frac_diff_ffd(shocked, d=0.4, thres=1e-4)
+    # 除最后 width 个可能受冲击影响的点外, 更早的值应完全一致
+    mid = 40
+    assert fd0.iloc[:mid].equals(fd1.iloc[:mid])
+
+
+def test_notifier_hold_reason_not_always_threshold():
+    from crypto_alpha.serve.notifier import format_decision
+
+    text = format_decision({
+        "signal": "HOLD", "symbol": "BTC/USDT",
+        "win_probability": None, "reason": "not_cusum_event",
+        "timestamp": "t",
+    })
+    assert "CUSUM" in text
+    assert "低于阈值" not in text
+
+
+def test_align_news_asof_uses_decision_delta():
+    """LLM align_news_asof 与数值特征一致: 用开盘+Δ 作决策时刻。"""
+    from crypto_alpha.data.news import align_news_asof
+
+    news_ts = pd.Timestamp("2023-01-01 10:00", tz="UTC")
+    news = pd.DataFrame({"text": ["hello"]}, index=pd.DatetimeIndex([news_ts]))
+    # bar 开盘 09:00; 若用开盘对齐(+buffer) 09:00+5min < 10:00 → 看不到
+    # 决策时刻 10:00(+1h) ≥ 10:05? 10:00 < 10:05 → 仍看不到
+    # bar 开盘 10:00; 决策 11:00 ≥ 10:05 → 应看到
+    bars = pd.DatetimeIndex([
+        pd.Timestamp("2023-01-01 09:00", tz="UTC"),
+        pd.Timestamp("2023-01-01 10:00", tz="UTC"),
+    ])
+    m = align_news_asof(
+        news, bars, buffer_minutes=5, ttl_hours=24,
+        decision_delta=pd.Timedelta("1h"),
+    )
+    assert m[bars[0]] == ""
+    assert m[bars[1]] == "hello"
+
+
+def test_dashboard_renders_degradations():
+    from crypto_alpha.config import Config
+    from crypto_alpha.pipeline.report import build_dashboard
+
+    cfg = Config.load()
+    results = {
+        "meta": {
+            "generated_at": "t", "experts_requested": ["gbdt"],
+            "experts_run": ["gbdt"], "experts_skipped": {},
+            "seed": 1, "data_mode": "合成", "news_mode": "合成",
+            "do_cpcv": False, "research_disclaimers": [],
+        },
+        "symbols": {
+            "BTC/USDT": {
+                "n_events": 10, "pos_rate": 0.5,
+                "date_start": "a", "date_end": "b",
+                "data_source": "synthetic",
+                "ensemble_report": {"auc": 0.5, "brier": 0.25, "accuracy": 0.5, "n": 10},
+                "expert_reports": {"gbdt": {"auc": 0.5, "brier": 0.25, "accuracy": 0.5, "n": 10}},
+                "backtest": {
+                    "sharpe": 0.0, "total_return": 0.0, "max_drawdown": 0.0,
+                    "calmar": 0.0, "win_rate": 0.5, "n_trades": 0,
+                },
+                "decision": {"signal": "HOLD", "win_probability": None},
+                "equity_curve": [], "equity_b64": None,
+                "degradations": ["derivatives_funding_unavailable", "news_features_sparse(x)"],
+            }
+        },
+    }
+    html_out = build_dashboard(results, cfg)
+    assert "Degradations" in html_out
+    assert "derivatives_funding_unavailable" in html_out
+
+
+def test_mtf_news_feature_path_no_fake_signal_on_empty_news(monkeypatch):
+    """默认特征面(MTF+新闻)在空新闻下应可装配, 新闻列全 0, 不因 NaN 丢样本。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.data.fetch import generate_synthetic_ohlcv
+    from crypto_alpha.features.build import build_feature_matrix, feature_columns
+    from crypto_alpha.features.news_features import NEWS_FEATURE_COLS, add_news_features
+    import crypto_alpha.data.news as news_mod
+
+    cfg = Config.load()
+    cfg.raw["data"]["use_synthetic"] = True
+    cfg.raw["features"]["mtf_enabled"] = True
+    cfg.raw["news"]["as_feature"] = True
+    cfg.raw["news"]["use_synthetic"] = True
+    cfg.raw["news"]["min_coverage_warn"] = 0.05
+    monkeypatch.setattr(news_mod, "ensure_news_panel", lambda *a, **k: None)
+
+    main = generate_synthetic_ohlcv("BTC/USDT", n_bars=800, timeframe="1h", seed=11)
+    feat = build_feature_matrix(main, cfg, symbol="BTC/USDT")
+    feat = add_news_features(feat, cfg, "BTC/USDT")
+    assert any(c.startswith("tf4h_") for c in feat.columns)
+    for c in NEWS_FEATURE_COLS:
+        assert c in feat.columns
+        if c != "news_age_hours":
+            assert float(feat[c].fillna(0).abs().max()) == 0.0
+    fcols = feature_columns(feat)
+    assert feat[fcols].notna().all(axis=1).sum() > 100
+    deg = feat.attrs.get("degradations") or []
+    assert any("news_features_sparse" in d for d in deg)
 
 
 if __name__ == "__main__":

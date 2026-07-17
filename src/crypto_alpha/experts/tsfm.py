@@ -171,8 +171,16 @@ class TSFMExpert(BaseExpert):
         self._load_backend()
         Z = self._design_matrix(X)
         self._head = self._new_head()
-        if self.cfg.get("head", "logistic") == "gbdt" and sample_weight is not None:
-            self._head.fit(Z, y, sample_weight=sample_weight)
+        # logistic / gbdt 均尽量传入 sample_weight(与一层唯一性权重纪律一致)
+        if sample_weight is not None:
+            try:
+                if self.cfg.get("head", "logistic") == "gbdt":
+                    self._head.fit(Z, y, sample_weight=sample_weight)
+                else:
+                    # Pipeline: 权重传给最终估计器
+                    self._head.fit(Z, y, lr__sample_weight=sample_weight)
+            except TypeError:
+                self._head.fit(Z, y)
         else:
             self._head.fit(Z, y)
         self._cov_cols = self._covariate_cols()

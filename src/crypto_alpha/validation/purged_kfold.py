@@ -52,8 +52,11 @@ class PurgedKFold:
             overlap = (train_t1 >= t0).values & (train_t1.index <= test_end_time)
             train_mask &= ~overlap
 
-            # 禁运: 测试段之后最多 embargo 根样本剔除(末折/近末折也 clamp 到 n, 禁止整段跳过)
-            if embargo > 0 and end < X.shape[0]:
-                train_mask[end : min(end + embargo, X.shape[0])] = False
+            # 禁运: 从测试段标签最晚结束 max(t1) **之后**起算(AFML), 而非折边界下标。
+            # 取随后最多 embargo 根样本; 不足则 clamp(近末折不得整段跳过)。
+            if embargo > 0:
+                after = np.where(times > test_end_time)[0]
+                if len(after):
+                    train_mask[after[:embargo]] = False
 
             yield indices[train_mask], test_idx

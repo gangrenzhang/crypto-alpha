@@ -108,19 +108,21 @@ def prepare_dataset(cfg: Config, symbol: str) -> Dataset:
 
 
 def _attach_news_to_llm(cfg: Config, symbol: str, experts: list) -> None:
-    """为 LLM 专家注入/刷新新闻面板。"""
+    """为 LLM 专家注入/刷新新闻面板(决策时刻与数值新闻特征对齐)。"""
     for e in experts:
         if not hasattr(e, "set_news"):
             continue
         try:
-            from ..data.news import load_news_panel
+            from ..data.news import ensure_news_panel
+            from ..data.fetch import timeframe_delta
 
-            news_df = load_news_panel(cfg, symbol)
+            news_df = ensure_news_panel(cfg, symbol)
             if news_df is not None:
                 e.set_news(
                     news_df,
                     int(cfg["news"].get("buffer_minutes", 5)),
                     float(cfg["news"].get("feature_ttl_hours", 24)),
+                    decision_delta=timeframe_delta(cfg["data"]["timeframe"]),
                 )
         except Exception as ex:
             print(f"[warn] 新闻加载失败(LLM 专家将不使用新闻): {ex}")
@@ -174,11 +176,15 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
         eval_mask = ~np.isnan(oof_cal)
 
     # 部署用: 时间切分独立保形集(校准器与保形器同基且分割)
-    cal, conf = fit_deploy_calibrator_and_conformal(
+    cal, conf, deploy_tags = fit_deploy_calibrator_and_conformal(
         oof, ds.y, method=ccfg["method"],
         alpha=float(ccfg["conformal_alpha"]),
         conformal_frac=float(ccfg.get("conformal_frac", 0.3)),
     )
+    for t in deploy_tags:
+        if t not in degradations:
+            degradations.append(t)
+            print(f"[calibration] WARN: {t}")
 
     # 回测用交叉拟合保形旗标(与实盘 HOLD 口径对齐, 且无部署器自评)
     conf_flags = cross_fitted_conformal_flags(
@@ -186,21 +192,30 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
         n_splits=int(ccfg.get("calib_splits", 5)), embargo_pct=float(vcfg["embargo_pct"]),
     )
 
-    report = classification_report_probs(oof_cal, ds.y)
+    # 弱专家半窗选型后: 报告/回测只用后半窗, 避免 selection-on-evaluation
+    prune_eval = getattr(ens, "prune_eval_mask_", None)
+    if prune_eval is not None:
+        report_mask = eval_mask & np.asarray(prune_eval, dtype=bool)
+        if not report_mask.any():
+            report_mask = eval_mask
+    else:
+        report_mask = eval_mask
+
+    report = classification_report_probs(oof_cal[report_mask], ds.y[report_mask])
 
     payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
     prices = ds.panel["close"] if "close" in ds.panel.columns else None
     bt = backtest_events(
-        ds.events.loc[eval_mask], oof_cal[eval_mask], cfg["backtest"], cfg["risk"],
-        payoff=payoff, prices=prices, confident=conf_flags[eval_mask],
+        ds.events.loc[report_mask], oof_cal[report_mask], cfg["backtest"], cfg["risk"],
+        payoff=payoff, prices=prices, confident=conf_flags[report_mask],
     )
 
-    # 收集降级信息(TSFM→naive / 伪OOF排除 / 二层OOF或校准小样本回退等)
+    # 收集降级信息(含被剪枝专家; build_oof 已写入 ens.degradations)
     for e in ens.experts:
         if getattr(e, "degraded", False):
-            degradations.append(
-                f"{e.name}:{getattr(e, 'degraded_reason', 'degraded')}"
-            )
+            tag = f"{e.name}:{getattr(e, 'degraded_reason', 'degraded')}"
+            if tag not in degradations:
+                degradations.append(tag)
     for d in getattr(ens, "degradations", []) or []:
         if d not in degradations:
             degradations.append(d)

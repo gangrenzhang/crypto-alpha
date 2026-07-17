@@ -223,45 +223,59 @@ def _norm_tokens(title: str) -> set:
 
 def dedup_corroborate(items: list[dict], jaccard: float = 0.6,
                       window_hours: float = 48.0) -> list[dict]:
-    """按标题相似度归并重复报道; 归并后记录 corroboration=独立来源数, tier 取最高(值最小)。
+    """按标题相似度归并重复报道, **按报道时刻输出 point-in-time 快照**。
+
+    每条报道保留自身 ``published_at``; ``corroboration`` / ``tier`` 仅反映
+    **截至该报道时刻**已归入同簇的独立来源(含本条)。禁止把数小时后跟进的
+    高权威源回写到首发时刻(否则 as-of 面板会在 T=0 看到未来互证)。
 
     仅在 window_hours 时间窗内归并: 互证是"多源近乎同时报道同一事件", 跨越数周/数月
-    的同名标题不应合并(否则多年语料会塌缩到最早的少数簇, 破坏历史回测)。
-    只需与"活跃簇"(最近一次更新在窗口内)比较, 保证多年语料下仍近似线性复杂度。
+    的同名标题不应合并。只需与"活跃簇"(最近一次更新在窗口内)比较。
     """
     items = sorted(items, key=lambda x: x["published_at"])
     win = timedelta(hours=float(window_hours))
-    clusters: list[dict] = []
-    active: list[dict] = []  # 仍在时间窗内、可继续被归并的簇
+    out: list[dict] = []
+    active: list[dict] = []  # 簇状态(可变); 对外只 emit PIT 快照
     for it in items:
         toks = _norm_tokens(it["title"])
         t = it["published_at"]
-        active = [c for c in active if t - c["_last"] <= win]  # 过期簇移出活跃集
+        src = it["source"].split(":")[0]
+        active = [c for c in active if t - c["_last"] <= win]
         placed = False
         for c in active:
             inter = len(toks & c["_toks"])
             union = len(toks | c["_toks"]) or 1
             if inter / union >= jaccard:
-                c["sources"].add(it["source"].split(":")[0])
+                c["sources"].add(src)
                 c["tier"] = min(c["tier"], it["tier"])
                 c["_toks"] |= toks
                 c["_last"] = t
+                # PIT: 快照时刻 = 本条报道时刻, 互证/权威 = 此刻已知状态
+                out.append({
+                    "published_at": t,
+                    "title": it["title"],
+                    "tier": c["tier"],
+                    "symbols": it["symbols"],
+                    "sources": ",".join(sorted(c["sources"])),
+                    "corroboration": len(c["sources"]),
+                })
                 placed = True
                 break
         if not placed:
-            c = {
-                "published_at": t, "title": it["title"],
-                "tier": it["tier"], "symbols": it["symbols"],
-                "sources": {it["source"].split(":")[0]}, "_toks": toks, "_last": t,
-            }
-            clusters.append(c)
-            active.append(c)
-    for c in clusters:
-        c["corroboration"] = len(c["sources"])
-        c.pop("_toks", None)
-        c.pop("_last", None)
-        c["sources"] = ",".join(sorted(c["sources"]))
-    return clusters
+            sources = {src}
+            active.append({
+                "tier": it["tier"], "sources": sources,
+                "_toks": toks, "_last": t,
+            })
+            out.append({
+                "published_at": t,
+                "title": it["title"],
+                "tier": it["tier"],
+                "symbols": it["symbols"],
+                "sources": src,
+                "corroboration": 1,
+            })
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -396,36 +410,45 @@ def _fetch_source(cfg, s: dict) -> list[dict]:
 def align_news_asof(
     news_df: pd.DataFrame, timestamps, buffer_minutes: int = 5,
     ttl_hours: float | None = None,
+    decision_delta: pd.Timedelta | None = None,
 ) -> dict:
-    """把新闻摘要 as-of 对齐到事件时间: 只取 published_at + buffer <= 事件时间 的最新摘要。
+    """把新闻摘要 as-of 对齐到**决策时刻**(与数值新闻特征 / MTF 口径一致)。
 
-    ttl_hours: 若给定, 距事件时间超过该时长的新闻视为过期 => 置空, 避免 ffill 把几天前的
-    旧新闻当作"最近新闻"一直塞进 LLM 提示(与数值新闻特征 feature_ttl_hours 口径一致)。
+    决策时刻 = 事件 bar 开盘 + ``decision_delta``(主周期长度); 仅取
+    published_at + buffer <= 决策时刻 的最新摘要。输出字典仍以原始事件时间
+    (bar 开盘)为键, 便于按 ``X.index`` 查表。
+
+    ttl_hours: 若给定, 距**决策时刻**超过该时长的新闻视为过期 => 置空, 避免 ffill
+    把几天前的旧新闻当作"最近新闻"一直塞进 LLM 提示。
     """
     if news_df is None or len(news_df) == 0:
         return {}
     ts_index = pd.DatetimeIndex(pd.to_datetime(list(timestamps), utc=True))
+    if decision_delta is not None:
+        decision_at = (ts_index + pd.Timedelta(decision_delta)).astype("datetime64[ns, UTC]")
+    else:
+        decision_at = ts_index
     # 平移新闻时间以纳入传播缓冲(新闻发布后需一定时间才可交易)
     shifted = news_df.copy()
     shifted.index = shifted.index + pd.Timedelta(minutes=buffer_minutes)
     shifted = shifted.sort_index()
-    union = shifted.index.union(ts_index)
-    aligned = shifted["text"].reindex(union).ffill().reindex(ts_index)
-    # 记录每个事件所对齐到的新闻(缓冲后)可用时刻, 用于 TTL 过期判定
-    avail = pd.Series(shifted.index, index=shifted.index).reindex(union).ffill().reindex(ts_index)
+    union = shifted.index.union(decision_at)
+    aligned = shifted["text"].reindex(union).ffill().reindex(decision_at)
+    # 记录每个决策时刻所对齐到的新闻(缓冲后)可用时刻, 用于 TTL 过期判定
+    avail = pd.Series(shifted.index, index=shifted.index).reindex(union).ffill().reindex(decision_at)
 
     out = {}
-    for ts in ts_index:
-        txt = aligned.loc[ts]
+    for orig_ts, dec_ts in zip(ts_index, decision_at):
+        txt = aligned.loc[dec_ts]
         if pd.isna(txt):
-            out[ts] = ""
+            out[orig_ts] = ""
             continue
-        if ttl_hours is not None and pd.notna(avail.loc[ts]):
-            age_h = (ts - avail.loc[ts]).total_seconds() / 3600.0
+        if ttl_hours is not None and pd.notna(avail.loc[dec_ts]):
+            age_h = (dec_ts - avail.loc[dec_ts]).total_seconds() / 3600.0
             if age_h > float(ttl_hours):
-                out[ts] = ""
+                out[orig_ts] = ""
                 continue
-        out[ts] = txt
+        out[orig_ts] = txt
     return out
 
 
@@ -488,11 +511,49 @@ def load_news_panel(cfg, symbol: str) -> pd.DataFrame | None:
 
 
 def load_news_for_events(cfg, symbol: str, timestamps) -> dict:
-    """便捷函数: 加载新闻面板并 as-of 对齐到事件时间(供训练/推理共用)。"""
+    """便捷函数: 加载新闻面板并 as-of 对齐到决策时刻(供训练/推理共用)。"""
+    from .fetch import timeframe_delta
+
     df = load_news_panel(cfg, symbol)
     buf = int(cfg["news"].get("buffer_minutes", 5))
     ttl = float(cfg["news"].get("feature_ttl_hours", 24))
-    return align_news_asof(df, timestamps, buffer_minutes=buf, ttl_hours=ttl)
+    delta = timeframe_delta(cfg["data"]["timeframe"])
+    return align_news_asof(
+        df, timestamps, buffer_minutes=buf, ttl_hours=ttl, decision_delta=delta,
+    )
+
+
+def ensure_news_panel(cfg, symbol: str) -> pd.DataFrame | None:
+    """加载新闻面板; 缺失时按配置自动 ``build_news_panel`` 并落盘。
+
+    ``news.auto_build_panel`` 默认 true。构建失败或仍为空则返回 None
+    (由调用方走空特征 / coverage warn; 若 ``news.require_panel`` 则抛错)。
+    """
+    ncfg = cfg["news"]
+    df = load_news_panel(cfg, symbol)
+    if df is not None and len(df):
+        return df
+    if not bool(ncfg.get("auto_build_panel", True)):
+        if bool(ncfg.get("require_panel", False)):
+            raise FileNotFoundError(
+                f"新闻面板缺失且 auto_build_panel=false: {news_path_for(cfg, symbol)}"
+            )
+        return None
+    try:
+        built = build_news_panel(cfg, symbol)
+    except Exception as ex:
+        print(f"[warn] {symbol}: 自动构建新闻面板失败: {ex}")
+        built = None
+    if built is not None and len(built):
+        path = save_news_panel(cfg, symbol, built)
+        print(f"[news] {symbol}: 已自动构建并保存新闻面板 -> {path} ({len(built)} buckets)")
+        return built
+    if bool(ncfg.get("require_panel", False)):
+        raise FileNotFoundError(
+            f"新闻面板缺失且自动构建为空: {news_path_for(cfg, symbol)}; "
+            "请运行 08_fetch_news / 09_backfill_news, 或关闭 news.require_panel。"
+        )
+    return None
 
 
 # ==========================================================================

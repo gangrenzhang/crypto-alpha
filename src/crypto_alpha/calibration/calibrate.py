@@ -128,22 +128,25 @@ def cross_fitted_conformal_flags(
 def fit_deploy_calibrator_and_conformal(
     prob: np.ndarray, y: np.ndarray, method: str = "isotonic",
     alpha: float = 0.1, conformal_frac: float = 0.3,
-) -> tuple[ProbabilityCalibrator, ConformalBinary]:
+) -> tuple[ProbabilityCalibrator, ConformalBinary, list[str]]:
     """部署用校准器 + 保形器: **时间切分**独立保形集, 保证 split conformal 覆盖率语义。
 
     - 较早 (1-conformal_frac) 的有效 OOF 拟合校准器;
     - 较晚 conformal_frac 在**该校准器变换后**的概率上拟合保形器;
     - 返回的校准器即部署所用(与保形同一基), 不再在全量上重拟合以免破坏分割。
+    - 第三返回值: degradations 标签(如 ``n<40`` 同批回退)。
     """
+    tags: list[str] = []
     prob = np.asarray(prob, dtype=float)
     y = np.asarray(y, dtype=int)
     m = ~np.isnan(prob)
     p, yy = prob[m], y[m]
     n = len(p)
     if n < 40:
+        tags.append(f"deploy_cal_conformal_fallback_insample(n={n})")
         cal = ProbabilityCalibrator(method=method).fit(p, yy)
         conf = ConformalBinary(alpha=alpha).fit(cal.transform(p), yy)
-        return cal, conf
+        return cal, conf, tags
 
     frac = float(np.clip(conformal_frac, 0.15, 0.5))
     n_conf = max(int(n * frac), 20)
@@ -152,7 +155,7 @@ def fit_deploy_calibrator_and_conformal(
     cal = ProbabilityCalibrator(method=method).fit(p[:n_cal], yy[:n_cal])
     conf_p = cal.transform(p[n_cal:])
     conf = ConformalBinary(alpha=alpha).fit(conf_p, yy[n_cal:])
-    return cal, conf
+    return cal, conf, tags
 
 
 def classification_report_probs(prob: np.ndarray, y: np.ndarray) -> dict:

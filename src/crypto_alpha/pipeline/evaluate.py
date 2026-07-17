@@ -71,7 +71,7 @@ def _expert_oof_calibrator(
     m = ~np.isnan(oof)
     if m.sum() < 20 or len(np.unique(y[m])) < 2:
         return fitted, None, oof
-    cal, _conf = fit_deploy_calibrator_and_conformal(
+    cal, _conf, _tags = fit_deploy_calibrator_and_conformal(
         oof, y, method=method, alpha=0.1, conformal_frac=0.3,
     )
     return fitted, cal, oof
@@ -86,27 +86,31 @@ def _apply_deploy_cal_conformal(
     alpha: float,
     conformal_frac: float,
     min_oof: int = 20,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """用训练折 OOF 按部署口径时间切分拟合校准+保形, 变换测试折概率。
 
-    返回 (校准后测试概率, confident 掩码)。
-    OOF 不足或单类时: 概率原样返回, confident 全 True(仅由概率阈值把关)。
+    返回 (校准后测试概率, confident 掩码, degradations 标签)。
+    OOF 不足或单类时: 概率原样返回, confident 全 True, 并写入 skipped 标签。
     """
+    tags: list[str] = []
     p_test = np.asarray(p_test, dtype=float)
     conf_mask = np.ones(len(p_test), dtype=bool)
     m = ~np.isnan(np.asarray(oof, dtype=float))
     yy = np.asarray(y)
     if m.sum() < min_oof or len(np.unique(yy[m])) < 2:
-        return p_test, conf_mask
+        tags.append(f"cpcv_cal_conformal_skipped(n_oof={int(m.sum())})")
+        return p_test, conf_mask, tags
     try:
-        cal, conf = fit_deploy_calibrator_and_conformal(
+        cal, conf, dep_tags = fit_deploy_calibrator_and_conformal(
             oof, yy, method=method, alpha=alpha, conformal_frac=conformal_frac,
         )
+        tags.extend(dep_tags)
         p_cal = cal.transform(p_test)
         conf_mask = np.asarray(conf.predict_set(p_cal)["confident"], dtype=bool)
-        return p_cal, conf_mask
-    except Exception:
-        return p_test, conf_mask
+        return p_cal, conf_mask, tags
+    except Exception as ex:
+        tags.append(f"cpcv_cal_conformal_error:{type(ex).__name__}")
+        return p_test, conf_mask, tags
 
 
 def cpcv_report(cfg, ds, build_experts_fn) -> dict:
@@ -138,6 +142,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     embargo = float(vcfg["embargo_pct"])
     conf_alpha = float(cfg["calibration"].get("conformal_alpha", 0.1))
     pseudo_expert_names: list[str] = []
+    cal_degradations: list[str] = []
 
     for split_id, (tr, te, combo) in enumerate(cv.split(ds.X)):
         Xtr, Xte = ds.X.iloc[tr], ds.X.iloc[te]
@@ -156,10 +161,13 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
                 e, Xtr, ytr, t1tr, wtr, inner_splits, embargo,
             )
             p_raw = fitted.predict_proba(Xte)
-            p, conf_mask = _apply_deploy_cal_conformal(
+            p, conf_mask, cal_tags = _apply_deploy_cal_conformal(
                 oof_tr, ytr, p_raw,
                 method=method, alpha=conf_alpha, conformal_frac=conformal_frac,
             )
+            for t in cal_tags:
+                if t not in cal_degradations:
+                    cal_degradations.append(t)
             bt = backtest_events(
                 ds.events.iloc[te], p, cfg["backtest"], cfg["risk"], payoff, prices,
                 confident=conf_mask,
@@ -170,10 +178,13 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         ens.fit(Xtr, ytr, t1tr, sample_weight=wtr, n_splits=inner_splits, embargo_pct=embargo)
         pe_raw = ens.predict_proba(Xte)
         oof_e = ens.oof_proba()
-        pe, conf_e = _apply_deploy_cal_conformal(
+        pe, conf_e, cal_tags_e = _apply_deploy_cal_conformal(
             oof_e, ytr, pe_raw,
             method=method, alpha=conf_alpha, conformal_frac=conformal_frac,
         )
+        for t in cal_tags_e:
+            if t not in cal_degradations:
+                cal_degradations.append(t)
         bte = backtest_events(
             ds.events.iloc[te], pe, cfg["backtest"], cfg["risk"], payoff, prices,
             confident=conf_e,
@@ -238,6 +249,11 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
             f"配置含伪OOF专家 {pseudo_expert_names}: 单专家 CPCV 列非折内重训;"
             " stacking 默认已将其排除出元学习器(exclude_pseudo_oof_from_meta)。"
         )
+    if cal_degradations:
+        caveats.append(
+            "校准/保形降级: " + "; ".join(cal_degradations[:8])
+            + ("…" if len(cal_degradations) > 8 else "")
+        )
 
     return {
         "evaluation_unit": "combo",
@@ -257,6 +273,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         "pbo_warning": pbo_warning,
         "n_configs": n_configs,
         "caveats": caveats,
+        "degradations": cal_degradations,
         "config_names": config_names,
         "perf_matrix": perf_matrix,
         "calibrated": True,

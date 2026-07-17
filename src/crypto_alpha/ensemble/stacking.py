@@ -30,6 +30,8 @@ class StackingEnsemble:
         self.degradations: list[str] = []
         #: 被排除出元学习器的伪 OOF 分数(列=专家名), 仅诊断用
         self.pseudo_oof_: pd.DataFrame = pd.DataFrame()
+        #: 与 X/y 对齐: 剪枝后用于报告/回测的后半窗(选型半窗不进评估)
+        self.prune_eval_mask_: np.ndarray | None = None
 
     def _new_meta(self):
         kind = self.cfg.get("meta_learner", "logistic")
@@ -74,6 +76,7 @@ class StackingEnsemble:
                 self.degradations.append(tag)
             clone = e.clone()
             clone.fit(X, y, sample_weight=sample_weight)
+            self._sync_degraded(e, clone)
             prob = clone.predict_proba(X)
             # 广播到所有折(标注为伪 OOF, 不做真正交叉验证)
             col_idx = oof.columns.get_loc(e.name)
@@ -87,27 +90,51 @@ class StackingEnsemble:
             for e in regular_experts:
                 clone = e.clone()
                 clone.fit(Xtr, ytr, sample_weight=wtr)
+                self._sync_degraded(e, clone)
                 oof.iloc[te, oof.columns.get_loc(e.name)] = clone.predict_proba(Xte)
         return oof.astype(float)
 
-    def _prune_weak_experts(self, oof: pd.DataFrame, y: np.ndarray) -> pd.DataFrame:
-        """剔除弱专家: 仅用**时间上较早一半** OOF 算 AUC 做选型, 避免 selection-on-evaluation。
+    def _sync_degraded(self, expert: BaseExpert, clone: BaseExpert) -> None:
+        """折内 clone 的降级状态回写到原专家并记入 degradations(剪枝后也不丢失)。"""
+        if not getattr(clone, "degraded", False):
+            return
+        expert.degraded = True
+        expert.degraded_reason = getattr(clone, "degraded_reason", "degraded")
+        tag = f"{expert.name}:{expert.degraded_reason}"
+        if tag not in self.degradations:
+            self.degradations.append(tag)
 
-        元学习器随后仍在全部保留专家的完整 OOF 上 nested 交叉拟合。
+    def _prune_weak_experts(self, oof: pd.DataFrame, y: np.ndarray) -> pd.DataFrame:
+        """剔除弱专家: 前半窗 AUC 选型; 后半窗留给报告/回测(防 selection-on-evaluation)。
+
+        元学习器仍在保留专家的完整 OOF 上 nested 交叉拟合(部署用); ``prune_eval_mask_``
+        标记后半窗, 供主路径指标与回测使用。
         """
+        n_rows = len(oof)
+        mask = oof.notna().all(axis=1).values
+        pos = np.where(mask)[0]
         min_auc = float(self.cfg.get("min_expert_auc", 0.5))
         if min_auc <= 0 or len(self.experts) <= 1:
+            self.prune_eval_mask_ = mask.copy()
             return oof
         from sklearn.metrics import roc_auc_score
 
-        mask = oof.notna().all(axis=1).values
-        # 按行序(=事件时间序)取前半作选型集
-        pos = np.where(mask)[0]
+        # 按行序(=事件时间序): 前半选型, 后半评估
         if len(pos) < 20:
             select = mask
+            eval_m = mask.copy()
+            tag = f"expert_prune_full_window_selection(n={int(mask.sum())})"
+            if tag not in self.degradations:
+                self.degradations.append(tag)
+            print(f"[ensemble] WARN: {tag}; 选型与评估同窗, 指标可能偏乐观")
         else:
-            select = np.zeros_like(mask)
-            select[pos[: max(len(pos) // 2, 10)]] = True
+            n_sel = max(len(pos) // 2, 10)
+            select = np.zeros(n_rows, dtype=bool)
+            select[pos[:n_sel]] = True
+            eval_m = np.zeros(n_rows, dtype=bool)
+            eval_m[pos[n_sel:]] = True
+        self.prune_eval_mask_ = eval_m
+
         yv = np.asarray(y)[select]
         aucs: dict[str, float] = {}
         for e in self.experts:
@@ -121,7 +148,13 @@ class StackingEnsemble:
         if not keep:  # 全员低于阈值时, 保留 AUC 最高者, 避免空集成
             best = max(self.experts, key=lambda e: (aucs[e.name] if np.isfinite(aucs[e.name]) else -1))
             keep = [best]
-        self.dropped_experts = [(e.name, aucs[e.name]) for e in self.experts if e not in keep]
+        dropped = [e for e in self.experts if e not in keep]
+        self.dropped_experts = [(e.name, aucs[e.name]) for e in dropped]
+        # 被剪枝专家的 degraded 已在 build_oof 写入 degradations; 再记 AUC 原因
+        for e in dropped:
+            tag = f"{e.name}:dropped_low_auc({aucs[e.name]:.3f})"
+            if tag not in self.degradations:
+                self.degradations.append(tag)
         if self.dropped_experts:
             info = ", ".join(f"{n}(auc={a:.3f})" for n, a in self.dropped_experts)
             print(f"[ensemble] 剔除弱专家(选型半窗): {info}")
@@ -197,11 +230,12 @@ class StackingEnsemble:
         sample_weight: np.ndarray | None = None, n_splits: int = 6, embargo_pct: float = 0.01,
     ):
         self.pseudo_oof_ = pd.DataFrame(index=X.index)
+        self.prune_eval_mask_ = None
         # 1) 一层 OOF 特征(伪 OOF 专家仅冻结推理并记 degradations)
         oof = self.build_oof(X, y, t1, sample_weight, n_splits, embargo_pct)
         # 2) 伪 OOF 默认不进元学习器(护栏)
         oof = self._exclude_pseudo_oof_from_meta(oof)
-        # 3) 弱专家剪枝(基于真 OOF AUC)
+        # 3) 弱专家剪枝(前半选型 / 后半评估; degraded 已在 build_oof 收集)
         oof = self._prune_weak_experts(oof, y)
         self.oof_ = oof
         # 4) 二层 nested OOF: 无泄漏融合概率(用于校准/回测/评估)

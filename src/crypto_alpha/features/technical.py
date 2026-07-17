@@ -63,13 +63,17 @@ def add_technical_features(df: pd.DataFrame, windows: list[int], vol_window: int
     out["atr_norm"] = out["atr_14"] / (close + 1e-12)
     out["rv"] = realized_volatility(close, vol_window)
 
-    # 衍生品衍生特征(若存在)
+    # 衍生品衍生特征(若存在)。拉取失败时源列为全 NaN —— 必须 fillna(0),
+    # 否则 prepare_dataset 的 notna().all 会清空全部建模样本(与「优雅降级」冲突)。
     if "funding_rate" in out.columns:
         out["funding_z"] = (
             (out["funding_rate"] - out["funding_rate"].rolling(vol_window).mean())
             / (out["funding_rate"].rolling(vol_window).std() + 1e-12)
-        )
+        ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     if "open_interest" in out.columns:
-        out["oi_change"] = out["open_interest"].pct_change(24)
+        out["oi_change"] = (
+            out["open_interest"].pct_change(24)
+            .replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        )
 
     return out
