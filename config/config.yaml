@@ -13,14 +13,14 @@ project:
 data:
   exchange: binance
   symbols: ["BTC/USDT", "ETH/USDT"]
-  # 主时间框架用于建模; 其余用于多周期特征
+  # 主时间框架用于建模/标注/训练索引; 辅周期只作高周期上下文特征(方案B, 不分别训练)
   timeframe: "1h"
-  aux_timeframes: ["4h", "1d"]
+  aux_timeframes: ["4h", "1d"]   # 必须粗于主周期; 由 as-of 无泄漏并入特征
   since: "2020-01-01T00:00:00Z"   # 真实数据回填起点(多年回测)
   # 无网络/无 key 时使用合成数据把整条流水线跑通
   use_synthetic: true
   synthetic_bars: 20000
-  # 真实数据缓存: 落盘 data/raw/<SYMBOL>.parquet, 复用避免重复拉取(合成模式不缓存)
+  # 真实数据缓存: 主周期 data/raw/<SYMBOL>.parquet; 辅周期 data/raw/<SYMBOL>__4h.parquet
   cache: true
   incremental_update: true        # 每次运行只增量拉取缓存之后的新 bar
   # 衍生品数据(资金费率/持仓量), 部分交易所/接口可能不可用, 会优雅降级
@@ -85,9 +85,15 @@ features:
   # 分数阶差分 (López de Prado): 平稳且保留记忆
   frac_diff_d: 0.4
   frac_diff_thres: 1.0e-4
-  # 技术指标窗口
+  # 技术指标窗口(主周期 bar 数)
   windows: [7, 14, 28, 56]
   vol_window: 50            # 波动率(用于止盈止损/标签)估计窗口
+  # --- 多周期上下文(方案B): 辅周期特征 as-of 并入主面板, 不按周期分别训练 ---
+  mtf_enabled: true
+  mtf_lookbacks: [1, 3, 7]  # 辅周期自身的收益回看(单位=该周期 bar 数)
+  mtf_rsi_window: 14
+  mtf_vol_window: 14
+  mtf_include_confluence: true  # 与主周期动量方向共振特征
 
 # ---------------- 标注: 三重障碍 + 元标签 ----------------
 labeling:

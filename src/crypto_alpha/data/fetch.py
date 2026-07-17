@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -25,6 +24,28 @@ _TF_MS = {
     "4h": 14_400_000,
     "1d": 86_400_000,
 }
+
+# pandas resample 规则(与交易所开盘对齐: label/closed=left)
+_TF_RESAMPLE = {
+    "1m": "1min",
+    "5m": "5min",
+    "15m": "15min",
+    "1h": "1h",
+    "4h": "4h",
+    "1d": "1D",
+}
+
+
+def timeframe_delta(timeframe: str) -> pd.Timedelta:
+    """周期长度。用于「开盘时间戳 + 周期 = 收盘可用时刻」。"""
+    if timeframe not in _TF_MS:
+        raise ValueError(f"不支持的 timeframe: {timeframe}; 可选 {list(_TF_MS)}")
+    return pd.Timedelta(milliseconds=_TF_MS[timeframe])
+
+
+def timeframe_to_prefix(timeframe: str) -> str:
+    """特征列前缀, 如 4h -> tf4h, 1d -> tf1d。"""
+    return f"tf{timeframe}"
 
 
 def _to_ms(iso: str) -> int:
@@ -143,51 +164,116 @@ def generate_synthetic_ohlcv(
     return df
 
 
-def raw_cache_path(cfg, symbol: str):
+def raw_cache_path(cfg, symbol: str, timeframe: str | None = None):
+    """主周期沿用 `SYMBOL.parquet`; 辅周期为 `SYMBOL__4h.parquet` 等, 避免互相覆盖。"""
     from pathlib import Path
 
-    return Path(cfg.data_dir) / "raw" / (symbol.replace("/", "_") + ".parquet")
+    main_tf = cfg["data"]["timeframe"]
+    tf = timeframe or main_tf
+    base = symbol.replace("/", "_")
+    name = f"{base}.parquet" if tf == main_tf else f"{base}__{tf}.parquet"
+    return Path(cfg.data_dir) / "raw" / name
 
 
-def _fetch_real(cfg, symbol: str) -> pd.DataFrame:
-    d = cfg["data"]
-    df = fetch_ohlcv(d["exchange"], symbol, timeframe=d["timeframe"], since=d["since"])
-    if d.get("fetch_derivatives", False):
-        df = df.join(fetch_derivatives(d["exchange"], symbol, df.index))
+def resample_ohlcv(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
+    """把更细周期 OHLCV 重采样到目标周期。
+
+    约定与 ccxt 一致: 时间戳 = 该根 K 线**开盘**时刻(label/closed=left)。
+    用于合成模式下由主周期派生辅周期, 保证价格路径一致(禁止独立再生成一套假行情)。
+    """
+    if target_tf not in _TF_RESAMPLE:
+        raise ValueError(f"无法重采样到 {target_tf}")
+    rule = _TF_RESAMPLE[target_tf]
+    cols = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    }
+    # 仅聚合存在的 OHLCV 列; 衍生品列不跨周期简单求和
+    present = {k: v for k, v in cols.items() if k in df.columns}
+    out = df.resample(rule, label="left", closed="left").agg(present).dropna(subset=["open", "close"])
+    out.index = pd.DatetimeIndex(out.index).tz_convert("UTC") if out.index.tz else out.index.tz_localize("UTC")
+    out.index.name = "timestamp"
+    return out.astype(float)
+
+
+def drop_incomplete_last_bar(df: pd.DataFrame, timeframe: str, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """若最后一根 K 线尚未收盘, 剔除之(实盘/增量场景防用到半成品 OHLC)。"""
+    if df is None or len(df) == 0:
+        return df
+    now = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if now.tzinfo is None:
+        now = now.tz_localize("UTC")
+    last_open = df.index[-1]
+    available_at = last_open + timeframe_delta(timeframe)
+    if available_at > now:
+        return df.iloc[:-1]
     return df
 
 
-def _incremental_update(cfg, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
+def _fetch_real(cfg, symbol: str, timeframe: str) -> pd.DataFrame:
+    d = cfg["data"]
+    df = fetch_ohlcv(d["exchange"], symbol, timeframe=timeframe, since=d["since"])
+    # 衍生品只挂在主周期面板上(辅周期不重复拉, 避免接口浪费与错位)
+    if timeframe == d["timeframe"] and d.get("fetch_derivatives", False):
+        df = df.join(fetch_derivatives(d["exchange"], symbol, df.index))
+    return drop_incomplete_last_bar(df, timeframe)
+
+
+def _incremental_update(cfg, symbol: str, df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     """只拉取缓存最后一根 bar 之后的新数据并合并(多年回测的低成本增量刷新)。"""
     d = cfg["data"]
     if df is None or len(df) == 0:
-        return _fetch_real(cfg, symbol)
+        return _fetch_real(cfg, symbol, timeframe)
     last = df.index[-1]
-    new = fetch_ohlcv(d["exchange"], symbol, timeframe=d["timeframe"], since=last.isoformat())
-    if d.get("fetch_derivatives", False) and len(new):
+    new = fetch_ohlcv(d["exchange"], symbol, timeframe=timeframe, since=last.isoformat())
+    if timeframe == d["timeframe"] and d.get("fetch_derivatives", False) and len(new):
         new = new.join(fetch_derivatives(d["exchange"], symbol, new.index))
     if len(new) == 0:
-        return df
+        return drop_incomplete_last_bar(df, timeframe)
     merged = pd.concat([df, new])
     merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-    return merged
+    return drop_incomplete_last_bar(merged, timeframe)
 
 
-def load_symbol_data(cfg, symbol: str) -> pd.DataFrame:
-    """按配置加载单个币种数据。
+def _load_synthetic(cfg, symbol: str, timeframe: str) -> pd.DataFrame:
+    """合成数据: 始终先生成主周期, 辅周期由主周期重采样得到(路径一致)。"""
+    d = cfg["data"]
+    main_tf = d["timeframe"]
+    main = generate_synthetic_ohlcv(
+        symbol,
+        n_bars=int(d.get("synthetic_bars", 20_000)),
+        timeframe=main_tf,
+        seed=cfg.seed,
+    )
+    if timeframe == main_tf:
+        return main
+    # 辅周期更粗: 重采样; 若误配更细周期, 拒绝静默生成错误数据
+    if timeframe_delta(timeframe) < timeframe_delta(main_tf):
+        raise ValueError(
+            f"合成辅周期 {timeframe} 细于主周期 {main_tf}; "
+            f"方案B要求辅周期为更高周期上下文。"
+        )
+    return resample_ohlcv(main, timeframe)
 
-    - 合成模式: 确定性重建(不缓存, 尊重 synthetic_bars 改动)。
-    - 真实模式: 优先读本地 parquet 缓存, 并按需**增量更新**(只拉新 bar);
-      首次或无缓存时全量分页拉取多年历史并落盘。网络失败降级合成。
+
+def load_symbol_data(cfg, symbol: str, timeframe: str | None = None) -> pd.DataFrame:
+    """按配置加载单个币种、指定周期的 OHLCV。
+
+    - 合成模式: 主周期确定性生成; 辅周期由主周期 resample(价格路径一致, 不缓存)。
+    - 真实模式: 每周期独立 parquet 缓存 + 增量更新; 网络失败时主周期可降级合成,
+      辅周期失败则抛给上层(由 load_aux_timeframes 降级跳过)。
     """
     d = cfg["data"]
-    if d.get("use_synthetic", True):
-        return generate_synthetic_ohlcv(
-            symbol, n_bars=int(d.get("synthetic_bars", 20_000)),
-            timeframe=d["timeframe"], seed=cfg.seed,
-        )
+    main_tf = d["timeframe"]
+    tf = timeframe or main_tf
 
-    cache = raw_cache_path(cfg, symbol)
+    if d.get("use_synthetic", True):
+        return _load_synthetic(cfg, symbol, tf)
+
+    cache = raw_cache_path(cfg, symbol, tf)
     use_cache = bool(d.get("cache", True))
     if use_cache and cache.exists():
         df = load_parquet(cache)
@@ -195,20 +281,53 @@ def load_symbol_data(cfg, symbol: str) -> pd.DataFrame:
             df.index = df.index.tz_localize("UTC")
         if d.get("incremental_update", True):
             try:
-                df = _incremental_update(cfg, symbol, df)
+                df = _incremental_update(cfg, symbol, df, tf)
                 save_parquet(df, cache)
             except Exception as e:
-                print(f"[warn] 增量更新失败({e}); 使用现有缓存。")
+                print(f"[warn] {symbol} {tf} 增量更新失败({e}); 使用现有缓存。")
+                df = drop_incomplete_last_bar(df, tf)
+        else:
+            df = drop_incomplete_last_bar(df, tf)
         return df
 
     try:
-        df = _fetch_real(cfg, symbol)
-    except Exception as e:  # 网络/接口失败 -> 合成兜底
-        print(f"[warn] 真实数据拉取失败 ({e}); 降级为合成数据。")
-        return generate_synthetic_ohlcv(
-            symbol, n_bars=int(d.get("synthetic_bars", 20_000)),
-            timeframe=d["timeframe"], seed=cfg.seed,
-        )
+        df = _fetch_real(cfg, symbol, tf)
+    except Exception as e:
+        if tf == main_tf:
+            print(f"[warn] 真实数据拉取失败 ({e}); 降级为合成数据。")
+            return _load_synthetic(cfg, symbol, tf)
+        raise
     if use_cache and len(df):
         save_parquet(df, cache)
     return df
+
+
+def load_aux_timeframes(
+    cfg,
+    symbol: str,
+    main_df: pd.DataFrame | None = None,
+) -> dict[str, pd.DataFrame]:
+    """加载配置中的辅周期 OHLCV 字典 `{tf: df}`。
+
+    - 跳过与主周期相同的项、空列表、细于主周期的项;
+    - 合成模式优先用 `main_df` 重采样(避免重复生成);
+    - 单个辅周期失败不阻断: 打印 warn 并跳过。
+    """
+    d = cfg["data"]
+    main_tf = d["timeframe"]
+    aux_list = list(d.get("aux_timeframes") or [])
+    out: dict[str, pd.DataFrame] = {}
+    for tf in aux_list:
+        if not tf or tf == main_tf:
+            continue
+        try:
+            if timeframe_delta(tf) < timeframe_delta(main_tf):
+                print(f"[warn] 跳过辅周期 {tf}: 细于主周期 {main_tf}。")
+                continue
+            if d.get("use_synthetic", True) and main_df is not None:
+                out[tf] = resample_ohlcv(main_df, tf)
+            else:
+                out[tf] = load_symbol_data(cfg, symbol, timeframe=tf)
+        except Exception as e:
+            print(f"[warn] 辅周期 {symbol} {tf} 加载失败({e}); 跳过。")
+    return out

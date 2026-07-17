@@ -1,4 +1,12 @@
-from .fetch import fetch_ohlcv, fetch_derivatives, generate_synthetic_ohlcv, load_symbol_data
+from .fetch import (
+    fetch_ohlcv,
+    fetch_derivatives,
+    generate_synthetic_ohlcv,
+    load_symbol_data,
+    load_aux_timeframes,
+    resample_ohlcv,
+    timeframe_delta,
+)
 from .storage import save_parquet, load_parquet
 from .news import (
     build_news_panel,
@@ -15,6 +23,9 @@ __all__ = [
     "fetch_derivatives",
     "generate_synthetic_ohlcv",
     "load_symbol_data",
+    "load_aux_timeframes",
+    "resample_ohlcv",
+    "timeframe_delta",
     "save_parquet",
     "load_parquet",
     "build_news_panel",

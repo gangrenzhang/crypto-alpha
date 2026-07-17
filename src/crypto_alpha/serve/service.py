@@ -57,7 +57,7 @@ class DecisionService:
         fcols = bundle.feature_cols
 
         raw = load_symbol_data(self.cfg, symbol)  # 拉取最新数据(合成或真实)
-        feat = build_feature_matrix(raw, self.cfg)
+        feat = build_feature_matrix(raw, self.cfg, symbol=symbol)
         feat["close"] = raw["close"]
         feat = add_news_features(feat, self.cfg, symbol)  # 与训练特征保持一致
 
