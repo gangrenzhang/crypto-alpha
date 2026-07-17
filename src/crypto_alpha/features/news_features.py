@@ -8,6 +8,8 @@
 - 缺新闻: 一律填 0/中性, 保证不引入 NaN、不丢样本。
 - 覆盖率告警: as_feature 开启但 has_recent_news 均值过低时 warn + attrs.degradations
   (不改数值, 避免长回测把「空新闻」误当成「新闻无 alpha」)。
+- 可选 fail-fast: ``news.require_min_coverage=true`` 时覆盖率低于阈值直接 ValueError
+  (默认 false, 不改变现有可跑通行为; 严肃多年研究建议打开)。
 产出列: news_sentiment(衰减后) / news_sentiment_raw / news_corroboration /
         news_n_items / news_max_authority / news_age_hours / has_recent_news / news_sent_ema
 """
@@ -32,7 +34,8 @@ def _empty_news_features(feat: pd.DataFrame, ttl_hours: float) -> pd.DataFrame:
 def _maybe_warn_news_coverage(feat: pd.DataFrame, ncfg: dict, symbol: str) -> None:
     """覆盖率过低时 warn + 写入 ``feat.attrs['degradations']``(不改特征数值)。
 
-    ``news.min_coverage_warn``: 覆盖率阈值(默认 0.05); ≤0 关闭告警。
+    ``news.min_coverage_warn``: 覆盖率阈值(默认 0.05); ≤0 关闭告警与 fail-fast。
+    ``news.require_min_coverage``: true 时低于阈值 raise(默认 false, 仅 warn)。
     覆盖率 = ``has_recent_news`` 均值(TTL 内有新闻的 bar 占比)。
     """
     thr = float(ncfg.get("min_coverage_warn", 0.05))
@@ -55,6 +58,13 @@ def _maybe_warn_news_coverage(feat: pd.DataFrame, ncfg: dict, symbol: str) -> No
         f"(阈值 {thr:.0%})。长回测请设 news.use_history=true 并回填语料, "
         f"或关闭 news.as_feature, 以免误判「新闻无 alpha」。"
     )
+    if bool(ncfg.get("require_min_coverage", False)):
+        raise ValueError(
+            f"{symbol}: 新闻特征覆盖率 {cov:.2%} < {thr:.0%} 且 "
+            f"news.require_min_coverage=true。请回填历史语料并设 "
+            f"news.use_history=true, 或关闭 news.as_feature / "
+            f"require_min_coverage。"
+        )
 
 
 def add_news_features(feat: pd.DataFrame, cfg, symbol: str) -> pd.DataFrame:

@@ -175,34 +175,42 @@ def get_events(
 def _barrier_log_returns(
     side: float, pt_mult: float, sl_mult: float, trgt: float,
 ) -> tuple[float, float]:
-    """触碰加性价格障碍时的持仓对数收益, 与 decide 挂单价一致。
+    """触碰加性价格障碍时的持仓对数收益, 与回测 ``expm1(ret)`` 互逆。
 
-    多头 TP/SL: log(1±mult·trgt);
-    空头 TP(价跌至 entry(1-pt·trgt)): -log(1-pt·trgt);
-    空头 SL(价涨至 entry(1+sl·trgt)): -log(1+sl·trgt)。
+    约定 ``ret = log1p(仓位简单收益)``:
+      - 止盈: 简单收益 = +pt·trgt → ``log1p(+pt·trgt)``
+      - 止损: 简单收益 = -sl·trgt → ``log1p(-sl·trgt)``
+    多空在相同 pt/sl/trgt 下持仓简单收益对称(空头价跌为止盈、价涨为止损,
+    由 ``get_events`` 的触碰判定体现); ``side`` 不改变幅度公式。
     """
+    _ = float(side)  # 方向只影响触碰哪条价格障碍, 不改变持仓收益幅度
     pt_frac = max(pt_mult * trgt, 0.0)
     sl_frac = min(max(sl_mult * trgt, 0.0), 1.0 - 1e-6)
-    if side > 0:
-        return float(np.log1p(pt_frac)), float(np.log1p(-sl_frac))
-    # 空头: 盈利时价格下跌, 亏损时价格上涨
-    pt_down = min(pt_frac, 1.0 - 1e-6)
-    return float(-np.log1p(-pt_down)), float(-np.log1p(sl_frac))
+    return float(np.log1p(pt_frac)), float(np.log1p(-sl_frac))
+
+
+def _position_log_return(side: float, entry: float, exit_: float) -> float:
+    """垂直到期等路径: 仓位简单收益 → log1p, 与 ``expm1`` / 障碍触碰口径一致。"""
+    c0 = max(float(entry), 1e-12)
+    pos_simple = float(side) * (float(exit_) / c0 - 1.0)
+    pos_simple = float(np.clip(pos_simple, -1.0 + 1e-12, 1e6))
+    return float(np.log1p(pos_simple))
 
 
 def get_bins(events: pd.DataFrame, close: pd.Series, pt_sl: tuple[float, float]) -> pd.DataFrame:
     """由触碰结果生成元标签。
 
     先判定哪条障碍最先被触及(止盈/止损/垂直), 同 bar 平局判止损(悲观):
-      - 止盈先到 => ret = 持仓对数收益(加性障碍), bin=1
-      - 止损先到 => ret = 持仓对数收益(加性障碍), bin=0
-      - 垂直到期 => ret = side*log(close[t1]/close[t0]), bin=(ret>0)
+      - 止盈先到 => ret = log1p(+pt·trgt), bin=1
+      - 止损先到 => ret = log1p(-sl·trgt), bin=0
+      - 垂直到期 => ret = log1p(side·(close[t1]/close[t0]-1)), bin=(ret>0)
+
+    ``ret`` 一律为持仓对数收益, 回测用 ``expm1(ret)`` 还原简单 PnL(多空同形)。
 
     返回列: ret / bin / side / t1(实际了结时间) / bars_held。
     """
     pt_mult, sl_mult = pt_sl
     idx_pos = {ts: i for i, ts in enumerate(close.index)}
-    log_close = np.log(close)
 
     rets, bins, t1_real, bars_held, kept = [], [], [], [], []
     for t0 in events.index:
@@ -224,7 +232,7 @@ def get_bins(events: pd.DataFrame, close: pd.Series, pt_sl: tuple[float, float])
             end, ret, b = pt_t, ret_pt, 1
         else:  # 垂直到期
             end = vt
-            ret = float((log_close.loc[end] - log_close.loc[t0]) * side)
+            ret = _position_log_return(side, close.loc[t0], close.loc[end])
             b = int(ret > 0)
 
         kept.append(t0)

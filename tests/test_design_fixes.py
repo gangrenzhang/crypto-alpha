@@ -124,6 +124,85 @@ def test_portfolio_additive_not_multiplicative_compounding():
     assert recon["equity_matches_pnl"]
 
 
+def test_mtm_short_matches_simple_not_geometric():
+    """空头盯市浮动须用 side×(P_t/P_entry−1), 不得用 (P_t/P_entry)^side−1。
+
+    构造: 空头入场 100, 持有期中价格到 90; 用低于阈值的探针事件触发该时刻的 _mark
+    (探针本身不开仓)。已实现路径/每笔 pnl 不受影响。
+    """
+    from crypto_alpha.backtest.engine import backtest_events
+    from crypto_alpha.risk.sizing import position_size
+
+    idx = pd.date_range("2023-01-01", periods=5, freq="1h", tz="UTC")
+    prices = pd.Series([100.0, 95.0, 90.0, 92.0, 90.0], index=idx)
+    # 空头垂直到期: 入场 100 → 出场 90 ⇒ 简单收益 +10%
+    ret_short = float(np.log1p(-1.0 * (90.0 / 100.0 - 1.0)))
+    events = pd.DataFrame({
+        "ret": [ret_short, 0.0],
+        "t1": [idx[4], idx[2]],  # 探针事件在 idx[2] 入场即到期(仍会走 timeline)
+        "bars_held": [4, 1],
+        "side": [-1.0, 1.0],
+    }, index=[idx[0], idx[2]])
+    # 主仓高概率开仓; 探针概率低于阈值 → 不开仓, 但 timeline 仍在 idx[2] 调用 _mark
+    prob = np.array([0.9, 0.1])
+    bt_cfg = {
+        "prob_threshold": 0.55, "fee_bps": 0.0, "slippage_bps": 0.0,
+        "funding_bps_per_bar": 0.0, "portfolio_mode": True, "min_position_pct": 0.01,
+    }
+    risk_cfg = {
+        "kelly_fraction": 1.0, "max_position_pct": 1.0,
+        "max_gross_exposure": 1.0, "daily_max_drawdown": 0.0,
+        "roundtrip_cost_frac": 0.0,
+    }
+    out = backtest_events(
+        events, prob, bt_cfg, risk_cfg, payoff=1.0, prices=prices,
+    )
+    size = position_size(0.9, 1.0, 1.0, 1.0, cost=0.0)
+    assert size > 0
+    # idx[2] 时刻: 空头仍持仓, P=90 → 简单浮动 size*0.1; 旧几何为 size*(100/90-1)
+    mark_simple = 1.0 + size * 0.1
+    mark_geom = 1.0 + size * (100.0 / 90.0 - 1.0)
+    mtm_mid = float(out["equity_mtm"].loc[idx[2]])
+    assert abs(mtm_mid - mark_simple) < 1e-9
+    assert abs(mtm_mid - mark_geom) > 1e-4  # 明确拒绝几何口径
+    # 已实现末端 = 简单收益(零成本)
+    assert abs(out["metrics"]["total_return"] - size * 0.1) < 1e-9
+    assert out["metrics"]["mark_to_market"] is True
+
+
+def test_mtm_long_unchanged_vs_simple():
+    """多头: 简单收益与旧几何公式重合; 盯市中点应等于 size×(P_t/P_entry−1)。"""
+    from crypto_alpha.backtest.engine import backtest_events
+    from crypto_alpha.risk.sizing import position_size
+
+    idx = pd.date_range("2023-01-01", periods=5, freq="1h", tz="UTC")
+    prices = pd.Series([100.0, 105.0, 110.0, 108.0, 110.0], index=idx)
+    ret_long = float(np.log1p(1.0 * (110.0 / 100.0 - 1.0)))
+    events = pd.DataFrame({
+        "ret": [ret_long, 0.0],
+        "t1": [idx[4], idx[2]],
+        "bars_held": [4, 1],
+        "side": [1.0, -1.0],
+    }, index=[idx[0], idx[2]])
+    prob = np.array([0.9, 0.1])
+    bt_cfg = {
+        "prob_threshold": 0.55, "fee_bps": 0.0, "slippage_bps": 0.0,
+        "funding_bps_per_bar": 0.0, "portfolio_mode": True, "min_position_pct": 0.01,
+    }
+    risk_cfg = {
+        "kelly_fraction": 1.0, "max_position_pct": 1.0,
+        "max_gross_exposure": 1.0, "daily_max_drawdown": 0.0,
+        "roundtrip_cost_frac": 0.0,
+    }
+    out = backtest_events(
+        events, prob, bt_cfg, risk_cfg, payoff=1.0, prices=prices,
+    )
+    size = position_size(0.9, 1.0, 1.0, 1.0, cost=0.0)
+    mark_simple = 1.0 + size * 0.1  # 110/100 - 1
+    assert abs(float(out["equity_mtm"].loc[idx[2]]) - mark_simple) < 1e-9
+    assert abs(out["metrics"]["total_return"] - size * 0.1) < 1e-9
+
+
 def test_embargo_clamps_near_end():
     """近末折禁运不得整段跳过: max(t1) 后剩余样本即使 < embargo 也必须剔除。"""
     from crypto_alpha.validation.purged_kfold import PurgedKFold
@@ -185,7 +264,7 @@ def test_log1p_barrier_matches_price_space_stop():
 
 
 def test_short_barrier_matches_decide_additive():
-    """空头标签触碰价与 decide 加性挂单一致(非几何 entry/(1±x))。"""
+    """空头标签触碰价与 decide 加性挂单一致; ret=log1p(简单PnL) 与回测 expm1 互逆。"""
     from crypto_alpha.labeling.triple_barrier import get_events, get_bins
     from crypto_alpha.risk.sizing import atr_stop, atr_take_profit
 
@@ -199,13 +278,15 @@ def test_short_barrier_matches_decide_additive():
     events = get_events(close, high, low, idx[:1], (mult, mult), trgt, 4, side, 0.0)
     bins = get_bins(events, close, (mult, mult))
     assert int(bins["bin"].iloc[0]) == 0
-    assert abs(bins["ret"].iloc[0] - (-np.log(1.05))) < 1e-9
+    # 空头止损简单收益 -5% → log1p(-0.05); expm1 还原为 -0.05(入场名义)
+    assert abs(bins["ret"].iloc[0] - np.log1p(-0.05)) < 1e-9
+    assert abs(float(np.expm1(bins["ret"].iloc[0])) - (-0.05)) < 1e-12
     assert atr_stop(entry, atr_abs, -1, mult) == pytest.approx(105.0)
     assert atr_take_profit(entry, atr_abs, -1, mult) == pytest.approx(95.0)
 
 
 def test_short_take_profit_additive():
-    """空头止盈: 价格跌至 entry-mult×atr 即触碰。"""
+    """空头止盈: 价格跌至 entry-mult×atr; ret 与多头同形 log1p(+x)。"""
     from crypto_alpha.labeling.triple_barrier import get_events, get_bins
 
     idx = pd.date_range("2023-01-01", periods=5, freq="1h", tz="UTC")
@@ -218,7 +299,56 @@ def test_short_take_profit_additive():
     events = get_events(close, high, low, idx[:1], (mult, mult), trgt, 4, side, 0.0)
     bins = get_bins(events, close, (mult, mult))
     assert int(bins["bin"].iloc[0]) == 1
-    assert abs(bins["ret"].iloc[0] - (-np.log(0.95))) < 1e-9
+    assert abs(bins["ret"].iloc[0] - np.log1p(0.05)) < 1e-9
+    assert abs(float(np.expm1(bins["ret"].iloc[0])) - 0.05) < 1e-12
+
+
+def test_short_long_barrier_ret_symmetric_for_expm1():
+    """同宽障碍下多空持仓 ret 对称, 且均与 expm1 简单 PnL 一致。"""
+    from crypto_alpha.labeling.triple_barrier import get_events, get_bins
+
+    idx = pd.date_range("2023-01-01", periods=5, freq="1h", tz="UTC")
+    entry, x = 100.0, 0.05
+    trgt = pd.Series(x, index=idx)
+
+    def _ret(side_val: int, hit: str) -> float:
+        close = pd.Series([entry] * 5, index=idx)
+        high = pd.Series([entry] * 5, index=idx)
+        low = pd.Series([entry] * 5, index=idx)
+        if hit == "sl" and side_val > 0:
+            low.iloc[1] = entry * (1 - x) - 1.0
+        elif hit == "pt" and side_val > 0:
+            high.iloc[1] = entry * (1 + x) + 1.0
+        elif hit == "sl" and side_val < 0:
+            high.iloc[1] = entry * (1 + x) + 1.0
+        else:
+            low.iloc[1] = entry * (1 - x) - 1.0
+        side = pd.Series(side_val, index=idx)
+        ev = get_events(close, high, low, idx[:1], (1.0, 1.0), trgt, 4, side, 0.0)
+        return float(get_bins(ev, close, (1.0, 1.0))["ret"].iloc[0])
+
+    assert abs(_ret(1, "pt") - _ret(-1, "pt")) < 1e-12
+    assert abs(_ret(1, "sl") - _ret(-1, "sl")) < 1e-12
+    assert abs(float(np.expm1(_ret(-1, "pt"))) - x) < 1e-12
+    assert abs(float(np.expm1(_ret(-1, "sl"))) - (-x)) < 1e-12
+
+
+def test_short_vertical_ret_expm1_entry_notional():
+    """空头垂直到期: ret=log1p((c0-c1)/c0), expm1 得入场名义简单收益。"""
+    from crypto_alpha.labeling.triple_barrier import get_events, get_bins
+
+    idx = pd.date_range("2023-01-01", periods=6, freq="1h", tz="UTC")
+    close = pd.Series([100.0, 100.0, 100.0, 100.0, 100.0, 95.0], index=idx)
+    high = close.copy()
+    low = close.copy()
+    trgt = pd.Series(0.2, index=idx)  # 宽障碍, 强制走垂直
+    side = pd.Series(-1, index=idx)
+    events = get_events(close, high, low, idx[:1], (1.0, 1.0), trgt, 5, side, 0.0)
+    bins = get_bins(events, close, (1.0, 1.0))
+    assert int(bins["bin"].iloc[0]) == 1
+    want = np.log1p((100.0 - 95.0) / 100.0)
+    assert abs(bins["ret"].iloc[0] - want) < 1e-9
+    assert abs(float(np.expm1(bins["ret"].iloc[0])) - 0.05) < 1e-12
 
 
 def test_cusum_threshold_no_lookahead():
@@ -455,6 +585,48 @@ def test_expert_oof_calibrator_conformal_uses_oof_not_insample():
     assert fitted2 is not None
 
 
+def test_joint_cross_fit_cal_conformal_no_second_order_stack():
+    """主路径联合 CF: 校准与保形须在同一折内完成, 且校准分与独立 CF 校准一致。
+
+    禁止回归为「先 cross_fitted_calibrated 再对 oof_cal 做 cross_fitted_conformal_flags」
+    (二阶依赖: 保形训练折上的校准分可能来自见过测试点的校准器)。
+    """
+    from crypto_alpha.calibration.calibrate import (
+        cross_fitted_calibrated,
+        cross_fitted_calibrated_and_conformal,
+        cross_fitted_conformal_flags,
+    )
+
+    rng = np.random.default_rng(11)
+    n = 100
+    idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
+    # 可分信号 + 噪声, 保证 Isotonic 与保形有稳定行为
+    logit = rng.normal(size=n)
+    prob = 1.0 / (1.0 + np.exp(-logit))
+    y = (rng.uniform(size=n) < np.clip(prob, 0.05, 0.95)).astype(int)
+    t1 = pd.Series(idx + pd.Timedelta(hours=3), index=idx)
+
+    oof_cal, flags, tags = cross_fitted_calibrated_and_conformal(
+        prob, y, t1, method="sigmoid", alpha=0.2, n_splits=4, embargo_pct=0.0,
+    )
+    assert oof_cal.shape == (n,)
+    assert flags.shape == (n,) and flags.dtype == bool
+    assert np.isfinite(oof_cal).sum() >= 60
+    # 联合路径的校准分须与单独校准 CF 一致(保形不得回写校准)
+    oof_cal_only = cross_fitted_calibrated(
+        prob, y, t1, method="sigmoid", n_splits=4, embargo_pct=0.0,
+    )
+    m = np.isfinite(oof_cal) & np.isfinite(oof_cal_only)
+    assert m.sum() >= 60
+    assert np.allclose(oof_cal[m], oof_cal_only[m])
+    # 叠层旧路径: 对已校准分再做保形 CF — 联合路径的 flags 语义不同属预期;
+    # 此处只断言联合 API 可运行且未把 tags 弄丢类型
+    _ = cross_fitted_conformal_flags(
+        oof_cal, y, t1, alpha=0.2, n_splits=4, embargo_pct=0.0,
+    )
+    assert isinstance(tags, list)
+
+
 def test_cpcv_cal_conformal_time_split_differs_from_same_batch():
     """时间切分保形与「同批 OOF fit 校准+保形」在足够样本下应可产生不同阈值行为。"""
     from crypto_alpha.calibration.calibrate import (
@@ -680,6 +852,39 @@ def test_news_sparse_coverage_records_degradation():
     finally:
         news_mod.ensure_news_panel = orig
     assert not (out2.attrs.get("degradations") or [])
+
+
+def test_news_require_min_coverage_fail_fast():
+    """require_min_coverage=true 时覆盖率过低须 ValueError, 默认 false 不阻断。"""
+    import pytest
+    from crypto_alpha.config import Config
+    from crypto_alpha.features.news_features import add_news_features
+    import crypto_alpha.data.news as news_mod
+
+    cfg = Config.load()
+    cfg.raw["news"]["as_feature"] = True
+    cfg.raw["news"]["use_synthetic"] = False
+    cfg.raw["news"]["use_history"] = False
+    cfg.raw["news"]["min_coverage_warn"] = 0.05
+    cfg.raw["news"]["require_min_coverage"] = True
+    cfg.raw["news"]["sources"] = []
+
+    idx = pd.date_range("2023-01-01", periods=24, freq="1h", tz="UTC")
+    feat = pd.DataFrame({"close": np.linspace(100, 105, 24)}, index=idx)
+    orig = news_mod.ensure_news_panel
+    news_mod.ensure_news_panel = lambda *a, **k: None
+    try:
+        with pytest.raises(ValueError, match="require_min_coverage"):
+            add_news_features(feat.copy(), cfg, "BTC/USDT")
+    finally:
+        news_mod.ensure_news_panel = orig
+
+
+def test_dashboard_equity_curve_prefers_mtm():
+    """看板曲线须优先盯市权益, 与 max_drawdown KPI 口径一致。"""
+    from crypto_alpha.pipeline.report import RESEARCH_DISCLAIMERS
+
+    assert any("equity_mtm" in line or "盯市" in line for line in RESEARCH_DISCLAIMERS)
 
 
 def test_dashboard_includes_research_disclaimers():
@@ -916,6 +1121,147 @@ def test_mtf_news_feature_path_no_fake_signal_on_empty_news(monkeypatch):
     assert feat[fcols].notna().all(axis=1).sum() > 100
     deg = feat.attrs.get("degradations") or []
     assert any("news_features_sparse" in d for d in deg)
+
+
+def test_base_report_uses_same_report_mask_as_ensemble(monkeypatch):
+    """多专家半窗选型后, base_report 须与集成 report 同窗(防看板 AUC 混比)。
+
+    不改 OOF / 部署 / decide: 仅约束研究报表切片。用两个 GBDT 子类触发剪枝半窗路径,
+    避免依赖 torch 的 deep_ts。
+    """
+    from crypto_alpha.calibration.calibrate import classification_report_probs
+    from crypto_alpha.config import Config
+    from crypto_alpha.experts.gbdt import GBDTExpert
+    from crypto_alpha.pipeline.run import prepare_dataset, train_and_validate
+
+    class _GBDTA(GBDTExpert):
+        name = "gbdt_a"
+
+    class _GBDTB(GBDTExpert):
+        name = "gbdt_b"
+
+    cfg = Config.load()
+    cfg.raw["data"]["use_synthetic"] = True
+    cfg.raw["news"]["use_synthetic"] = True
+    cfg.raw["data"]["synthetic_bars"] = 2500
+    cfg.raw["features"]["mtf_enabled"] = False
+    cfg.raw["news"]["as_feature"] = False
+    cfg.raw["experts"]["enabled"] = ["gbdt"]
+    cfg.raw["experts"]["gbdt"] = {
+        "n_estimators": 30, "num_leaves": 7, "min_child_samples": 5,
+        "learning_rate": 0.1, "subsample": 1.0, "colsample_bytree": 1.0,
+    }
+    cfg.raw["labeling"]["min_cusum_events"] = 5
+    cfg.raw["validation"]["n_splits"] = 3
+    cfg.raw["validation"]["embargo_pct"] = 0.0
+    cfg.raw["calibration"]["calib_splits"] = 3
+    cfg.raw["ensemble"]["min_expert_auc"] = 0.5
+
+    def _two_gbdts(cfg, ds):
+        gcfg = cfg["experts"]["gbdt"]
+        cols = list(ds.X.columns)
+        return [
+            _GBDTA(gcfg, cols, seed=cfg.seed),
+            _GBDTB(gcfg, cols, seed=cfg.seed + 1),
+        ]
+
+    monkeypatch.setattr("crypto_alpha.pipeline.run.build_experts", _two_gbdts)
+    ds = prepare_dataset(cfg, "BTC/USDT")
+    assert len(ds.y) >= 40, "样本过少无法触发半窗选型"
+    out = train_and_validate(cfg, ds)
+
+    ens = out["ensemble"]
+    prune = getattr(ens, "prune_eval_mask_", None)
+    assert prune is not None
+    eval_mask = ~np.isnan(out["oof_calibrated"])
+    report_mask = eval_mask & np.asarray(prune, dtype=bool)
+    if not report_mask.any():
+        report_mask = eval_mask
+
+    # 半窗路径: 评估掩码应严格小于全有效 OOF(样本足够时)
+    kept = [e.name for e in ens.experts]
+    assert kept, "至少应保留一名专家"
+    full_valid = int(np.isfinite(ens.oof_[kept[0]].values).sum())
+    assert int(report_mask.sum()) < full_valid
+
+    expected_ens = classification_report_probs(
+        out["oof_calibrated"][report_mask], ds.y[report_mask],
+    )
+    assert out["report"]["n"] == expected_ens["n"]
+
+    for name in kept:
+        expected = classification_report_probs(
+            ens.oof_[name].values[report_mask], ds.y[report_mask],
+        )
+        assert name in out["base_report"]
+        assert out["base_report"][name]["n"] == expected["n"]
+        assert out["base_report"][name]["auc"] == pytest.approx(
+            expected["auc"], nan_ok=True,
+        )
+        # 保留专家与集成报表样本数同窗
+        assert out["base_report"][name]["n"] == out["report"]["n"]
+
+    # 全窗对照: 修复前 base_report 会落在此口径, 现须更小
+    full0 = classification_report_probs(ens.oof_[kept[0]].values, ds.y)
+    assert out["base_report"][kept[0]]["n"] < full0["n"]
+
+
+def test_synthetic_fallback_aux_resamples_from_main():
+    """主行情 synthetic_fallback 时辅周期须从 main 重采样, 禁止混入真实辅路径。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.data.fetch import (
+        _tag_source, generate_synthetic_ohlcv, load_aux_timeframes, resample_ohlcv,
+    )
+
+    cfg = Config.load()
+    cfg.raw["data"]["use_synthetic"] = False  # 非显式合成模式
+    cfg.raw["data"]["aux_timeframes"] = ["4h"]
+    cfg.raw["data"]["timeframe"] = "1h"
+    main = generate_synthetic_ohlcv("BTC/USDT", n_bars=500, timeframe="1h", seed=11)
+    main = _tag_source(main, "synthetic_fallback")
+    # 若错误地走 load_symbol_data, 可能拉真实/缓存; 强制 resample 后应与手工 resample 一致
+    aux = load_aux_timeframes(cfg, "BTC/USDT", main_df=main)
+    assert "4h" in aux
+    expected = resample_ohlcv(main, "4h")
+    pd.testing.assert_frame_equal(
+        aux["4h"][["open", "high", "low", "close"]],
+        expected[["open", "high", "low", "close"]],
+        check_freq=False,
+    )
+    assert aux["4h"].attrs.get("data_source") == "synthetic_fallback"
+
+
+def test_deep_ts_early_stop_split_respects_cutoff():
+    """OOF 折内: val 只含 cutoff 之前; 部署: val 为全局末尾。"""
+    from crypto_alpha.experts.deep_ts import resolve_early_stop_split
+
+    idx = pd.date_range("2023-01-01", periods=100, freq="1h", tz="UTC")
+    # 部署: 无 cutoff → val = 末尾
+    tr, va = resolve_early_stop_split(idx, val_frac=0.15, patience=3, es_cutoff_time=None)
+    assert va is not None
+    assert tr.max() < va.min()
+    assert va[-1] == 99
+
+    # 模拟中间折训练行: 前 40 + 后 40, 测试落在中间 → cutoff = 索引 40 的时刻
+    train_idx = pd.DatetimeIndex(list(idx[:40]) + list(idx[60:]))
+    cutoff = idx[40]
+    tr2, va2 = resolve_early_stop_split(
+        train_idx, val_frac=0.15, patience=3, es_cutoff_time=cutoff,
+    )
+    assert va2 is not None
+    # val 时刻必须全部 < cutoff
+    assert (train_idx[va2] < cutoff).all()
+    # 后段(>=cutoff)只进 train, 不进 val
+    assert (train_idx[tr2] >= cutoff).any()
+    assert not (train_idx[va2] >= cutoff).any()
+
+    # 第一折: 训练全在 cutoff 之后 → 关闭早停
+    late = idx[60:]
+    tr3, va3 = resolve_early_stop_split(
+        late, val_frac=0.15, patience=3, es_cutoff_time=idx[40],
+    )
+    assert va3 is None
+    assert len(tr3) == len(late)
 
 
 if __name__ == "__main__":

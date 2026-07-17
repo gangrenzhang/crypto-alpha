@@ -21,9 +21,9 @@ from ..experts import EXPERT_REGISTRY
 from ..ensemble import StackingEnsemble
 from ..calibration import (
     ProbabilityCalibrator,
+    ConformalBinary,
     classification_report_probs,
-    cross_fitted_calibrated,
-    cross_fitted_conformal_flags,
+    cross_fitted_calibrated_and_conformal,
     fit_deploy_calibrator_and_conformal,
 )
 from ..backtest import backtest_events
@@ -156,41 +156,48 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
 
     ccfg = cfg["calibration"]
     vcfg = cfg["validation"]
-    # 评估用: 交叉拟合校准概率(避免"拟合即评估"乐观偏差)
-    oof_cal = cross_fitted_calibrated(
-        oof, ds.y, ds.t1, method=ccfg["method"],
-        n_splits=int(ccfg.get("calib_splits", 5)), embargo_pct=float(vcfg["embargo_pct"]),
+    conf_alpha = float(ccfg["conformal_alpha"])
+    n_cal_splits = int(ccfg.get("calib_splits", 5))
+    embargo = float(vcfg["embargo_pct"])
+    # 评估/回测: 同一 Purged 折内联合校准+保形, 避免「先 CF 校准再 CF 保形」二阶依赖。
+    # 部署仍用下方时间切分 fit_deploy(与 CPCV 组合内同口径); 此处只服务 OOF 报告/回测。
+    oof_cal, conf_flags, joint_tags = cross_fitted_calibrated_and_conformal(
+        oof, ds.y, ds.t1, method=ccfg["method"], alpha=conf_alpha,
+        n_splits=n_cal_splits, embargo_pct=embargo,
     )
+    for t in joint_tags:
+        if t not in degradations:
+            degradations.append(t)
+            print(f"[calibration] WARN: {t}")
     eval_mask = ~np.isnan(oof_cal)
-    if not eval_mask.any():  # 样本过少时退回单折(乐观); 必须写入 degradations
+    if not eval_mask.any():  # 样本过少时退回同批(乐观); 必须写入 degradations
         tag = "calib_cross_fit_fallback_insample"
         if tag not in degradations:
             degradations.append(tag)
         print(
-            f"[calibration] WARN: {tag}; 交叉拟合校准不可用, "
+            f"[calibration] WARN: {tag}; 交叉拟合校准/保形不可用, "
             "退回同批 OOF fit+transform, 评估可能偏乐观"
         )
         cal_tmp = ProbabilityCalibrator(method=ccfg["method"]).fit(oof[mask], ds.y[mask])
         oof_cal = np.full_like(oof, np.nan)
         oof_cal[mask] = cal_tmp.transform(oof[mask])
         eval_mask = ~np.isnan(oof_cal)
+        # 与部署 n<40 同形: 同批校准后再拟合保形(已标记乐观)
+        conf_tmp = ConformalBinary(alpha=conf_alpha).fit(oof_cal[mask], ds.y[mask])
+        conf_flags = np.asarray(
+            conf_tmp.predict_set(oof_cal)["confident"], dtype=bool,
+        )
 
-    # 部署用: 时间切分独立保形集(校准器与保形器同基且分割)
+    # 部署用: 时间切分独立保形集(校准器与保形器同基且分割) — 不改评估路径
     cal, conf, deploy_tags = fit_deploy_calibrator_and_conformal(
         oof, ds.y, method=ccfg["method"],
-        alpha=float(ccfg["conformal_alpha"]),
+        alpha=conf_alpha,
         conformal_frac=float(ccfg.get("conformal_frac", 0.3)),
     )
     for t in deploy_tags:
         if t not in degradations:
             degradations.append(t)
             print(f"[calibration] WARN: {t}")
-
-    # 回测用交叉拟合保形旗标(与实盘 HOLD 口径对齐, 且无部署器自评)
-    conf_flags = cross_fitted_conformal_flags(
-        oof_cal, ds.y, ds.t1, alpha=float(ccfg["conformal_alpha"]),
-        n_splits=int(ccfg.get("calib_splits", 5)), embargo_pct=float(vcfg["embargo_pct"]),
-    )
 
     # 弱专家半窗选型后: 报告/回测只用后半窗, 避免 selection-on-evaluation
     prune_eval = getattr(ens, "prune_eval_mask_", None)
@@ -220,15 +227,18 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
         if d not in degradations:
             degradations.append(d)
 
+    # 专家表与集成 report / 回测共用 report_mask(半窗选型后的后半窗),
+    # 避免看板上「专家 AUC vs 集成 AUC」全窗/半窗混比。不改 OOF 本身、部署与 decide。
+    y_rep = ds.y[report_mask]
     base_report = {
-        e.name: classification_report_probs(ens.oof_[e.name].values, ds.y)
+        e.name: classification_report_probs(ens.oof_[e.name].values[report_mask], y_rep)
         for e in ens.experts
     }
     # 伪 OOF 分数仅诊断(未进 meta); 标注 contaminated 避免误读为真 OOF AUC
     pseudo = getattr(ens, "pseudo_oof_", None)
     if pseudo is not None and len(getattr(pseudo, "columns", [])):
         for name in pseudo.columns:
-            br = classification_report_probs(pseudo[name].values, ds.y)
+            br = classification_report_probs(pseudo[name].values[report_mask], y_rep)
             br["pseudo_oof"] = True
             br["note"] = "frozen_adapter_not_cross_validated_excluded_from_meta"
             base_report[name] = br

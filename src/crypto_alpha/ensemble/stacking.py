@@ -87,9 +87,11 @@ class StackingEnsemble:
             Xtr, Xte = X.iloc[tr], X.iloc[te]
             ytr = y[tr]
             wtr = None if sample_weight is None else sample_weight[tr]
+            # DeepTS 早停 val 不得用测试折之后的样本: 传入测试折最早时刻作 cutoff
+            es_cutoff = X.index[te].min()
             for e in regular_experts:
                 clone = e.clone()
-                clone.fit(Xtr, ytr, sample_weight=wtr)
+                clone.fit(Xtr, ytr, sample_weight=wtr, es_cutoff_time=es_cutoff)
                 self._sync_degraded(e, clone)
                 oof.iloc[te, oof.columns.get_loc(e.name)] = clone.predict_proba(Xte)
         return oof.astype(float)
@@ -108,7 +110,7 @@ class StackingEnsemble:
         """剔除弱专家: 前半窗 AUC 选型; 后半窗留给报告/回测(防 selection-on-evaluation)。
 
         元学习器仍在保留专家的完整 OOF 上 nested 交叉拟合(部署用); ``prune_eval_mask_``
-        标记后半窗, 供主路径指标与回测使用。
+        标记后半窗, 供主路径集成报告、专家 base_report 与回测使用(同窗可比)。
         """
         n_rows = len(oof)
         mask = oof.notna().all(axis=1).values

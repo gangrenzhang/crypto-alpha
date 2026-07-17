@@ -22,6 +22,67 @@ def _require_torch():
         ) from e
 
 
+def resolve_early_stop_split(
+    index: pd.Index,
+    val_frac: float,
+    patience: int,
+    es_cutoff_time=None,
+    *,
+    min_n_for_es: int = 40,
+    min_pre_cutoff: int = 20,
+    min_val: int = 5,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """划分 early-stopping 的 train/val **行位置**(相对传入的 X 行序)。
+
+    两种模式:
+    - ``es_cutoff_time is None``(全量部署 fit): val = 时间序末尾 ``val_frac``
+      (最近样本), 与因果部署一致。
+    - ``es_cutoff_time`` 有值(Purged OOF 折内): val **仅**从 ``index < cutoff``
+      的样本中取末尾 ``val_frac``; 训练 = 其余 pre-cutoff + 全部 post-cutoff。
+      这样不会用测试折**之后**的损失选 checkpoint, 同时仍允许 Purged 把
+      后段样本用于梯度更新。
+
+    样本不足或 ``patience<=0`` 时关闭早停: 返回 ``(所有行, None)``。
+    """
+    n = len(index)
+    all_pos = np.arange(n, dtype=int)
+    if n < min_n_for_es or patience <= 0 or val_frac <= 0:
+        return all_pos, None
+
+    if es_cutoff_time is None:
+        n_val = max(int(n * float(val_frac)), min_val)
+        n_val = min(n_val, n - 1)
+        if n_val < min_val:
+            return all_pos, None
+        n_tr = n - n_val
+        return all_pos[:n_tr], all_pos[n_tr:]
+
+    # 折内: 只允许 cutoff 之前的样本进入 val(相对测试折因果)
+    times = pd.DatetimeIndex(pd.to_datetime(index))
+    cutoff = pd.Timestamp(es_cutoff_time)
+    if times.tz is not None and cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize(times.tz)
+    elif times.tz is None and cutoff.tzinfo is not None:
+        cutoff = cutoff.tz_localize(None)
+    pre = np.where(times < cutoff)[0]
+    if len(pre) < min_pre_cutoff:
+        # 第一折等「训练全在测试后」的情形: 无法构造因果 val → 关早停
+        return all_pos, None
+
+    n_val = max(int(len(pre) * float(val_frac)), min_val)
+    n_val = min(n_val, len(pre) - 1)
+    if n_val < min_val or len(pre) - n_val < 1:
+        return all_pos, None
+
+    va_pos = pre[-n_val:]
+    pre_tr = pre[:-n_val]
+    post = np.where(times >= cutoff)[0]
+    tr_pos = np.concatenate([pre_tr, post]) if len(post) else pre_tr
+    # 保持稳定顺序(时间序), 便于复现
+    tr_pos = np.sort(tr_pos)
+    return tr_pos.astype(int), va_pos.astype(int)
+
+
 class DeepTSExpert(BaseExpert):
     name = "deep_ts"
     needs_panel = True
@@ -79,7 +140,10 @@ class DeepTSExpert(BaseExpert):
             out[i, lookback - len(seg) :] = seg
         return out
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None):
+    def fit(
+        self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None,
+        **fit_params,
+    ):
         _require_torch()
         import torch
         from torch.utils.data import DataLoader, TensorDataset
@@ -97,14 +161,18 @@ class DeepTSExpert(BaseExpert):
 
         Xw = self._windows(X.index)
         w = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, dtype=np.float32)
-        # 时间切分验证集(非随机), 用于 early stopping; 标准化仅用训练段统计
-        n = len(y)
+        yv = np.asarray(y, dtype=np.float32)
+
+        # 时间切分验证集; OOF 折内由 stacking/evaluate 传入 es_cutoff_time=测试折最早时刻
         val_frac = float(p.get("val_frac", 0.15))
         patience = int(p.get("early_stop_patience", 3))
-        n_val = max(int(n * val_frac), 1) if n >= 40 and patience > 0 else 0
-        n_tr = n - n_val if n_val else n
+        es_cutoff = fit_params.get("es_cutoff_time", None)
+        tr_pos, va_pos = resolve_early_stop_split(
+            X.index, val_frac, patience, es_cutoff_time=es_cutoff,
+        )
 
-        tr_flat = Xw[:n_tr].reshape(-1, Xw.shape[-1])
+        # 标准化仅用训练段统计量(不含 early-stopping 验证段)
+        tr_flat = Xw[tr_pos].reshape(-1, Xw.shape[-1])
         self.mu_ = tr_flat.mean(0)
         self.sd_ = tr_flat.std(0) + 1e-8
         Xw = (Xw - self.mu_) / self.sd_
@@ -134,15 +202,15 @@ class DeepTSExpert(BaseExpert):
             return total / max(wsum, 1e-8)
 
         tr_ds = TensorDataset(
-            torch.tensor(Xw[:n_tr]), torch.tensor(y[:n_tr].astype(np.float32)),
-            torch.tensor(w[:n_tr].astype(np.float32)),
+            torch.tensor(Xw[tr_pos]), torch.tensor(yv[tr_pos]),
+            torch.tensor(w[tr_pos].astype(np.float32)),
         )
         tr_dl = DataLoader(tr_ds, batch_size=int(p.get("batch_size", 256)), shuffle=True, generator=g)
         va_dl = None
-        if n_val:
+        if va_pos is not None:
             va_ds = TensorDataset(
-                torch.tensor(Xw[n_tr:]), torch.tensor(y[n_tr:].astype(np.float32)),
-                torch.tensor(w[n_tr:].astype(np.float32)),
+                torch.tensor(Xw[va_pos]), torch.tensor(yv[va_pos]),
+                torch.tensor(w[va_pos].astype(np.float32)),
             )
             va_dl = DataLoader(va_ds, batch_size=int(p.get("batch_size", 256)), shuffle=False)
 

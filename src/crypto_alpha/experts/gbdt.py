@@ -14,9 +14,13 @@ class GBDTExpert(BaseExpert):
     name = "gbdt"
     needs_panel = False
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None):
+    def fit(
+        self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None,
+        **fit_params,
+    ):
         import lightgbm as lgb
 
+        _ = fit_params  # 忽略 DeepTS 等专用键(如 es_cutoff_time)
         p = self.cfg
         self.model = lgb.LGBMClassifier(
             n_estimators=int(p.get("n_estimators", 400)),

@@ -39,7 +39,8 @@ news:
     raw_dir: data/news_raw     # 原始语料库(corpus.parquet)+续跑检查点目录
     start: "2021-01-01T00:00:00Z"  # 回填起点
     end: null                  # 回填终点(null=至今)
-    # 真实行情下禁止仅用 synthetic(有硬守卫); 离线演示请同时打开 data.use_synthetic
+    # 真实行情下禁止仅用 synthetic(硬守卫); 混回填的 synthetic: 行在加载时也会被过滤。
+    # 离线演示请同时打开 data.use_synthetic。合成历史=随机标题, 非未来收益造情绪。
     providers: ["cryptocompare", "gdelt"]   # synthetic / cryptocompare / gdelt
     window_days: 7             # GDELT 分窗宽度(每窗<=250条)
     rate_limit_sec: 5.0        # 每次请求间隔(对公共API友好, 防封)
@@ -61,6 +62,9 @@ news:
   # 新闻特征覆盖率(has_recent_news 均值)低于此阈值 → warn + degradations(不改数值);
   # 长回测默认 use_history=false 时易触发。设 0 关闭告警。
   min_coverage_warn: 0.05
+  # true=覆盖率低于 min_coverage_warn 时 fail-fast(严肃多年研究建议打开);
+  # 默认 false 保持可跑通, 仅 warn + degradations, 不静默改特征。
+  require_min_coverage: false
   # 来源权威分层(tier 越小越权威)对应的权重
   tier_weights: {1: 1.0, 2: 0.7, 3: 0.4, 4: 0.15}
   # 情绪打分后端: lexicon / cryptobert / finbert / chinese / multilingual(中英双模型融合)

@@ -101,6 +101,10 @@ def cross_fitted_conformal_flags(
 
     与回测/评估对齐, 避免用部署保形器在同一批 OOF 上自评。无法交叉拟合时默认 True
     (不额外弃权, 由概率阈值单独把关)。
+
+    .. note::
+        若 ``prob`` 已是另一轮交叉拟合的校准输出, 会与保形 CF 形成二阶依赖。
+        主路径请改用 :func:`cross_fitted_calibrated_and_conformal`。
     """
     from ..validation.purged_kfold import PurgedKFold
     import pandas as pd
@@ -123,6 +127,64 @@ def cross_fitted_conformal_flags(
         conf = ConformalBinary(alpha=alpha).fit(prob[pos[tr]], yy[pos[tr]])
         out[pos[te]] = conf.predict_set(prob[pos[te]])["confident"]
     return out
+
+
+def cross_fitted_calibrated_and_conformal(
+    prob: np.ndarray,
+    y: np.ndarray,
+    t1,
+    method: str = "isotonic",
+    alpha: float = 0.1,
+    n_splits: int = 5,
+    embargo_pct: float = 0.01,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """同一 Purged 折内联合产出校准概率与保形旗标(主路径评估/回测用)。
+
+    消除「先 ``cross_fitted_calibrated`` 再对结果做 ``cross_fitted_conformal_flags``」
+    的二阶依赖: 后者训练集中的校准分可能来自「曾见过测试点」的校准器。
+
+    每折严格顺序(与部署「先校准再保形」同形, 但用交叉拟合代替时间切分)::
+
+        fit(cal | train raw) → cal(train), cal(test)
+        fit(conf | cal(train)) → confident(cal(test))
+
+    返回 ``(oof_cal, conf_flags, tags)``:
+
+    - ``oof_cal``: 与 :func:`cross_fitted_calibrated` 同语义; 不可 CF 时全 NaN
+    - ``conf_flags``: 默认 True; 仅在该折成功拟合保形器后写入测试折
+    - ``tags``: 如某折因单类/过少跳过保形 → ``conformal_cf_fold_skipped``
+    """
+    from ..validation.purged_kfold import PurgedKFold
+    import pandas as pd
+
+    tags: list[str] = []
+    prob = np.asarray(prob, dtype=float)
+    yy = np.asarray(y, dtype=int)
+    oof_cal = np.full(len(prob), np.nan)
+    conf_flags = np.ones(len(prob), dtype=bool)
+    pos = np.where(~np.isnan(prob))[0]
+    if len(pos) < n_splits * 2:
+        return oof_cal, conf_flags, tags
+
+    t1 = pd.Series(t1)
+    idx = t1.index[pos]
+    t1m = t1.loc[idx]
+    Xdummy = pd.DataFrame(index=idx)
+    pkf = PurgedKFold(n_splits=n_splits, t1=t1m, embargo_pct=embargo_pct)
+    n_conf_skip = 0
+    for tr, te in pkf.split(Xdummy):
+        cal = ProbabilityCalibrator(method).fit(prob[pos[tr]], yy[pos[tr]])
+        p_tr = cal.transform(prob[pos[tr]])
+        p_te = cal.transform(prob[pos[te]])
+        oof_cal[pos[te]] = p_te
+        if len(np.unique(yy[pos[tr]])) < 2 or len(tr) < 10:
+            n_conf_skip += 1
+            continue
+        conf = ConformalBinary(alpha=alpha).fit(p_tr, yy[pos[tr]])
+        conf_flags[pos[te]] = conf.predict_set(p_te)["confident"]
+    if n_conf_skip > 0:
+        tags.append(f"conformal_cf_fold_skipped(n_folds={n_conf_skip})")
+    return oof_cal, conf_flags, tags
 
 
 def fit_deploy_calibrator_and_conformal(

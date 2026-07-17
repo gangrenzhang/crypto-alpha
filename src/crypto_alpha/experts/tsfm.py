@@ -167,7 +167,11 @@ class TSFMExpert(BaseExpert):
         cov = self._covariates(X.index)
         return np.hstack([raw, cov]) if cov.shape[1] else raw
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None):
+    def fit(
+        self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None,
+        **fit_params,
+    ):
+        _ = fit_params  # 忽略 DeepTS 等专用键(如 es_cutoff_time)
         self._load_backend()
         Z = self._design_matrix(X)
         self._head = self._new_head()

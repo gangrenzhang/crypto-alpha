@@ -31,6 +31,18 @@ class Config:
         from .risk.sizing import resolve_execution_assumption
 
         resolve_execution_assumption((raw or {}).get("risk") or {})
+        # barrier_vol=rv 时标签障碍与 decide(atr_14) 口径分裂 — 仅告警, 不阻断旧实验
+        bv = str(((raw or {}).get("labeling") or {}).get("barrier_vol", "atr")).lower()
+        if bv == "rv":
+            import warnings
+
+            warnings.warn(
+                "labeling.barrier_vol='rv': 三重障碍宽度用已实现波动, 但 "
+                "latest_decision/decide 仍按 atr_14×pt_sl 挂单; 训练与实盘止损"
+                "口径不一致。默认/实盘请用 barrier_vol='atr'。",
+                UserWarning,
+                stacklevel=2,
+            )
         return cls(raw=raw, root=root)
 
     def __getitem__(self, key: str) -> Any:

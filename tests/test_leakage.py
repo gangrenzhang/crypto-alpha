@@ -3,7 +3,10 @@
 覆盖此前"文档声称但无测试"的核心闸门:
 1. 新闻 as-of 对齐: 事件早于"新闻发布+缓冲"时, 绝不应看到该新闻。
 2. Purged K-Fold: 训练集不含与测试区间时间重叠的样本(无一层泄漏)。
-3. 合成新闻守卫: 真实价格 + 合成新闻(由未来收益构造) => 拒绝, 防前视泄漏。
+3. 合成新闻守卫:
+   - 真实价格 + news.use_synthetic(未来收益造情绪) => 拒绝;
+   - 真实价格 + history.providers 仅 synthetic => 拒绝;
+   - 真实价格 + corpus 中混有 synthetic: 行 => 加载时过滤。
 4. 三重障碍 high/low bar 内触碰: 盘中被止损打到即判亏损, 而非只看收盘。
 运行: pytest -q tests/test_leakage.py
 """
@@ -80,7 +83,7 @@ def test_purged_kfold_no_overlap():
 
 
 # --------------------------------------------------------------------------
-# 3) 合成新闻守卫: 真实价格下拒绝由未来收益构造的合成新闻
+# 3) 合成新闻守卫: 区分「未来收益面板」与「历史语料卫生」
 # --------------------------------------------------------------------------
 def test_synthetic_news_guard_on_real_prices():
     from crypto_alpha.data.news import build_news_panel
@@ -90,12 +93,12 @@ def test_synthetic_news_guard_on_real_prices():
     cfg.raw["news"]["use_synthetic"] = True     # 合成新闻(未来构造)
     cfg.raw["news"]["use_history"] = False
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="未来收益"):
         build_news_panel(cfg, "BTC/USDT")
 
 
 def test_synthetic_history_providers_guard_on_real_prices():
-    """真实行情下 history.providers 仅含 synthetic 亦应拒绝。"""
+    """真实行情下 history.providers 仅含 synthetic 亦应拒绝(研究口径, 非未来收益泄漏)。"""
     from crypto_alpha.data.news import build_news_panel
 
     cfg = Config.load()
@@ -104,8 +107,47 @@ def test_synthetic_history_providers_guard_on_real_prices():
     cfg.raw["news"]["use_history"] = True
     cfg.raw["news"]["history"]["providers"] = ["synthetic"]
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="合成历史语料"):
         build_news_panel(cfg, "BTC/USDT")
+
+
+def test_corpus_filters_synthetic_rows_on_real_prices():
+    """真实行情加载 corpus 时过滤 synthetic: 行; 全合成模式保留。不改磁盘库。"""
+    from crypto_alpha.data.news import _is_synthetic_news_source, _raw_to_items
+
+    raw = pd.DataFrame([
+        {
+            "published_at": pd.Timestamp("2022-01-01", tz="UTC"),
+            "source": "synthetic:SEC", "tier": 1,
+            "title": "Bitcoin ETF 利好消息", "url": "", "symbols": "BTC/USDT",
+        },
+        {
+            "published_at": pd.Timestamp("2022-01-02", tz="UTC"),
+            "source": "CoinDesk:wire", "tier": 2,
+            "title": "Bitcoin ETF approval", "url": "", "symbols": "BTC/USDT",
+        },
+        {
+            "published_at": pd.Timestamp("2022-01-03", tz="UTC"),
+            "source": "synthetic:Reuters", "tier": 1,
+            "title": "ETH 利空消息", "url": "", "symbols": "ETH/USDT,BTC/USDT",
+        },
+    ])
+
+    cfg = Config.load()
+    cfg.raw["data"]["use_synthetic"] = False
+    cfg.raw["news"]["use_history"] = True
+    cfg.raw["news"]["history"]["providers"] = ["cryptocompare", "gdelt"]
+    cfg.raw["news"]["history"]["start"] = None
+    cfg.raw["news"]["history"]["end"] = None
+
+    items = _raw_to_items(raw, "BTC/USDT", cfg)
+    assert len(items) == 1
+    assert items[0]["source"] == "CoinDesk:wire"
+
+    cfg.raw["data"]["use_synthetic"] = True
+    items_syn = _raw_to_items(raw, "BTC/USDT", cfg)
+    assert len(items_syn) == 3
+    assert sum(_is_synthetic_news_source(i["source"]) for i in items_syn) == 2
 
 
 def test_news_sentiment_raw_respects_ttl(monkeypatch):

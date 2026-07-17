@@ -301,7 +301,9 @@ def _collect_clusters(cfg, symbol: str) -> list[dict]:
     ncfg = cfg["news"]
     win = float(ncfg.get("dedup_window_hours", 48.0))
     if ncfg.get("use_history", False):
-        # 历史库若仅配置 synthetic provider, 在真实行情下等同合成新闻泄漏
+        # 历史库若仅配置 synthetic provider: 真实行情下拒绝(研究口径污染)。
+        # 注意: 合成*历史*语料是随机标题, 与 use_synthetic 面板路径(未来收益造情绪)不同;
+        # 混回填残留另由 _raw_to_items 按行过滤。
         hist_providers = [
             str(p).lower()
             for p in (ncfg.get("history") or {}).get("providers") or []
@@ -313,23 +315,24 @@ def _collect_clusters(cfg, symbol: str) -> list[dict]:
         ):
             raise ValueError(
                 "检测到 data.use_synthetic=false 但 news.history.providers 仅含 synthetic: "
-                "合成历史新闻由未来收益构造, 用于真实行情会造成前视泄漏。"
+                "合成历史语料仅供离线打通链路(随机标题, 并非由未来收益构造), "
+                "与真实行情混用会污染研究口径。"
                 "请将 history.providers 改为 cryptocompare/gdelt 等真实源, "
-                "或先关闭 news.use_history。"
+                "或先关闭 news.use_history; 离线演示请同时打开 data.use_synthetic。"
             )
         raw = _load_raw_store(cfg)
         if raw is not None and len(raw):
             items = _raw_to_items(raw, symbol, cfg)
             if items:
                 return dedup_corroborate(items, window_hours=win)
-        print("[warn] news.use_history=true 但历史原始库为空; 请先运行 09_backfill_news。")
+        print("[warn] news.use_history=true 但历史原始库为空或过滤后无可用条目; 请先运行 09_backfill_news。")
     if ncfg.get("use_synthetic", False):
-        # 防前视泄漏: 合成新闻情绪由**未来**收益构造。若行情为真实数据, 用它会把
-        # 未来信息注入特征 -> 严重泄漏。此组合下拒绝合成新闻(改用 use_history 或真实源)。
+        # 防前视泄漏: 此路径(_synthetic_clusters)情绪由**未来**收益构造。
+        # 若行情为真实数据, 用它会把未来信息注入特征 -> 严重泄漏。
         if not cfg["data"].get("use_synthetic", False):
             raise ValueError(
                 "检测到 data.use_synthetic=false 但 news.use_synthetic=true: "
-                "合成新闻由未来收益构造, 用于真实行情会造成前视泄漏。"
+                "news.use_synthetic 面板路径由未来收益构造情绪, 用于真实行情会造成前视泄漏。"
                 "请改用 news.use_history=true(先运行 09_backfill_news)或配置真实新闻源, "
                 "或将 news.as_feature 设为 false 关闭新闻特征。"
             )
@@ -638,8 +641,19 @@ def _append_raw_store(cfg, items: list[dict]) -> tuple[int, int]:
     return len(combined) - before, len(combined)
 
 
+def _is_synthetic_news_source(source) -> bool:
+    """识别合成语料 source 标记(回填为 ``synthetic:SEC`` 等; 兼容裸 ``synthetic``)。"""
+    s = str(source or "").strip().lower()
+    return s == "synthetic" or s.startswith("synthetic:")
+
+
 def _raw_to_items(raw: pd.DataFrame, symbol: str, cfg) -> list[dict]:
-    """从原始语料库筛出与 symbol 相关的条目, 转回归一化 items 供 dedup_corroborate。"""
+    """从原始语料库筛出与 symbol 相关的条目, 转回归一化 items 供 dedup_corroborate。
+
+    当 ``data.use_synthetic=false`` 时过滤 ``source`` 为 synthetic 的行:
+    防止曾用 synthetic provider 混回填后、即便 providers 已改成真源, 脏行仍进入特征。
+    ``data.use_synthetic=true`` 时保留(离线全合成链路)。不修改磁盘 corpus。
+    """
     hcfg = _history_cfg(cfg)
     start = _parse_dt(hcfg.get("start"))
     end = _parse_dt(hcfg.get("end"))
@@ -648,8 +662,13 @@ def _raw_to_items(raw: pd.DataFrame, symbol: str, cfg) -> list[dict]:
         df = df[df["published_at"] >= start]
     if end is not None:
         df = df[df["published_at"] <= end]
+    allow_synthetic = bool(cfg["data"].get("use_synthetic", False))
     items = []
+    n_skip_syn = 0
     for r in df.itertuples(index=False):
+        if not allow_synthetic and _is_synthetic_news_source(getattr(r, "source", "")):
+            n_skip_syn += 1
+            continue
         syms = [s for s in str(r.symbols).split(",") if s]
         if symbol not in syms:
             continue
@@ -657,6 +676,12 @@ def _raw_to_items(raw: pd.DataFrame, symbol: str, cfg) -> list[dict]:
             "published_at": r.published_at.to_pydatetime(), "source": r.source,
             "tier": int(r.tier), "title": r.title, "url": r.url, "symbols": syms,
         })
+    if n_skip_syn:
+        print(
+            f"[warn] 真实行情下已从历史语料过滤 {n_skip_syn} 条 synthetic 条目"
+            f"(source 以 synthetic: 开头); 避免离线合成新闻混入真实研究。"
+            f"若需使用合成语料请设 data.use_synthetic=true。"
+        )
     return items
 
 
@@ -754,7 +779,12 @@ def fetch_gdelt_history(name, tier, start, end, window_days=7,
 
 
 def _synthetic_history_items(cfg, start, end) -> list[dict]:
-    """离线兜底: 在 [start,end] 生成多年合成语料(用于打通回填->聚合->回测全链路)。"""
+    """离线兜底: 在 [start,end] 生成多年合成语料(打通回填->聚合->回测)。
+
+    标题情绪随机(利好/利空), **不**读取未来价格——与 ``_synthetic_clusters``
+    (``news.use_synthetic`` 面板路径, 由未来收益构造)不同。真实行情下不得混用;
+    ``_raw_to_items`` 在 ``data.use_synthetic=false`` 时会过滤此类 source。
+    """
     hcfg = _history_cfg(cfg)
     rng = np.random.default_rng(cfg.seed + 20260716)
     per_day = int(hcfg.get("synthetic_per_day", 8))

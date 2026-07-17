@@ -33,7 +33,11 @@ class BaseExpert(ABC):
         self._panel = panel
 
     @abstractmethod
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "BaseExpert":
+    def fit(
+        self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None,
+        **fit_params,
+    ) -> "BaseExpert":
+        """拟合专家。可选 ``fit_params``(如 DeepTS 的 ``es_cutoff_time``)由调用方传入; 未知键应忽略。"""
         ...
 
     @abstractmethod

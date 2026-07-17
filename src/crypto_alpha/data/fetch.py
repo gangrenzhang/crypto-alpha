@@ -355,8 +355,9 @@ def load_symbol_data(cfg, symbol: str, timeframe: str | None = None) -> pd.DataF
     """按配置加载单个币种、指定周期的 OHLCV。
 
     - 合成模式: 主周期确定性生成; 辅周期由主周期 resample(价格路径一致, 不缓存)。
-    - 真实模式: 每周期独立 parquet 缓存 + 增量更新; 网络失败时主周期可降级合成,
-      辅周期失败则抛给上层(由 load_aux_timeframes 降级跳过)。
+    - 真实模式: 每周期独立 parquet 缓存 + 增量更新; 网络失败时主周期可降级合成
+      (``synthetic_fallback``); 此时 ``load_aux_timeframes`` 会强制从主面板重采样辅周期,
+      辅周期独立拉取失败则跳过(不拖垮主流程)。
     - 产物 `df.attrs["data_source"]` ∈ {synthetic, real, cache, synthetic_fallback}。
     """
     d = cfg["data"]
@@ -401,6 +402,19 @@ def load_symbol_data(cfg, symbol: str, timeframe: str | None = None) -> pd.DataF
     return _tag_source(df, "real")
 
 
+def _main_requires_aux_resample(main_df: pd.DataFrame | None, use_synthetic: bool) -> bool:
+    """主路径为合成(含 synthetic_fallback)时, 辅周期必须从 main 重采样。
+
+    避免主面板已降级合成、辅周期仍命中真实缓存/拉数导致价格路径混用。
+    """
+    if use_synthetic:
+        return main_df is not None
+    if main_df is None:
+        return False
+    src = str(getattr(main_df, "attrs", {}).get("data_source", "") or "")
+    return src in {"synthetic", "synthetic_fallback"}
+
+
 def load_aux_timeframes(
     cfg,
     symbol: str,
@@ -409,13 +423,15 @@ def load_aux_timeframes(
     """加载配置中的辅周期 OHLCV 字典 `{tf: df}`。
 
     - 跳过与主周期相同的项、空列表、细于主周期的项;
-    - 合成模式优先用 `main_df` 重采样(避免重复生成);
+    - ``use_synthetic`` 或主 ``data_source`` ∈ {synthetic, synthetic_fallback} 时,
+      **强制**用 ``main_df`` 重采样(价格路径与主面板一致, 禁止混入真实辅周期);
     - 单个辅周期失败不阻断: 打印 warn 并跳过。
     """
     d = cfg["data"]
     main_tf = d["timeframe"]
     aux_list = list(d.get("aux_timeframes") or [])
     out: dict[str, pd.DataFrame] = {}
+    force_resample = _main_requires_aux_resample(main_df, bool(d.get("use_synthetic", False)))
     for tf in aux_list:
         if not tf or tf == main_tf:
             continue
@@ -423,8 +439,15 @@ def load_aux_timeframes(
             if timeframe_delta(tf) < timeframe_delta(main_tf):
                 print(f"[warn] 跳过辅周期 {tf}: 细于主周期 {main_tf}。")
                 continue
-            if d.get("use_synthetic", False) and main_df is not None:
-                out[tf] = resample_ohlcv(main_df, tf)
+            if force_resample:
+                aux = resample_ohlcv(main_df, tf)
+                src = str(getattr(main_df, "attrs", {}).get("data_source", "synthetic") or "synthetic")
+                out[tf] = _tag_source(aux, src)
+                if src == "synthetic_fallback":
+                    print(
+                        f"[warn] 主行情为 synthetic_fallback; 辅周期 {tf} 已从主面板重采样"
+                        f"(避免混入真实高周期)。"
+                    )
             else:
                 out[tf] = load_symbol_data(cfg, symbol, timeframe=tf)
         except Exception as e:

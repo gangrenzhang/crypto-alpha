@@ -15,7 +15,10 @@
   (``sharpe_equity*`` / ``sharpe_equity_mtm*``), 不替换旧字段、不改 CPCV/DSR 输入。
 - **盯市(mark-to-market)**: 若传入 `prices`(收盘价序列)且事件含 side, 组合模式会按
   收盘价重建含持仓浮盈亏的权益曲线, 用于 MDD 与日内熔断——避免"只在出场记账"漏掉
-  并发持仓的浮动回撤。未传 prices 时回退到仅出场记账的旧口径(偏乐观)。
+  并发持仓的浮动回撤。浮动与标签/已实现同形:
+  ``size × side × (P_t/P_entry − 1)``(入场名义简单收益), **禁止**
+  ``(P_t/P_entry)^side − 1``(空头几何口径会系统性偏离)。未传 prices 时回退到
+  仅出场记账的旧口径(偏乐观)。
 - 日内熔断(risk.daily_max_drawdown): 当日(盯市)权益回撤触及阈值后, 当日停止新开仓。
 """
 from __future__ import annotations
@@ -163,16 +166,16 @@ def _backtest_portfolio(
 
     # 盯市: 需要收盘价 + 事件方向 side(用于按收盘价重估持仓浮盈亏)
     mtm_enabled = prices is not None and "side" in df.columns
-    logc = None
+    px: pd.Series | None = None
     if mtm_enabled:
         p = pd.Series(prices).astype(float)
         p = p[~p.index.duplicated(keep="last")]
-        logc = np.log(p.where(p > 0)).dropna()
+        px = p.where(p > 0).dropna()
 
-    def _logc_at(ts):
-        if logc is None or ts not in logc.index:
+    def _px_at(ts):
+        if px is None or ts not in px.index:
             return None
-        return float(logc.loc[ts])
+        return float(px.loc[ts])
 
     n = len(df)
     sizes = np.zeros(n, dtype=float)
@@ -196,16 +199,27 @@ def _backtest_portfolio(
     mtm_pts: list[tuple[pd.Timestamp, float]] = []
 
     def _mark(ts) -> float:
-        """当前盯市权益 = 已实现权益 + 各仓按入场权益计的浮动盈亏。"""
+        """当前盯市权益 = 已实现权益 + 各仓按入场权益计的浮动盈亏。
+
+        浮动口径与 ``_position_log_return`` / 已实现 ``expm1(ret)`` **同形**:
+        ``frac = size × side × (P_t / P_entry − 1)``。
+        旧实现 ``size × ((P_t/P_entry)^side − 1)`` 多头巧合一致、空头系统性偏离
+        (下跌浮盈偏高、上涨浮亏偏低), 会扭曲 MDD / 日内熔断。
+        """
         if not mtm_enabled:
             return equity
-        lc = _logc_at(ts)
-        if lc is None:
+        pt = _px_at(ts)
+        if pt is None:
             return equity
         floating = 0.0
         for pos in open_pos.values():
-            frac = pos["size"] * (np.exp(pos["side"] * (lc - pos["entry_logc"])) - 1.0)
-            floating += pos["entry_equity"] * frac
+            p0 = pos.get("entry_px")
+            if p0 is None or p0 <= 0:
+                continue
+            # 与 labeling._position_log_return 同一简单收益; 不引入成本(成本仅出场扣)
+            pos_simple = float(pos["side"]) * (pt / p0 - 1.0)
+            frac = float(pos["size"]) * pos_simple
+            floating += float(pos["entry_equity"]) * frac
         return equity + floating
 
     for ts, kind, i in timeline:
@@ -260,10 +274,10 @@ def _backtest_portfolio(
         }
         if mtm_enabled:
             pos["side"] = float(row["side"])
-            elc = _logc_at(ts)
-            pos["entry_logc"] = elc if elc is not None else 0.0
-            pos["mtm"] = elc is not None  # 入场价缺失则该仓不参与盯市
-            if elc is None:
+            ep = _px_at(ts)
+            pos["entry_px"] = ep  # None ⇒ 该仓不参与盯市
+            pos["mtm"] = ep is not None
+            if ep is None:
                 pos["side"] = 0.0  # 无入场价 => 浮动恒 0, 不污染 mark
         open_pos[i] = pos
 

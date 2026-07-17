@@ -48,9 +48,14 @@ def _expert_oof_probs(
     for tr, te in pkf.split(X):
         clone = expert.clone()
         w = None if sample_weight is None else sample_weight[tr]
-        clone.fit(X.iloc[tr], y[tr], sample_weight=w)
+        # 与 stacking.build_oof 一致: DeepTS 折内早停 cutoff = 测试折最早时刻
+        clone.fit(
+            X.iloc[tr], y[tr], sample_weight=w,
+            es_cutoff_time=X.index[te].min(),
+        )
         oof[te] = clone.predict_proba(X.iloc[te])
     full = expert.clone()
+    # 全量部署 fit: 不传 es_cutoff_time → DeepTS 用最近 val_frac 做早停
     full.fit(X, y, sample_weight=sample_weight)
     return full, oof
 

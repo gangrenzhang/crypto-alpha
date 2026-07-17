@@ -114,8 +114,12 @@ class LLMExpert(BaseExpert):
         self.pos_id = self.tok.encode(POS_TOKEN, add_special_tokens=False)[0]
         self.neg_id = self.tok.encode(NEG_TOKEN, add_special_tokens=False)[0]
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None):
+    def fit(
+        self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None,
+        **fit_params,
+    ):
         # 微调走独立脚本(QLoRA); 这里加载(已微调 adapter 的)模型做推理。
+        _ = sample_weight, fit_params
         self._load()
         return self
 

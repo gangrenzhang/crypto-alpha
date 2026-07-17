@@ -146,8 +146,8 @@ cryptoCurrency/
 | `fetch_derivatives` | 资金费率 / OI；**分页** `_paginate_funding` / `_paginate_oi`（`max_pages=500`）；失败→NaN 列 |
 | `generate_synthetic_ohlcv` | GARCH 味 + regime 合成行情（CI / 离线） |
 | `load_symbol_data(cfg, symbol, timeframe=None)` | 统一入口：合成 / 缓存 / 增量 / 降级 |
-| `load_aux_timeframes` | 加载辅周期字典 `{tf: df}` |
-| `resample_ohlcv` | 合成模式下由主周期重采样辅周期（价格路径一致） |
+| `load_aux_timeframes` | 加载辅周期字典 `{tf: df}`；合成主路径强制从 `main_df` 重采样 |
+| `resample_ohlcv` | 由主周期重采样辅周期（价格路径一致） |
 
 **缓存约定**
 
@@ -158,7 +158,8 @@ cryptoCurrency/
 **当前默认**
 
 - `use_synthetic: false`（研究/实盘默认真实数据）  
-- 主周期失败拉数会 **warn 后降级合成**（辅周期失败则跳过，不拖垮主流程）  
+- 主周期失败拉数会 **warn 后降级合成**（`data_source=synthetic_fallback`）  
+- **路径一致性**：`use_synthetic=true` **或** 主面板已是 `synthetic` / `synthetic_fallback` 时，辅周期 **强制** `resample_ohlcv(main_df)`，禁止再拉真实/缓存高周期（避免「合成主 + 真实辅」混用）；辅周期失败则跳过，不拖垮主流程  
 - 冒烟测试在代码里显式打开合成，勿依赖默认值做离线演示  
 
 ### 4.3 新闻（`data/news.py`）与情绪（`data/sentiment.py`）
@@ -171,7 +172,7 @@ cryptoCurrency/
 | 去重互证（**PIT**） | 时间窗内 Jaccard 归并；`dedup_corroborate` 按**每条报道时刻**输出快照，`corroboration`/`tier` 仅含截至该时刻已知来源——**禁止**把数小时后跟进的高权威源回写到首发时刻 |
 | 桶末 + buffer | 桶时间 + `buffer_minutes` 后才可用 → `merge_asof(backward)`；缓冲相对**决策时刻**（开盘+主周期），不是裸开盘时刻 |
 | **自动建面板** | `ensure_news_panel`：缺盘上面板且 `news.auto_build_panel: true`（默认）时调用 `build_news_panel` 并落盘；`require_panel: true` 时构建仍空则 fail-fast |
-| **合成新闻守卫** | `data.use_synthetic=false` 且 `news.use_synthetic=true` → **ValueError**（合成情绪由未来收益构造） |
+| **合成新闻守卫** | ① `news.use_synthetic=true` + 真行情 → **ValueError**（**面板路径** `_synthetic_clusters` 由未来收益造情绪）；② `history.providers` 仅含 `synthetic` + 真行情 → **ValueError**（合成历史仅为离线随机标题，禁止污染研究口径）；③ `use_history` 加载 corpus 时，真行情**过滤** `source` 以 `synthetic:` 开头的行（防混回填残留；不改磁盘库；`data.use_synthetic=true` 时保留） |
 | 词典整词匹配 | `lexicon` 后端用**词边界**匹配 ASCII 关键词，避免 "against" 误命中 "gain"、"banks" 误命中 "ban" 等子串误判；短语/中文仍用子串 |
 | LLM 提示 as-of | `align_news_asof(..., decision_delta=Δ_main)`：与数值新闻特征同一决策时刻；`ttl_hours` 超期置空，避免 `ffill` 把旧新闻当「最近新闻」 |
 
@@ -223,6 +224,7 @@ OHLCV(+衍生品)
 - **缺面板自动构建**：经 `ensure_news_panel`（见 §4.3），与行情「训练时自拉取」对齐；仍空则中性特征 + 覆盖率告警。
 - **TTL 无旁路**：过期时 `news_sentiment_raw` 等**全部**数值列归零（含 raw）。
 - **覆盖率告警**：`as_feature=true` 时统计 `has_recent_news` 均值；低于 `news.min_coverage_warn`（默认 0.05）则 **warn + 写入 `degradations`**（`news_features_sparse(...)`），**不改特征数值**。长回测在 `use_history=false` 时易触发——应回填历史库或关闭 `as_feature`，避免把「空新闻」误当成「新闻无 alpha」。设 `min_coverage_warn: 0` 可关闭告警。
+- **可选 fail-fast**：`news.require_min_coverage: true`（默认 **false**）时，覆盖率低于阈值直接 `ValueError`，强迫先回填或关 `as_feature`；默认仍只 warn，保证冒烟/首次联跑可通。
 
 ---
 
@@ -245,7 +247,12 @@ OHLCV(+衍生品)
 - 多头：`TP = entry(1+pt·trgt)`，`SL = entry(1-sl·trgt)`
 - 空头：`TP = entry(1-pt·trgt)`，`SL = entry(1+sl·trgt)`（即 `entry ± side×mult×atr`）
 
-触碰用 **价格空间 high/low** 判定；`get_bins` 再把触及价映射为持仓对数收益（多头 `log1p(±·)`，空头 `-log1p(∓·)`）。**不再**对空头做对数对称翻转（旧实现会得到几何价 `entry/(1±x)`，与挂单不一致）。
+触碰用 **价格空间 high/low** 判定；`get_bins` 把结果映射为**持仓对数收益** `ret = log1p(仓位简单收益)`，与回测 `expm1(ret)` **互逆**：
+
+- 止盈 / 止损：多空同形 `log1p(+pt·trgt)` / `log1p(-sl·trgt)`（空头价跌为止盈、价涨为止损，由触碰判定体现；幅度对称）  
+- 垂直到期：`log1p(side·(close[t1]/close[t0]-1))`（入场名义简单收益）  
+
+价格障碍本身仍是加性挂单（与 `decide` 一致）；**不再**用空头 `-log(1∓x)`（那是标的对数价变动，经 `expm1` 会系统性偏离入场名义 PnL）。
 
 ### 6.3 三重障碍（`labeling/triple_barrier.py`）
 
@@ -319,6 +326,7 @@ OHLCV(+衍生品)
 
 - 每个事件回看 `lookback=64` 根主周期特征窗（含面板上的 `side` 通道）  
 - `BCEWithLogitsLoss` 加权（反传与日志均为 `sum(loss·w)/sum(w)`）；**时间切分** `val_frac` + `early_stop_patience`  
+- **早停因果性**：全量部署 fit 用时间序**末尾** `val_frac`（最近样本）。Purged OOF / CPCV 折内由 `stacking` / `evaluate` 传入 `es_cutoff_time=测试折最早时刻`：验证集**只**从 cutoff **之前**的训练样本中取末尾 `val_frac`；post-cutoff 样本仍可参与梯度更新，但**不得**用于选 checkpoint。若 pre-cutoff 不足则关闭早停（避免第一折等「训练全在测试后」时误用未来 val）  
 - 特征标准化 **仅用训练段**统计量（不含 early-stopping 验证段）  
 - `device: auto`；无 torch → 探测阶段跳过  
 
@@ -345,7 +353,7 @@ OHLCV(+衍生品)
 1. **一层 OOF**：可折内重训的专家在 PurgedKFold 上出干净概率；`pseudo_oof` 专家只冻结推理一次并记 degradations；折内 clone 的 `degraded` **回写**到原专家（剪枝后原因不丢失）  
 2. **伪 OOF 护栏**：默认 `exclude_pseudo_oof_from_meta: true`，将其排除出元学习器（分数保留在 `pseudo_oof_`）  
 3. **弱专家剪枝**：时间上**较早一半** OOF AUC 做选型；AUC &lt; `min_expert_auc` 剔除（至少留 1 个）。元学习器仍在**完整**保留专家 OOF 上 nested 交叉拟合（部署用）  
-4. **主路径报告/回测窗**：`>1` 个可剪枝专家时，`train_and_validate` 的分类报告与组合回测使用 **后半窗**（`prune_eval_mask_`），减轻 selection-on-evaluation；实盘 `decide` / 部署模型仍基于全量训练。有效 OOF &lt; 20 时退回全窗选型并记 `expert_prune_full_window_selection`  
+4. **主路径报告/回测窗**：`>1` 个可剪枝专家时，`train_and_validate` 的**集成**分类报告、**各专家 `base_report`（含伪 OOF 诊断分）**与组合回测共用同一 **后半窗** `report_mask`（`prune_eval_mask_` ∩ 有效校准掩码），减轻 selection-on-evaluation，并保证看板「专家 vs 集成」AUC 同窗可比；实盘 `decide` / 部署模型仍基于全量训练与完整 OOF。有效 OOF &lt; 20 时退回全窗选型并记 `expert_prune_full_window_selection`  
 5. **二层 nested OOF**：元学习器再交叉拟合 → `meta_oof_`（供校准与全量部署；无「自训自评」）  
 6. **部署**：全量 OOF 拟合 `meta_` + 各（进入 meta 的）专家全量重训  
 
@@ -353,7 +361,7 @@ OHLCV(+衍生品)
 
 样本过少无法做二层 nested CV 时，退回同批 fit+predict（评估偏乐观），并 **warn + 写入 `degradations`**（`meta_nested_oof_fallback_insample`）。
 
-**解释边界**：Purged K-Fold / CPCV 的 OOF **不是** walk-forward 实盘滚动再训练曲线；净化防标签重叠，不保证「只用过去训未来」。上线前应另做滚动评估，勿把单次 OOF 夏普直接当可部署证明。多专家时主面板夏普/AUC 为**后半窗**口径，与改前「全窗报告」数字不可直接纵向对比。
+**解释边界**：Purged K-Fold / CPCV 的 OOF **不是** walk-forward 实盘滚动再训练曲线；净化防标签重叠，不保证「只用过去训未来」。上线前应另做滚动评估，勿把单次 OOF 夏普直接当可部署证明。多专家时主面板夏普/AUC（含专家表）为**后半窗**口径，与更早「专家全窗、集成半窗」或「全窗报告」数字不可直接纵向对比。
 
 ---
 
@@ -362,14 +370,14 @@ OHLCV(+衍生品)
 | 组件 | 作用 |
 |------|------|
 | `ProbabilityCalibrator` | Isotonic / Platt，让「说 70%」接近经验频率 |
-| `cross_fitted_calibrated` | 评估/回测用的**无泄漏**校准概率 |
-| `cross_fitted_conformal_flags` | 评估/回测用的**交叉拟合**保形弃权旗标 |
+| `cross_fitted_calibrated_and_conformal` | **主路径评估/回测**：同一 Purged 折内联合产出校准概率 + 保形旗标（先 `fit(cal\|train)` → 再 `fit(conf\|cal(train))` → 变换 test）。消除「先 CF 校准、再对结果 CF 保形」的二阶依赖 |
+| `cross_fitted_calibrated` / `cross_fitted_conformal_flags` | 单层 API（兼容/诊断）；**勿**串联用于主路径回测 |
 | `fit_deploy_calibrator_and_conformal` | 部署：**时间切分**，较早 OOF 拟合校准器、较晚 `conformal_frac` 拟合保形器（同基且独立分割）。返回 `(cal, conf, tags)`；**CPCV 组合内**亦复用。`n&lt;40` 同批回退时 tags 含 `deploy_cal_conformal_fallback_insample` |
 | `ConformalBinary` | 预测集恰好一类才 `confident`；否则强制 HOLD |
 
-**校准基 + 独立保形集**：实盘 `decide` 用部署 `cal`；保形在 `cal` 变换后的**持出** OOF 上拟合。主路径回测用交叉拟合的 `oof_cal` + `confident` 掩码；CPCV 组合内用训练折 OOF 的时间切分校准/保形（非交叉拟合、亦非同批双重拟合），与实盘 HOLD 语义对齐。
+**校准基 + 独立保形集**：实盘 `decide` 用部署 `cal`；保形在 `cal` 变换后的**持出** OOF 上拟合。主路径回测用**联合交叉拟合**的 `oof_cal` + `confident` 掩码；CPCV 组合内用训练折 OOF 的时间切分校准/保形（非交叉拟合、亦非同批双重拟合），与实盘 HOLD 语义对齐。
 
-交叉拟合校准样本过少、退回同批 OOF fit+transform 时，**warn + 写入 `degradations`**（`calib_cross_fit_fallback_insample`）；部署同批回退与 CPCV 跳过校准同一透明度纪律。
+联合交叉拟合样本过少、退回同批 OOF 校准+保形时，**warn + 写入 `degradations`**（`calib_cross_fit_fallback_insample`）；某折因单类/过少跳过保形时记 `conformal_cf_fold_skipped`（该折 `confident` 保持 True，由概率阈值把关）。部署同批回退与 CPCV 跳过校准同一透明度纪律。
 
 配置：`method: isotonic`，`conformal_alpha: 0.1`，`calib_splits: 5`，`conformal_frac: 0.3`。
 
@@ -385,7 +393,7 @@ OHLCV(+衍生品)
 - **加性记账**：`Δequity = entry_equity × pnl_frac`，避免重叠仓乘积复利虚高；`pnl` 列为相对入场权益的分数贡献，`entry_equity` 列供对账  
 - 可选 `confident` 掩码：保形弃权与实盘 HOLD 对齐  
 - 成本：开平各一次 fee+slip；资金费 ≈ `funding_bps_per_bar × bars_held`（默认资金费为 0）  
-- **盯市（mark-to-market）**：传入 `prices` 且含 `side` 时，按入场权益计浮动盈亏，供 MDD / 日内熔断。浮动不按障碍价封顶（指示性）。  
+- **盯市（mark-to-market）**：传入 `prices` 且含 `side` 时，按入场权益计浮动盈亏，供 MDD / 日内熔断。浮动与标签/已实现**同形**：`size × side × (P_t/P_entry − 1)`（入场名义简单收益）；**禁止** `(P_t/P_entry)^side − 1`（空头几何口径会偏离）。浮动不按障碍价封顶、不含开平成本（指示性；成本仅出场扣）。  
 
 ### 11.2 独立复利（`portfolio_mode: false`）
 
@@ -435,7 +443,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | 实时循环 | `DecisionService.run_forever`：轮询 `poll_seconds`，每 `retrain_every_cycles` 重训 |
 | 播报 | Telegram（env token/chat）或控制台；HOLD 按 `reason` 文案区分（CUSUM / schema / 保形弃权 / 低于阈值等），**不一律写「低于阈值」**；同信号去重 |
 | 特征 schema | 重建特征后若缺训练列 → 补 0 + **强制 HOLD**（见 §12）；不静默推理 |
-| HTML 面板 | `10_run_all` → `artifacts/dashboard.html` + `run_all_summary.json`；页首 **研究口径说明**；逐币种渲染 **Degradations**；伪 OOF 专家不标 best AUC |
+| HTML 面板 | `10_run_all` → `artifacts/dashboard.html` + `run_all_summary.json`；页首 **研究口径说明**；净值曲线默认 **盯市 `equity_mtm`**（与最大回撤 KPI 对齐）；逐币种渲染 **Degradations**；伪 OOF 专家不标 best AUC |
 | Cursor Canvas | `11_make_canvas` → 托管 `canvases/*.canvas.tsx` |
 | 专家探测 | `probe_experts`：缺依赖则跳过并记录原因；**不永久污染** `config.experts.enabled` |
 
@@ -451,13 +459,13 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 |----|--------------|------|
 | `project` | seed=42 | 数据/产物目录 |
 | `data` | `use_synthetic=false`，`allow_synthetic_fallback=true`，1h+4h/1d | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations |
-| `news` | `use_synthetic=false`，`as_feature=true`，`auto_build_panel=true`，`require_panel=false`，`min_coverage_warn=0.05` | 缺面板可自动 build；PIT 互证；覆盖率过低记 degradations；禁止仅 synthetic 历史混真实行情 |
+| `news` | `use_synthetic=false`，`as_feature=true`，`auto_build_panel=true`，`require_panel=false`，`min_coverage_warn=0.05`，`require_min_coverage=false` | 缺面板可自动 build；PIT 互证；覆盖率过低记 degradations；`require_min_coverage=true` 可 fail-fast；禁止仅 synthetic 历史混真实行情；真行情加载 corpus 时过滤 `synthetic:` 行 |
 | `features` | FFD d=0.4，`mtf_enabled=true` | MTF 方案 B |
-| `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐 |
+| `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐；`barrier_vol=rv` 时 Config.load 告警（decide 仍用 atr） |
 | `validation` | N=6,k=2，embargo=1%，`dsr_n_trials=50` | 禁运从 `max(t1)` 起算；CPCV 组合评估 |
 | `experts` | **enabled=[gbdt, deep_ts]** | tsfm/llm 可选 |
 | `ensemble` | logistic，`min_expert_auc=0.5`，`exclude_pseudo_oof_from_meta=true` | 前半选型 / 后半报告回测；伪 OOF 不进 meta |
-| `calibration` | isotonic，α=0.1，`conformal_frac=0.3` | 独立保形集；部署与 CPCV 时间切分；小样本回退记 degradations |
+| `calibration` | isotonic，α=0.1，`conformal_frac=0.3` | 主路径联合 CF 校准+保形；部署与 CPCV 时间切分；小样本回退记 degradations |
 | `backtest` | **`portfolio_mode=true`**，阈值 0.55 | 组合加性记账 |
 | `risk` | 半 Kelly 启发式，日熔断 5%，`execution_assumption=close_fill`（**仅此已实现**） | 未实现取值 Config.load/decide 报错 |
 | `serve` | 3600s 轮询，24 周期重训 | Telegram 默认关 |
@@ -479,8 +487,8 @@ Config.load()
   → sample_weights                                  # labeling/sample_weights.py
   → prepare_dataset → Dataset                       # pipeline/run.py
   → build_experts → StackingEnsemble.fit            # experts + ensemble
-  → cross_fitted_calibrated + fit_deploy(cal,conf,tags)
-  → backtest_events(后半窗 report_mask，若多专家剪枝路径)
+  → cross_fitted_calibrated_and_conformal + fit_deploy(cal,conf,tags)
+  → backtest_events + base_report(后半窗 report_mask，若多专家剪枝路径；专家表与集成同窗)
   → latest_decision / decide_live                   # 全量部署模型；不受 prune_eval_mask_
 ```
 
@@ -644,8 +652,8 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 文件 | 覆盖 |
 |------|------|
 | `test_smoke.py` | 合成 + 仅 GBDT 全链路 |
-| `test_leakage.py` | 新闻 as-of（决策时刻）、Purged 无重叠、合成新闻守卫、盘中止损 |
-| `test_design_fixes.py` | pt_sl/ATR/加性空头、组合敞口、CUSUM 无前视、null 成本、DSR clamp、**权益夏普增量字段**、小样本 stacking、execution_assumption、新闻覆盖率、看板 disclaimer、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations**、**MTF+空新闻路径** |
+| `test_leakage.py` | 新闻 as-of（决策时刻）、Purged 无重叠、合成新闻守卫（未来收益面板 / 仅 synthetic 历史 / **corpus 过滤 synthetic 行**）、盘中止损 |
+| `test_design_fixes.py` | pt_sl/ATR/加性空头、**空头 ret↔expm1**、**空头盯市=简单收益(非几何)**、组合敞口、CUSUM 无前视、null 成本、DSR clamp、**权益夏普增量字段**、小样本 stacking、execution_assumption、新闻覆盖率、**require_min_coverage fail-fast**、看板 disclaimer、**联合 CF 校准+保形**、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations / 盯市曲线**、**MTF+空新闻路径**、**base_report 与集成同 report_mask**、**synthetic_fallback 辅周期重采样**、**DeepTS 早停 cutoff** |
 | `test_mtf.py` | 辅周期无前视（对齐层须为 NaN）、拒绝更细周期、特征含 MTF |
 | `test_pipeline_integrity.py` | 闭环完整性闸门（见 18.1；空对照默认关 MTF/新闻，见局限） |
 
@@ -677,12 +685,14 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 
 - [x] 技术指标 / FFD 严格因果（`test_ffd_causal_no_future_shock`）  
 - [x] MTF：辅 bar 可用时刻 ≤ 主决策时刻（对齐层未收盘为 NaN）  
-- [x] 新闻：桶末 + buffer + **决策时刻 as-of**（数值特征与 LLM 同口径）；TTL 含 raw；合成守卫；**互证 PIT**  
+- [x] 新闻：桶末 + buffer + **决策时刻 as-of**（数值特征与 LLM 同口径）；TTL 含 raw；合成守卫（未来收益面板 / 仅 synthetic 历史 / **corpus 过滤 `synthetic:`**）；**互证 PIT**  
 - [x] Purged + Embargo（从 **`max(t1)` 之后**起算 + 近末折 clamp）；二层 nested OOF  
-- [x] 交叉拟合校准 + 交叉拟合保形；部署校准/保形时间切分；**CPCV 组合内亦时间切分**（复用 `fit_deploy`）  
-- [x] 三重障碍 high/low、**下一根扫描**（t0 当根极值不触发）；**多空**加性障碍与 `decide` 对齐；CUSUM 因果阈值  
+- [x] 主路径**联合**交叉拟合校准+保形（同折，无二阶叠层）；部署校准/保形时间切分；**CPCV 组合内亦时间切分**（复用 `fit_deploy`）  
+- [x] 三重障碍 high/low、**下一根扫描**（t0 当根极值不触发）；**多空**加性障碍与 `decide` 对齐；`ret=log1p(仓位简单收益)` 与回测 `expm1` 互逆；CUSUM 因果阈值  
 - [x] 建模特征尺度无关；训练/实盘 CUSUM 事件对齐  
 - [x] 实盘特征 schema：缺训练列 → 补 0 + **强制 HOLD**（不推理开仓）  
+- [x] `synthetic_fallback` 主行情时辅周期强制从 main 重采样（禁止混真实高周期）  
+- [x] DeepTS 折内早停：`es_cutoff_time` 限制 val 不得用测试折之后样本；部署仍用最近 `val_frac`  
 
 **防过拟合**
 
@@ -696,13 +706,13 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 
 - [x] 默认组合级 + **入场名义加性记账**  
 - [x] 回测接入保形 `confident` 掩码（全 False → 零开仓有测）  
-- [x] 标签与 decide 共用 ATR × `pt_sl`（多空加性；Kelly 成本 `null→2*(fee+slip)` 回测/实盘一致）  
-- [x] 盯市 MDD/日内熔断；每笔年化夏普按唯一性折算；**并行**权益/盯市权益夏普  
+- [x] 标签与 decide 共用 ATR × `pt_sl`（多空加性；`ret`↔`expm1` 入场名义；Kelly 成本 `null→2*(fee+slip)` 回测/实盘一致）  
+- [x] 盯市 MDD/日内熔断（浮动=`size×side×(P_t/P_entry−1)`，与标签/已实现同形）；每笔年化夏普按唯一性折算；**并行**权益/盯市权益夏普  
 - [x] `data_source` / 看板 `data_mode` 反映真实或降级合成；**Degradations** 上板  
 - [x] `execution_assumption` **仅允许已实现值**（当前 `close_fill`）；未实现配置 fail-fast  
-- [x] 新闻特征覆盖率过低 → `news_features_sparse`；衍生品不可用 → `derivatives_*_unavailable`  
+- [x] 新闻特征覆盖率过低 → `news_features_sparse`；可选 `require_min_coverage` fail-fast；衍生品不可用 → `derivatives_*_unavailable`  
 - [x] 实盘缺特征列 → `feature_schema_mismatch` HOLD（非静默填 0 开仓）  
-- [x] 报告并行输出权益曲线夏普（`sharpe_equity*` / `sharpe_equity_mtm*`）；旧 `sharpe` 每笔口径与 CPCV/DSR 不变；看板区分「每笔 / 权益」  
+- [x] 报告并行输出权益曲线夏普（`sharpe_equity*` / `sharpe_equity_mtm*`）；旧 `sharpe` 每笔口径与 CPCV/DSR 不变；**看板净值默认盯市 `equity_mtm`**，与 `max_drawdown` KPI 对齐  
 - [~] 资金费默认 0；跨币种仍分账户；盯市仍为事件节点稀疏采样  
 - [~] 障碍触达按挂单价记账（缺口穿越相对可交易 PnL 偏乐观）  
 
@@ -730,11 +740,13 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 跨币种组合 | 单币组合化；BTC+ETH 分账户 | ★ 统一权益池 |
 | CPCV 默认关 | 有代码；评估单元为**组合**非完整路径；组合内校准/保形已与部署**时间切分**对齐；跳过/同批回退进 `degradations` | ★★★ 上线前必跑；★★ 真路径重建 |
 | Stacking 二阶泄漏 | nested OOF 一层特征仍非 full-nested（影响很小）；小样本回退已 warn+`degradations`；LLM 伪 OOF 默认不进 meta | ★ full-nested |
-| 剪枝报告窗 | 多专家时主面板 AUC/夏普用**后半窗**；部署仍全量。未剪枝时仍砍半报告偏保守——若需全窗对照可另报 | ★ 可选同时输出 full + holdout |
+| 剪枝报告窗 | 多专家时主面板 AUC/夏普与专家 `base_report` 共用**后半窗**；部署仍全量。未剪枝时仍砍半报告偏保守——若需全窗对照可另报 | ★ 可选同时输出 full + holdout |
 | OOF ≠ walk-forward | Purged/CPCV 为组合式评估，非实盘滚动再训练；**看板/summary 已强制 disclaimer** | ★★ 上线前另做 WF |
 | integrity 空对照 | `_cpu_cfg` 默认关 MTF/新闻；「20 项 PASS」不覆盖默认特征面全开路径（另有 MTF+空新闻装配测） | ★★ 开 MTF+新闻的空对照闸门 |
-| 组合回测回撤 | 加性记账 + 盯市；浮动仍不按障碍封顶；盯市为事件节点稀疏采样 | ★ high/low 路径重演 |
-| 报告夏普口径 | 每笔 `sharpe*` 保留；已并行 `sharpe_equity*` / `sharpe_equity_mtm*`；DSR/CPCV 仍吃每笔口径 | —（已落地；权益曲线仍为事件节点稀疏采样） |
+| 组合回测回撤 | 加性记账 + 盯市（空头浮动已与简单收益对齐）；浮动仍不按障碍封顶；盯市为事件节点稀疏采样 | ★ high/low 路径重演 |
+| 报告夏普口径 | 每笔 `sharpe*` 保留；已并行 `sharpe_equity*` / `sharpe_equity_mtm*`；看板曲线默认盯市；DSR/CPCV 仍吃每笔口径 | —（已落地；权益曲线仍为事件节点稀疏采样） |
+| 新闻空特征研究效度 | 默认 `require_min_coverage=false` 仅 warn；多年回测请 `use_history=true` 或打开 fail-fast | ★★ 严肃研究打开 `require_min_coverage` |
+| `barrier_vol=rv` | 标签可用 RV；decide 仍用 `atr_14`；`Config.load` 告警 | ★ 实盘保持 `atr` |
 | 障碍缺口 | 触达按理论挂单价记账，跳空时相对可交易 PnL 偏乐观 | ★ 按实际穿越价记账（可选） |
 | 实盘特征 schema | 缺列已强制 HOLD + `degradations`；不在坏分布上推理 | —（已落地） |
 | 仓位 / 执行 | Kelly 启发式；`null` 成本已与回测统一；**仅 `close_fill` 已实现**（未实现取值报错） | ★ 实现后再开放 `next_open` |
@@ -765,7 +777,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 分数 Kelly | Kelly 最优仓位乘以 &lt;1 系数 |
 | 组合级回测 | 并发仓位共享权益、锁定敞口 |
 | PIT 互证 | 新闻互证/权威按报道时刻快照，不含未来跟进源 |
-| prune_eval_mask_ | 弱专家前半选型后，主路径报告/回测用的后半事件掩码 |
+| prune_eval_mask_ | 弱专家前半选型后，主路径集成报告 / 专家 base_report / 回测共用的后半事件掩码 |
 
 ---
 

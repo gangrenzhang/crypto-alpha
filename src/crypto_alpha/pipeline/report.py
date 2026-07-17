@@ -100,6 +100,8 @@ RESEARCH_DISCLAIMERS: list[str] = [
     "execution_assumption 当前仅实现 close_fill；未实现取值会在加载配置时报错。",
     "回测 Sharpe 字段为每笔 pnl_frac 口径(可丢弃零收益)；账户表现请看 "
     "sharpe_equity / sharpe_equity_mtm（及年化字段）。DSR/CPCV 仍基于每笔口径。",
+    "看板净值曲线默认用盯市权益(equity_mtm)，与 KPI「最大回撤」口径一致；"
+    "已实现权益见 max_drawdown_realized / sharpe_equity。",
 ]
 
 
@@ -138,7 +140,15 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
                     prev.append(tag)
             results["meta"]["degradations"] = prev
 
-        eq = trained["backtest"]["equity"]
+        # 曲线与 KPI max_drawdown 对齐: 优先盯市权益; 无盯市时回退已实现
+        bt_pack = trained["backtest"]
+        eq_mtm = bt_pack.get("equity_mtm")
+        eq_realized = bt_pack.get("equity")
+        use_mtm = bool(bt_pack.get("metrics", {}).get("mark_to_market")) and (
+            eq_mtm is not None and len(eq_mtm)
+        )
+        eq_plot = eq_mtm if use_mtm else eq_realized
+        curve_kind = "mtm" if use_mtm else "realized"
         entry = {
             "n_events": int(len(ds.y)),
             "pos_rate": float(np.mean(ds.y)),
@@ -147,10 +157,14 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
             "data_source": ds.data_source,
             "ensemble_report": trained["report"],
             "expert_reports": trained["base_report"],
-            "backtest": trained["backtest"]["metrics"],
+            "backtest": bt_pack["metrics"],
             "decision": decision,
-            "equity_curve": _downsample_equity(eq, n=180),
-            "equity_b64": _equity_png_b64(eq, f"{symbol}  OOF equity"),
+            "equity_curve": _downsample_equity(eq_plot, n=180),
+            "equity_curve_kind": curve_kind,
+            "equity_b64": _equity_png_b64(
+                eq_plot,
+                f"{symbol}  OOF equity ({'盯市' if curve_kind == 'mtm' else '已实现'})",
+            ),
             "degradations": trained.get("degradations", []),
         }
         print(f"  集成 AUC={trained['report'].get('auc', float('nan')):.3f} "
