@@ -17,7 +17,12 @@ from ..features.build import build_feature_matrix
 from ..features.news_features import add_news_features
 from ..labeling.meta_labeling import primary_signal
 from ..pipeline import prepare_dataset, train_and_validate
-from ..pipeline.run import _attach_news_to_llm, _is_tradable_event
+from ..pipeline.run import (
+    _attach_news_to_llm,
+    _is_tradable_event,
+    align_feature_schema,
+    hold_for_schema_mismatch,
+)
 from ..risk.sizing import decide
 
 
@@ -82,6 +87,20 @@ class DecisionService:
             feat = feat.copy()
             feat["side"] = side_ser.astype(float)
 
+        # 辅周期/新闻装配失败会导致训练期 feature_cols 整列缺失 → 补 0 防 KeyError,
+        # 但分布已偏移: 强制 HOLD, 绝不在坏 schema 上推理开仓。
+        feat, missing = align_feature_schema(feat, fcols)
+        if missing:
+            print(
+                f"[warn] {symbol}: 特征列与训练 schema 不一致, 强制 HOLD; "
+                f"missing={missing[:8]}{'...' if len(missing) > 8 else ''}"
+            )
+            return hold_for_schema_mismatch(
+                symbol=symbol, missing_cols=missing, risk_cfg=self.cfg["risk"],
+                timestamp=feat.index[-1] if len(feat) else None,
+                data_source=data_source,
+            )
+
         valid = feat[fcols].notna().all(axis=1)
         if not valid.any():
             print(f"[warn] {symbol}: 无有效特征行, 跳过。")
@@ -89,6 +108,8 @@ class DecisionService:
         ts = feat.index[valid][-1]  # 最新一根特征完整的 bar
 
         if not _is_tradable_event(self.cfg, feat, ts, bundle.cusum_full_sampling):
+            from ..risk.sizing import resolve_execution_assumption
+
             return {
                 "signal": "HOLD",
                 "symbol": symbol,
@@ -100,9 +121,7 @@ class DecisionService:
                 "take_profit": None,
                 "confident": False,
                 "data_source": data_source,
-                "execution_assumption": str(
-                    self.cfg["risk"].get("execution_assumption", "close_fill")
-                ),
+                "execution_assumption": resolve_execution_assumption(self.cfg["risk"]),
             }
 
         # 刷新需要时序面板的专家 + LLM 新闻快照

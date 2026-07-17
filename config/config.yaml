@@ -56,6 +56,9 @@ news:
   feature_ttl_hours: 24        # 新闻超过此时长视为过期, 数值归零
   feature_halflife_hours: 6    # 新闻影响的指数衰减半衰期
   feature_ema_span: 12         # 新闻情绪 EMA 平滑跨度(bar)
+  # 新闻特征覆盖率(has_recent_news 均值)低于此阈值 → warn + degradations(不改数值);
+  # 长回测默认 use_history=false 时易触发。设 0 关闭告警。
+  min_coverage_warn: 0.05
   # 来源权威分层(tier 越小越权威)对应的权重
   tier_weights: {1: 1.0, 2: 0.7, 3: 0.4, 4: 0.15}
   # 情绪打分后端: lexicon / cryptobert / finbert / chinese / multilingual(中英双模型融合)
@@ -231,5 +234,6 @@ risk:
   daily_max_drawdown: 0.05 # 日内熔断: 当日回撤触及此比例后, 当日剩余事件停止开仓(回测已实现); 设 0 关闭
   # 往返成本分数(相对仓位名义); null 则 resolve_roundtrip_cost → 2*(fee+slip), 回测与 decide 共用
   roundtrip_cost_frac: null
-  # 执行假设: close_fill=用当根收盘特征并按该收盘成交(研究默认; 实盘通常更接近下一根开盘)
+  # 执行假设: 当前**仅实现** close_fill(当根收盘特征+收盘成交)。
+  # 写 next_open 等未实现值会在 Config.load / decide 报错, 防止名实不符导致研究偏乐观。
   execution_assumption: close_fill

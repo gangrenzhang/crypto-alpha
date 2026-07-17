@@ -1,7 +1,10 @@
 """CPCV 严谨评估: 生成多条回测路径的夏普分布 + 去偏夏普(DSR) + 过拟合概率(PBO)。
 
-与主训练路径一致: 测试折概率先经**训练折 OOF 拟合的校准器**再回测;
-单专家与集成分支的保形均用**训练折 OOF**(禁用 in-sample 概率拟合保形)。
+与主训练路径 / 部署口径对齐:
+- 测试折概率经**训练折 OOF**拟合的校准器再回测;
+- 校准器与保形器在训练折 OOF 上**时间切分**(复用 ``fit_deploy_calibrator_and_conformal``),
+  禁止「同一批 OOF 既 fit 校准又 fit 保形」破坏 split-conformal 独立性;
+- 禁用训练集内概率(in-sample)拟合保形。
 """
 from __future__ import annotations
 
@@ -10,7 +13,7 @@ import pandas as pd
 
 from ..validation.cpcv import CombinatorialPurgedCV
 from ..validation.purged_kfold import PurgedKFold
-from ..calibration.calibrate import ProbabilityCalibrator
+from ..calibration.calibrate import fit_deploy_calibrator_and_conformal
 from ..backtest.engine import (
     backtest_events,
     deflated_sharpe_ratio,
@@ -18,24 +21,15 @@ from ..backtest.engine import (
 )
 
 
-def _calibrator_from_oof(
-    oof: np.ndarray, y: np.ndarray, method: str,
-) -> ProbabilityCalibrator | None:
-    m = ~np.isnan(oof)
-    if m.sum() < 20 or len(np.unique(y[m])) < 2:
-        return None
-    return ProbabilityCalibrator(method=method).fit(oof[m], y[m])
-
-
-def _expert_oof_calibrator(
+def _expert_oof_probs(
     expert, X: pd.DataFrame, y: np.ndarray, t1: pd.Series,
-    sample_weight: np.ndarray | None, method: str,
+    sample_weight: np.ndarray | None,
     n_splits: int, embargo_pct: float,
-) -> tuple[object, ProbabilityCalibrator | None, np.ndarray]:
-    """在训练集上产出专家 OOF → 拟合校准器, 再全量重训专家供测试折推理。
+) -> tuple[object, np.ndarray]:
+    """在训练集上产出专家 OOF, 再全量重训专家供测试折推理。
 
-    返回 (fitted_full, calibrator|None, oof_probs)。oof 供保形拟合, 避免用
-    训练集内概率破坏 split-conformal 覆盖语义。
+    返回 (fitted_full, oof_probs)。校准/保形由调用方用时间切分拟合
+    (``fit_deploy_calibrator_and_conformal``), 本函数不再附带校准器。
 
     伪 OOF 专家(pseudo_oof): fit 一次后按折填充分数(模型未折内重训), 仍返回
     折结构数组供相对比较; 调用方应记入 caveats。
@@ -49,18 +43,70 @@ def _expert_oof_calibrator(
         prob_all = np.asarray(full.predict_proba(X), dtype=float)
         for _tr, te in pkf.split(X):
             oof[te] = prob_all[te]
-        cal = _calibrator_from_oof(oof, y, method)
-        return full, cal, oof
+        return full, oof
 
     for tr, te in pkf.split(X):
         clone = expert.clone()
         w = None if sample_weight is None else sample_weight[tr]
         clone.fit(X.iloc[tr], y[tr], sample_weight=w)
         oof[te] = clone.predict_proba(X.iloc[te])
-    cal = _calibrator_from_oof(oof, y, method)
     full = expert.clone()
     full.fit(X, y, sample_weight=sample_weight)
-    return full, cal, oof
+    return full, oof
+
+
+# 兼容旧测试/外部引用名
+def _expert_oof_calibrator(
+    expert, X: pd.DataFrame, y: np.ndarray, t1: pd.Series,
+    sample_weight: np.ndarray | None, method: str,
+    n_splits: int, embargo_pct: float,
+) -> tuple[object, object | None, np.ndarray]:
+    """兼容包装: 返回 (fitted, cal|None, oof); cal 来自时间切分部署口径。
+
+    新代码请优先用 ``_expert_oof_probs`` + ``_apply_deploy_cal_conformal``。
+    """
+    fitted, oof = _expert_oof_probs(
+        expert, X, y, t1, sample_weight, n_splits, embargo_pct,
+    )
+    m = ~np.isnan(oof)
+    if m.sum() < 20 or len(np.unique(y[m])) < 2:
+        return fitted, None, oof
+    cal, _conf = fit_deploy_calibrator_and_conformal(
+        oof, y, method=method, alpha=0.1, conformal_frac=0.3,
+    )
+    return fitted, cal, oof
+
+
+def _apply_deploy_cal_conformal(
+    oof: np.ndarray,
+    y: np.ndarray,
+    p_test: np.ndarray,
+    *,
+    method: str,
+    alpha: float,
+    conformal_frac: float,
+    min_oof: int = 20,
+) -> tuple[np.ndarray, np.ndarray]:
+    """用训练折 OOF 按部署口径时间切分拟合校准+保形, 变换测试折概率。
+
+    返回 (校准后测试概率, confident 掩码)。
+    OOF 不足或单类时: 概率原样返回, confident 全 True(仅由概率阈值把关)。
+    """
+    p_test = np.asarray(p_test, dtype=float)
+    conf_mask = np.ones(len(p_test), dtype=bool)
+    m = ~np.isnan(np.asarray(oof, dtype=float))
+    yy = np.asarray(y)
+    if m.sum() < min_oof or len(np.unique(yy[m])) < 2:
+        return p_test, conf_mask
+    try:
+        cal, conf = fit_deploy_calibrator_and_conformal(
+            oof, yy, method=method, alpha=alpha, conformal_frac=conformal_frac,
+        )
+        p_cal = cal.transform(p_test)
+        conf_mask = np.asarray(conf.predict_set(p_cal)["confident"], dtype=bool)
+        return p_cal, conf_mask
+    except Exception:
+        return p_test, conf_mask
 
 
 def cpcv_report(cfg, ds, build_experts_fn) -> dict:
@@ -73,14 +119,13 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     vcfg = cfg["validation"]
     ccfg = cfg["calibration"]
     method = ccfg.get("method", "isotonic")
+    conformal_frac = float(ccfg.get("conformal_frac", 0.3))
     cv = CombinatorialPurgedCV(
         n_splits=int(vcfg["n_splits"]),
         n_test_groups=int(vcfg["n_test_groups"]),
         t1=ds.t1,
         embargo_pct=float(vcfg["embargo_pct"]),
     )
-
-    from ..calibration.calibrate import ConformalBinary
 
     payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
     prices = ds.panel["close"] if "close" in ds.panel.columns else None
@@ -107,27 +152,14 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
             ]
         col_perf = {}
         for e in experts:
-            fitted, cal, oof_tr = _expert_oof_calibrator(
-                e, Xtr, ytr, t1tr, wtr, method, inner_splits, embargo,
+            fitted, oof_tr = _expert_oof_probs(
+                e, Xtr, ytr, t1tr, wtr, inner_splits, embargo,
             )
-            p = fitted.predict_proba(Xte)
-            if cal is not None:
-                p = cal.transform(p)
-            # 保形用训练折 OOF(与集成分支 / 主路径交叉拟合口径一致), 禁用 in-sample
-            conf_mask = np.ones(len(p), dtype=bool)
-            m_oof = ~np.isnan(oof_tr)
-            if (
-                cal is not None
-                and m_oof.sum() >= 30
-                and len(np.unique(ytr[m_oof])) >= 2
-            ):
-                try:
-                    cfit = ConformalBinary(alpha=conf_alpha).fit(
-                        cal.transform(oof_tr[m_oof]), ytr[m_oof],
-                    )
-                    conf_mask = cfit.predict_set(p)["confident"]
-                except Exception:
-                    pass
+            p_raw = fitted.predict_proba(Xte)
+            p, conf_mask = _apply_deploy_cal_conformal(
+                oof_tr, ytr, p_raw,
+                method=method, alpha=conf_alpha, conformal_frac=conformal_frac,
+            )
             bt = backtest_events(
                 ds.events.iloc[te], p, cfg["backtest"], cfg["risk"], payoff, prices,
                 confident=conf_mask,
@@ -136,21 +168,12 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
 
         ens = StackingEnsemble([e.clone() for e in experts], cfg["ensemble"], seed=cfg.seed)
         ens.fit(Xtr, ytr, t1tr, sample_weight=wtr, n_splits=inner_splits, embargo_pct=embargo)
-        pe = ens.predict_proba(Xte)
+        pe_raw = ens.predict_proba(Xte)
         oof_e = ens.oof_proba()
-        cal_e = _calibrator_from_oof(oof_e, ytr, method)
-        if cal_e is not None:
-            pe = cal_e.transform(pe)
-        conf_e = np.ones(len(pe), dtype=bool)
-        m_oof = ~np.isnan(oof_e)
-        if cal_e is not None and m_oof.sum() >= 30 and len(np.unique(ytr[m_oof])) >= 2:
-            try:
-                cfit = ConformalBinary(alpha=conf_alpha).fit(
-                    cal_e.transform(oof_e[m_oof]), ytr[m_oof],
-                )
-                conf_e = cfit.predict_set(pe)["confident"]
-            except Exception:
-                pass
+        pe, conf_e = _apply_deploy_cal_conformal(
+            oof_e, ytr, pe_raw,
+            method=method, alpha=conf_alpha, conformal_frac=conformal_frac,
+        )
         bte = backtest_events(
             ds.events.iloc[te], pe, cfg["backtest"], cfg["risk"], payoff, prices,
             confident=conf_e,
@@ -191,6 +214,11 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     caveats.append(
         f"评估单元为 CPCV **组合**(n_combos={n_combos}), 不是拼接后的完整回测路径; "
         f"理论路径数 n_paths_theoretical={cv.n_paths} 仅供参考。DSR/夏普分布基于相关组合, 偏乐观。"
+    )
+    caveats.append(
+        f"组合内校准+保形与部署一致: 训练折 OOF 时间切分"
+        f"(conformal_frac={conformal_frac}); 有效 OOF<40 时同批回退"
+        f"(与 fit_deploy_calibrator_and_conformal 相同)。"
     )
     if pbo_warning:
         caveats.append(
@@ -233,5 +261,6 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         "perf_matrix": perf_matrix,
         "calibrated": True,
         "conformal": True,
+        "conformal_time_split": True,
         "data_source": getattr(ds, "data_source", None),
     }

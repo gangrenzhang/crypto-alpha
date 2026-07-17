@@ -89,6 +89,18 @@ def run_all(cfg: Config, symbols: list[str], experts: list[str],
         cfg.raw["experts"]["enabled"] = prev_enabled
 
 
+# --------------------------------------------------------------------------
+# 研究口径说明(看板 / summary 共用, 防止 OOF 夏普被当成可部署证明)
+# --------------------------------------------------------------------------
+RESEARCH_DISCLAIMERS: list[str] = [
+    "主面板指标基于 Purged nested OOF，不是 walk-forward 实盘滚动再训练曲线；"
+    "上线前须另做滚动评估。",
+    "CPCV（若开启）评估单元是相关组合(combo)，不是拼接后的完整路径；"
+    "请阅读 caveats；DSR/PBO 在配置数少或 dsr_n_trials 低估时偏乐观。",
+    "execution_assumption 当前仅实现 close_fill；未实现取值会在加载配置时报错。",
+]
+
+
 def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
     results: dict = {
         "meta": {
@@ -102,6 +114,7 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
             "news_mode": ("历史库" if cfg["news"].get("use_history") else
                           ("合成" if cfg["news"].get("use_synthetic", False) else "实时")),
             "do_cpcv": do_cpcv,
+            "research_disclaimers": list(RESEARCH_DISCLAIMERS),
         },
         "symbols": {},
     }
@@ -135,28 +148,45 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
         }
         print(f"  集成 AUC={trained['report'].get('auc', float('nan')):.3f} "
               f"Sharpe={trained['backtest']['metrics']['sharpe']:.3f} "
-              f"信号={decision['signal']} P={decision['win_probability']:.3f}")
+              f"信号={decision['signal']} "
+              f"P={_fmt_prob(decision.get('win_probability'))}")
 
         if do_cpcv:
             try:
                 cp = cpcv_report(cfg, ds, build_experts)
                 entry["cpcv"] = {
+                    "evaluation_unit": cp.get("evaluation_unit", "combo"),
                     "n_paths": cp["n_paths"],
+                    "n_combos": cp.get("n_combos", cp["n_paths"]),
+                    "n_paths_theoretical": cp.get("n_paths_theoretical"),
                     "mean_sharpe": cp["mean_sharpe"],
                     "std_sharpe": cp["std_sharpe"],
                     "deflated_sharpe": cp["deflated_sharpe"],
                     "pbo": cp["pbo"],
+                    "pbo_warning": bool(cp.get("pbo_warning", False)),
+                    "caveats": list(cp.get("caveats") or []),
                     "config_sharpes": dict(zip(
                         cp["config_names"], [float(x) for x in cp["perf_matrix"].mean(1)])),
                 }
                 print(f"  CPCV DSR={cp['deflated_sharpe']:.3f} PBO={cp['pbo']:.3f} "
-                      f"(路径数={cp['n_paths']})")
+                      f"(组合数={cp.get('n_combos', cp['n_paths'])}, "
+                      f"unit={cp.get('evaluation_unit', 'combo')})")
             except Exception as e:
                 print(f"[warn] CPCV 失败: {e}")
                 entry["cpcv"] = None
 
         results["symbols"][symbol] = entry
     return results
+
+
+def _fmt_prob(v) -> str:
+    """决策概率可能为 None(如 CUSUM HOLD), 避免 format 崩溃。"""
+    try:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return "—"
+        return f"{float(v):.3f}"
+    except Exception:
+        return "—"
 
 
 def _downsample_equity(equity, n: int = 180) -> dict:
@@ -225,6 +255,10 @@ th{color:var(--muted);font-weight:500}tr:hover td{background:#0b1220}
 .pos{color:var(--good)}.neg{color:var(--bad)}
 img{width:100%;border-radius:8px;margin-top:8px;background:#fff}
 .foot{color:var(--muted);font-size:12px;margin-top:30px;text-align:center}
+.disclaimer{background:#3a2a0b;border:1px solid var(--warn);border-radius:10px;
+padding:12px 14px;margin:14px 0;font-size:13px;color:#fde68a;line-height:1.55}
+.disclaimer b{color:#fbbf24}.disclaimer ul{margin:8px 0 0 18px;padding:0}
+.caveat{color:var(--warn);font-size:12px;margin-top:8px}
 """
 
 
@@ -255,6 +289,13 @@ def build_dashboard(results: dict, cfg: Config) -> str:
                  f"数据: {m['data_mode']} · 新闻: {m['news_mode']} · seed: {m['seed']} · "
                  f"CPCV: {'开' if m['do_cpcv'] else '关'}</div>")
 
+    # 研究口径 disclaimer: OOF ≠ walk-forward; CPCV caveats
+    disclaimers = m.get("research_disclaimers") or RESEARCH_DISCLAIMERS
+    parts.append("<div class='disclaimer'><b>研究口径说明（必读）</b><ul>")
+    for line in disclaimers:
+        parts.append(f"<li>{html.escape(line)}</li>")
+    parts.append("</ul></div>")
+
     parts.append("<div class='badges'>")
     for e in m["experts_run"]:
         parts.append(f"<span class='badge'>✓ {html.escape(e)}</span>")
@@ -267,7 +308,8 @@ def build_dashboard(results: dict, cfg: Config) -> str:
         parts.append(_render_symbol(d))
 
     parts.append("<div class='foot'>本面板由 scripts/10_run_all.py 生成 · "
-                 "指标基于无泄漏 OOF 概率 · DSR/PBO 越好越可信 · 仅供研究, 非投资建议</div>")
+                 "主指标=Purged nested OOF（≠ walk-forward）· "
+                 "CPCV 为相关组合评估（见 caveats）· 仅供研究, 非投资建议</div>")
     parts.append("</div></body></html>")
     return "".join(parts)
 
@@ -325,14 +367,25 @@ def _render_symbol(d: dict) -> str:
     # CPCV
     cp = d.get("cpcv")
     if cp:
+        unit = cp.get("evaluation_unit", "combo")
+        n_show = cp.get("n_combos", cp.get("n_paths", "—"))
         p.append("<div class='card'><div class='grid'>")
-        p.append(_kpi("回测路径数", str(cp["n_paths"])))
-        p.append(_kpi("路径夏普均值", _fmt(cp["mean_sharpe"]), cls=_cls(cp["mean_sharpe"])))
+        p.append(_kpi(f"评估单元", html.escape(str(unit))))
+        p.append(_kpi("组合数", str(n_show)))
+        p.append(_kpi("组合夏普均值", _fmt(cp["mean_sharpe"]), cls=_cls(cp["mean_sharpe"])))
         p.append(_kpi("夏普标准差", _fmt(cp["std_sharpe"])))
         p.append(_kpi("去偏夏普 DSR", _fmt(cp["deflated_sharpe"]), best=True))
         p.append(_kpi("过拟合概率 PBO", _fmt(cp["pbo"]),
                       cls=("pos" if cp["pbo"] < 0.5 else "neg")))
         p.append("</div>")
+        if cp.get("pbo_warning"):
+            p.append("<div class='caveat'>PBO 配置数偏少，统计力不足，数值仅供参考。</div>")
+        caveats = cp.get("caveats") or []
+        if caveats:
+            p.append("<div class='caveat'><b>CPCV caveats</b><ul>")
+            for c in caveats:
+                p.append(f"<li>{html.escape(str(c))}</li>")
+            p.append("</ul></div>")
         p.append("<table><thead><tr><th>配置</th><th>平均夏普</th></tr></thead><tbody>")
         for cn, sv in cp["config_sharpes"].items():
             p.append(f"<tr><td>{html.escape(cn)}</td><td class='{_cls(sv)}'>{_fmt(sv)}</td></tr>")

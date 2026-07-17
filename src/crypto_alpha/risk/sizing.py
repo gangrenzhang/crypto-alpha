@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import numpy as np
 
+#: 已实现的成交假设。未列入者不得写入配置/决策 JSON(防名实不符偏乐观)。
+SUPPORTED_EXECUTION_ASSUMPTIONS: frozenset[str] = frozenset({"close_fill"})
+
 
 def resolve_roundtrip_cost(
     risk_cfg: dict, fee: float = 0.0, slip: float = 0.0,
@@ -22,6 +25,27 @@ def resolve_roundtrip_cost(
     if "roundtrip_cost_frac" not in risk_cfg or risk_cfg["roundtrip_cost_frac"] is None:
         return float(2.0 * (fee + slip))
     return float(risk_cfg["roundtrip_cost_frac"])
+
+
+def resolve_execution_assumption(risk_cfg: dict) -> str:
+    """解析并校验 ``execution_assumption``; 未实现取值直接报错。
+
+    当前仅 ``close_fill``(当根收盘特征 + 按该收盘成交)。``next_open`` 等尚未接入
+    特征移位/成交路径, 若静默写进 JSON 会造成「配置已切换」的假象。
+    ``None`` / 空串回退为 ``close_fill``。
+    """
+    raw = risk_cfg.get("execution_assumption", "close_fill")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return "close_fill"
+    s = str(raw).strip().lower()
+    if s not in SUPPORTED_EXECUTION_ASSUMPTIONS:
+        supported = ", ".join(sorted(SUPPORTED_EXECUTION_ASSUMPTIONS))
+        raise ValueError(
+            f"execution_assumption={raw!r} 尚未实现; 当前仅支持: {supported}。"
+            "请保持 close_fill, 或先实现对应成交/特征路径后再开放该配置"
+            "（避免研究结论因名实不符而系统性偏乐观）。"
+        )
+    return s
 
 
 def kelly_fraction(p: float, payoff: float, cost: float = 0.0) -> float:
@@ -65,6 +89,7 @@ def decide(
     - HOLD 时不输出 stop_loss/take_profit(避免被误当作可执行挂单)。
     - pt_sl: 与 labeling.pt_sl 一致的 (止盈倍数, 止损倍数); 缺省时回退 risk.atr_stop_mult。
     - fee/slip: 单边成本分数; 仅当 ``roundtrip_cost_frac`` 为 null 时用于回退 2*(fee+slip)。
+    - execution_assumption: 经 ``resolve_execution_assumption`` 校验; 未实现取值直接报错。
     """
     if pt_sl is not None:
         pt_mult, sl_mult = float(pt_sl[0]), float(pt_sl[1])
@@ -75,6 +100,7 @@ def decide(
         payoff = pt_mult / max(sl_mult, 1e-6)
 
     rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip)
+    exec_assumption = resolve_execution_assumption(risk_cfg)
 
     signal = "HOLD"
     size = 0.0
@@ -106,7 +132,7 @@ def decide(
         "confident": bool(confident),
         "pt_mult": pt_mult,
         "sl_mult": sl_mult,
-        "execution_assumption": str(risk_cfg.get("execution_assumption", "close_fill")),
+        "execution_assumption": exec_assumption,
         "sizing_note": "confidence_to_position_heuristic",
     }
     if signal == "HOLD":

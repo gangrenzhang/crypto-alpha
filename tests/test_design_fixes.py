@@ -340,10 +340,13 @@ def test_side_in_feature_cols_and_gbdt():
 
 
 def test_expert_oof_calibrator_conformal_uses_oof_not_insample():
-    """CPCV 单专家路径: 保形应基于 OOF 分数, 且返回三元组含 oof。"""
-    from crypto_alpha.pipeline.evaluate import _expert_oof_calibrator
+    """CPCV 单专家路径: OOF + 部署口径时间切分校准/保形(非 in-sample 概率)。"""
+    from crypto_alpha.pipeline.evaluate import (
+        _expert_oof_probs,
+        _apply_deploy_cal_conformal,
+        _expert_oof_calibrator,
+    )
     from crypto_alpha.experts.gbdt import GBDTExpert
-    from crypto_alpha.calibration.calibrate import ConformalBinary
 
     n = 80
     idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
@@ -355,18 +358,149 @@ def test_expert_oof_calibrator_conformal_uses_oof_not_insample():
         {"n_estimators": 30, "num_leaves": 7, "min_child_samples": 5},
         feature_cols=["f1", "side"], seed=0,
     )
-    fitted, cal, oof = _expert_oof_calibrator(
+    fitted, oof = _expert_oof_probs(
+        expert, X, y, t1, None, n_splits=4, embargo_pct=0.0,
+    )
+    assert oof.shape == (n,)
+    assert np.isfinite(oof).sum() >= 40
+    p_raw = fitted.predict_proba(X.iloc[-10:])
+    p_cal, flags = _apply_deploy_cal_conformal(
+        oof, y, p_raw, method="sigmoid", alpha=0.2, conformal_frac=0.3,
+    )
+    assert p_cal.shape == (10,)
+    assert flags.shape == (10,)
+    assert flags.dtype == bool
+    # 兼容包装仍返回三元组
+    fitted2, cal, oof2 = _expert_oof_calibrator(
         expert, X, y, t1, None, method="sigmoid", n_splits=4, embargo_pct=0.0,
     )
     assert cal is not None
-    assert oof.shape == (n,)
-    assert np.isfinite(oof).sum() >= 40
-    # 用 OOF 拟合保形不应抛错, 且与「全量 in-sample 概率」分布可区分用途
-    m = ~np.isnan(oof)
-    conf = ConformalBinary(alpha=0.2).fit(cal.transform(oof[m]), y[m])
-    p_te = cal.transform(fitted.predict_proba(X.iloc[-10:]))
-    flags = conf.predict_set(p_te)["confident"]
-    assert flags.shape == (10,)
+    assert oof2.shape == (n,)
+    assert fitted2 is not None
+
+
+def test_cpcv_cal_conformal_time_split_differs_from_same_batch():
+    """时间切分保形与「同批 OOF fit 校准+保形」在足够样本下应可产生不同阈值行为。"""
+    from crypto_alpha.calibration.calibrate import (
+        ProbabilityCalibrator,
+        ConformalBinary,
+        fit_deploy_calibrator_and_conformal,
+    )
+    from crypto_alpha.pipeline.evaluate import _apply_deploy_cal_conformal
+
+    rng = np.random.default_rng(7)
+    n = 120
+    # 构造随时间漂移的概率, 使切分前后分布不同 → qhat 更可能分叉
+    t = np.linspace(0, 1, n)
+    oof = np.clip(0.35 + 0.4 * t + rng.normal(0, 0.08, n), 0.02, 0.98)
+    y = (rng.uniform(size=n) < oof).astype(int)
+    p_te = np.clip(rng.uniform(0.2, 0.8, size=15), 0.01, 0.99)
+
+    p_split, flags_split = _apply_deploy_cal_conformal(
+        oof, y, p_te, method="isotonic", alpha=0.15, conformal_frac=0.3,
+    )
+    cal_all = ProbabilityCalibrator("isotonic").fit(oof, y)
+    conf_all = ConformalBinary(alpha=0.15).fit(cal_all.transform(oof), y)
+    p_same = cal_all.transform(p_te)
+    flags_same = conf_all.predict_set(p_same)["confident"]
+
+    cal_dep, conf_dep = fit_deploy_calibrator_and_conformal(
+        oof, y, method="isotonic", alpha=0.15, conformal_frac=0.3,
+    )
+    # _apply 与 fit_deploy 同口径(本回归的硬约束)
+    assert np.allclose(p_split, cal_dep.transform(p_te))
+    assert np.array_equal(flags_split, conf_dep.predict_set(p_split)["confident"])
+    # 同批拟合相对时间切分: 至少校准后概率或 qhat/旗标之一应可分(防回归回同批)
+    diverged = (
+        conf_all.qhat_ != conf_dep.qhat_
+        or not np.allclose(p_same, p_split)
+        or not np.array_equal(flags_same, flags_split)
+    )
+    assert diverged, "时间切分与同批拟合结果完全一致, 切分可能未生效"
+
+
+def test_align_feature_schema_missing_forces_hold_payload():
+    """缺列补 0 仅用于防 KeyError; hold_for_schema_mismatch 不得继续开仓字段。"""
+    from crypto_alpha.pipeline.run import align_feature_schema, hold_for_schema_mismatch
+
+    idx = pd.date_range("2023-01-01", periods=3, freq="1h", tz="UTC")
+    feat = pd.DataFrame({"a": [1.0, 2.0, 3.0]}, index=idx)
+    aligned, missing = align_feature_schema(feat, ["a", "tf4h_ret_1", "side"])
+    assert missing == ["tf4h_ret_1", "side"]
+    assert "tf4h_ret_1" in aligned.columns and float(aligned["tf4h_ret_1"].iloc[0]) == 0.0
+    # 已有列数值不变
+    assert list(aligned["a"].values) == [1.0, 2.0, 3.0]
+
+    d = hold_for_schema_mismatch(
+        symbol="BTC/USDT", missing_cols=missing,
+        risk_cfg={"execution_assumption": "close_fill"},
+        timestamp=idx[-1], data_source="cache",
+    )
+    assert d["signal"] == "HOLD"
+    assert d["reason"] == "feature_schema_mismatch"
+    assert d["stop_loss"] is None and d["take_profit"] is None
+    assert d["suggested_position_pct"] == 0.0
+    assert d["confident"] is False
+    assert any("feature_schema_mismatch" in x for x in d["degradations"])
+    assert d["missing_feature_cols"] == missing
+
+
+def test_decide_live_schema_mismatch_holds(monkeypatch):
+    """decide_live 在辅特征列缺失时强制 HOLD, 不调用 ensemble 推理。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.serve.service import DecisionService, ModelBundle
+
+    cfg = Config.load()
+    svc = DecisionService(cfg, notifier=type("N", (), {"send": lambda self, m: None})())
+
+    class _BoomEnsemble:
+        experts = []
+
+        def predict_proba(self, X):
+            raise AssertionError("schema 不匹配时不应推理")
+
+    class _BoomCal:
+        def transform(self, p):
+            raise AssertionError("schema 不匹配时不应校准")
+
+    fcols = ["ret_14", "tf4h_ret_1", "side"]
+    svc.models["BTC/USDT"] = ModelBundle(
+        ensemble=_BoomEnsemble(),
+        calibrator=_BoomCal(),
+        feature_cols=fcols,
+        conformal=None,
+        cusum_full_sampling=True,
+        data_source="cache",
+    )
+
+    idx = pd.date_range("2023-01-01", periods=5, freq="1h", tz="UTC")
+    raw = pd.DataFrame({
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1.0,
+    }, index=idx)
+    raw.attrs["data_source"] = "cache"
+
+    def _fake_load(cfg, symbol):
+        return raw
+
+    def _fake_build(raw_df, cfg, symbol=None):
+        # 故意不生成 tf4h_* —— 模拟辅周期加载失败
+        out = raw_df.copy()
+        out["ret_14"] = 0.01
+        out["atr_14"] = 1.0
+        return out
+
+    def _fake_news(feat, cfg, symbol):
+        return feat
+
+    monkeypatch.setattr("crypto_alpha.serve.service.load_symbol_data", _fake_load)
+    monkeypatch.setattr("crypto_alpha.serve.service.build_feature_matrix", _fake_build)
+    monkeypatch.setattr("crypto_alpha.serve.service.add_news_features", _fake_news)
+
+    d = svc.decide_live("BTC/USDT")
+    assert d is not None
+    assert d["signal"] == "HOLD"
+    assert d["reason"] == "feature_schema_mismatch"
+    assert "tf4h_ret_1" in d["missing_feature_cols"]
 
 
 def test_calib_cross_fit_fallback_records_degradation():
@@ -401,6 +535,102 @@ def test_calib_cross_fit_fallback_records_degradation():
         ds.sample_weight = ds.sample_weight[:24]
     out = train_and_validate(cfg, ds)
     assert any("calib_cross_fit_fallback_insample" in d for d in out["degradations"])
+
+
+def test_execution_assumption_rejects_unimplemented():
+    """未实现的 execution_assumption 必须报错, 不得静默写入决策 JSON。"""
+    from crypto_alpha.risk.sizing import (
+        decide,
+        resolve_execution_assumption,
+        SUPPORTED_EXECUTION_ASSUMPTIONS,
+    )
+
+    assert resolve_execution_assumption({}) == "close_fill"
+    assert resolve_execution_assumption({"execution_assumption": None}) == "close_fill"
+    assert "close_fill" in SUPPORTED_EXECUTION_ASSUMPTIONS
+    with pytest.raises(ValueError, match="尚未实现"):
+        resolve_execution_assumption({"execution_assumption": "next_open"})
+    with pytest.raises(ValueError, match="尚未实现"):
+        decide(
+            0.7, 1, 100.0, 2.0,
+            {"kelly_fraction": 0.5, "max_position_pct": 0.3, "execution_assumption": "next_open"},
+            pt_sl=(1.5, 1.5),
+        )
+    d = decide(
+        0.7, 1, 100.0, 2.0,
+        {"kelly_fraction": 0.5, "max_position_pct": 0.3, "execution_assumption": "close_fill"},
+        pt_sl=(1.5, 1.5),
+    )
+    assert d["execution_assumption"] == "close_fill"
+
+
+def test_news_sparse_coverage_records_degradation():
+    """as_feature 开启但无新闻时须 warn 标记, 且不改动「填 0」数值口径。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.features.news_features import add_news_features
+
+    cfg = Config.load()
+    cfg.raw["news"]["as_feature"] = True
+    cfg.raw["news"]["use_synthetic"] = False
+    cfg.raw["news"]["use_history"] = False
+    cfg.raw["news"]["min_coverage_warn"] = 0.05
+    # 强制走空面板: 清空 sources 并避免合成
+    cfg.raw["news"]["sources"] = []
+
+    idx = pd.date_range("2023-01-01", periods=48, freq="1h", tz="UTC")
+    feat = pd.DataFrame({"close": np.linspace(100, 110, 48)}, index=idx)
+
+    # monkeypatch load_news_panel → 空
+    import crypto_alpha.data.news as news_mod
+
+    orig = news_mod.load_news_panel
+    news_mod.load_news_panel = lambda *a, **k: None
+    try:
+        out = add_news_features(feat.copy(), cfg, "BTC/USDT")
+    finally:
+        news_mod.load_news_panel = orig
+
+    assert float(out["has_recent_news"].mean()) == 0.0
+    assert out.attrs.get("news_feature_coverage", 1.0) == 0.0
+    deg = out.attrs.get("degradations") or []
+    assert any("news_features_sparse" in d for d in deg)
+
+    # 关闭告警阈值后不写 degradations
+    cfg.raw["news"]["min_coverage_warn"] = 0.0
+    news_mod.load_news_panel = lambda *a, **k: None
+    try:
+        out2 = add_news_features(feat.copy(), cfg, "BTC/USDT")
+    finally:
+        news_mod.load_news_panel = orig
+    assert not (out2.attrs.get("degradations") or [])
+
+
+def test_dashboard_includes_research_disclaimers():
+    """HTML 面板必须包含 OOF≠WF / CPCV 口径说明。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.pipeline.report import RESEARCH_DISCLAIMERS, build_dashboard
+
+    cfg = Config.load()
+    results = {
+        "meta": {
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "experts_requested": ["gbdt"],
+            "experts_run": ["gbdt"],
+            "experts_skipped": {},
+            "seed": 42,
+            "data_mode": "合成",
+            "news_mode": "合成",
+            "do_cpcv": False,
+            "research_disclaimers": list(RESEARCH_DISCLAIMERS),
+        },
+        "symbols": {},
+    }
+    html_out = build_dashboard(results, cfg)
+    assert "研究口径说明" in html_out
+    assert "walk-forward" in html_out
+    assert "close_fill" in html_out
+    for line in RESEARCH_DISCLAIMERS:
+        assert line[:20] in html_out or "OOF" in html_out
 
 
 if __name__ == "__main__":

@@ -27,6 +27,10 @@ class Config:
         cfg_path = Path(path) if path else root / "config" / "config.yaml"
         with open(cfg_path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
+        # 启动期 fail-fast: 未实现的 execution_assumption 不得静默进入流水线
+        from .risk.sizing import resolve_execution_assumption
+
+        resolve_execution_assumption((raw or {}).get("risk") or {})
         return cls(raw=raw, root=root)
 
     def __getitem__(self, key: str) -> Any:

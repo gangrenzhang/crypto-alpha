@@ -68,6 +68,10 @@ def prepare_dataset(cfg: Config, symbol: str) -> Dataset:
     feat["high"] = raw["high"] if "high" in raw.columns else raw["close"]
     feat["low"] = raw["low"] if "low" in raw.columns else raw["close"]
     feat = add_news_features(feat, cfg, symbol)  # 新闻数值特征并入(供所有专家共享)
+    # 新闻覆盖率告警等写入 feat.attrs.degradations, 汇入 Dataset(不改特征数值)
+    for d in list(getattr(feat, "attrs", {}).get("degradations") or []):
+        if d not in degradations:
+            degradations.append(d)
 
     labels = build_meta_labels(feat, cfg)
     full_sampling = bool(getattr(labels, "attrs", {}).get("cusum_full_sampling", False))
@@ -242,6 +246,60 @@ def _is_tradable_event(cfg: Config, panel: pd.DataFrame, ts, full_sampling: bool
     return ts in events
 
 
+def align_feature_schema(
+    feat: pd.DataFrame, feature_cols: list[str],
+) -> tuple[pd.DataFrame, list[str]]:
+    """对齐训练期特征列 schema: 缺失列以 0.0 补齐, 返回 (面板, 缺失列名)。
+
+    仅做**列存在性**对齐, 不改已有列数值。调用方若发现 missing 非空, 应强制 HOLD
+    (勿在分布偏移的特征上继续推理开仓)——与 MTF 冷启动填 0 的训练语义一致, 但实盘
+    「整列缺失」意味着辅周期/新闻装配失败, 与训练完整面板不同分布。
+    """
+    missing = [c for c in feature_cols if c not in feat.columns]
+    if not missing:
+        return feat, []
+    out = feat.copy()
+    for c in missing:
+        out[c] = 0.0
+    return out, missing
+
+
+def hold_for_schema_mismatch(
+    *,
+    symbol: str,
+    missing_cols: list[str],
+    risk_cfg: dict,
+    timestamp=None,
+    data_source: str | None = None,
+) -> dict:
+    """特征 schema 与训练不一致时的安全 HOLD(不推理、不吐 SL/TP)。"""
+    from ..risk.sizing import resolve_execution_assumption
+
+    tag = f"feature_schema_mismatch({','.join(missing_cols[:12])}"
+    if len(missing_cols) > 12:
+        tag += f",+{len(missing_cols) - 12}more"
+    tag += ")"
+    out = {
+        "signal": "HOLD",
+        "symbol": symbol,
+        "reason": "feature_schema_mismatch",
+        "win_probability": None,
+        "suggested_position_pct": 0.0,
+        "stop_loss": None,
+        "take_profit": None,
+        "confident": False,
+        "execution_assumption": resolve_execution_assumption(risk_cfg),
+        "degradations": [tag],
+        "missing_feature_cols": list(missing_cols),
+    }
+    if timestamp is not None:
+        out["timestamp"] = str(timestamp)
+    if data_source is not None:
+        out["data_source"] = data_source
+        out["data_mode_zh"] = _DATA_MODE_ZH.get(data_source, data_source)
+    return out
+
+
 def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     """对**最新一根特征完整的 bar** 输出结构化交易决策。
 
@@ -264,6 +322,18 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     if "side" in fcols:
         panel = panel.copy()
         panel["side"] = side_ser.astype(float)
+    # 防御: 训练面板理论上已含全部 feature_cols; 若列缺失则 HOLD(不推理)
+    panel, missing = align_feature_schema(panel, fcols)
+    if missing:
+        print(
+            f"[warn] {ds.symbol}: 特征列与训练 schema 不一致, 强制 HOLD; "
+            f"missing={missing[:8]}{'...' if len(missing) > 8 else ''}"
+        )
+        return hold_for_schema_mismatch(
+            symbol=ds.symbol, missing_cols=missing, risk_cfg=cfg["risk"],
+            timestamp=panel.index[-1] if len(panel) else None,
+            data_source=ds.data_source,
+        )
     valid = panel[fcols].notna().all(axis=1)
     if not valid.any():
         return {"signal": "HOLD", "symbol": ds.symbol, "reason": "no_valid_feature_bar"}
@@ -273,6 +343,8 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
         trained.get("cusum_full_sampling", ds.cusum_full_sampling)
     )
     if not _is_tradable_event(cfg, panel, ts, full_sampling):
+        from ..risk.sizing import resolve_execution_assumption
+
         return {
             "signal": "HOLD",
             "symbol": ds.symbol,
@@ -283,7 +355,7 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
             "stop_loss": None,
             "take_profit": None,
             "confident": False,
-            "execution_assumption": str(cfg["risk"].get("execution_assumption", "close_fill")),
+            "execution_assumption": resolve_execution_assumption(cfg["risk"]),
             "data_source": ds.data_source,
         }
 
