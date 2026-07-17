@@ -1,4 +1,4 @@
-"""专家4 训练脚本: 在单张 80GB 卡上用 QLoRA(4-bit) 微调 Qwen2.5-72B。
+"""专家4 训练脚本: 用 QLoRA(4-bit) 微调 config 中的 LLM(默认 Qwen2.5-32B-Instruct)。
 
 目标: 监督微调(SFT) 让模型对 "指标摘要(+可选新闻) + 方向" 输出 verbalizer 答案
 "1(会盈利)/0(不会盈利)"; 推理时读取该位置 token 概率得到 P(盈利)(见 experts/llm.py)。
@@ -11,7 +11,8 @@
 运行: python scripts/train_llm_qlora.py            # 用 config.yaml 的 experts.llm
       python scripts/train_llm_qlora.py --dry-run  # 只构造/统计数据集, 不加载大模型
 
-显存参考(Qwen2.5-72B, 4-bit, lora_r=16, seq=1024, bs=4*grad8):约 55-70GB, ≤100GB。
+显存参考(默认 32B, 4-bit, lora_r=16, seq=1024, bs=4*grad8):约 24–48GB;
+改配置为 72B 时约 55–70GB(建议单卡 80GB)。
 """
 import _bootstrap  # noqa: F401
 
@@ -102,7 +103,7 @@ def main():
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-    model_name = lc.get("model_name", "Qwen/Qwen2.5-72B-Instruct")
+    model_name = lc.get("model_name", "Qwen/Qwen2.5-32B-Instruct")
     max_len = int(lc.get("max_seq_len", 1024))
 
     print(f"[2/5] 加载分词器与 4-bit 模型: {model_name} ...")

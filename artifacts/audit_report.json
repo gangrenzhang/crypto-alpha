@@ -1,0 +1,125 @@
+[
+  {
+    "name": "正对照: 真信号可学习(AUC 明显>0.5)",
+    "status": "PASS",
+    "detail": {
+      "auc_real": 0.8224,
+      "min": 0.62
+    },
+    "note": ""
+  },
+  {
+    "name": "置换基线: 打乱标签后 AUC 塌回≈0.5(不偷看)",
+    "status": "PASS",
+    "detail": {
+      "auc_shuffled": 0.4866,
+      "max": 0.58
+    },
+    "note": ""
+  },
+  {
+    "name": "信号差(auc_real - auc_shuffled 足够大)",
+    "status": "PASS",
+    "detail": {
+      "gap": 0.3358,
+      "min": 0.1
+    },
+    "note": ""
+  },
+  {
+    "name": "时移不变: 平移时间戳结果不变",
+    "status": "PASS",
+    "detail": {
+      "max_abs_diff": 0.0
+    },
+    "note": ""
+  },
+  {
+    "name": "PurgedKFold 训练/测试标签零重叠",
+    "status": "PASS",
+    "detail": {
+      "overlaps": 0
+    },
+    "note": ""
+  },
+  {
+    "name": "CPCV 训练/测试标签零重叠",
+    "status": "PASS",
+    "detail": {
+      "overlaps": 0
+    },
+    "note": ""
+  },
+  {
+    "name": "禁运(embargo)有效",
+    "status": "PASS",
+    "detail": {},
+    "note": ""
+  },
+  {
+    "name": "回测权益与逐笔 pnl 对账一致",
+    "status": "PASS",
+    "detail": {
+      "recon_from_pnl": 9.8580364492216,
+      "end_equity": 9.8580364492216,
+      "reported_total_return_equity": 9.8580364492216,
+      "equity_matches_pnl": true,
+      "metric_matches_equity": true
+    },
+    "note": ""
+  },
+  {
+    "name": "并发敞口不超上限(max_gross_exposure)",
+    "status": "PASS",
+    "detail": {
+      "peak_gross": 1.0,
+      "cap": 1.0
+    },
+    "note": ""
+  },
+  {
+    "name": "成本单调: 提高费用不增加收益",
+    "status": "PASS",
+    "detail": {
+      "ret_no_fee": 8.85804,
+      "ret_high_fee": 2.9842
+    },
+    "note": ""
+  },
+  {
+    "name": "组合级回测不高估收益(<=独立复利口径)",
+    "status": "PASS",
+    "detail": {
+      "portfolio": 8.85804,
+      "independent": 10.09871
+    },
+    "note": "仅口径对照, 独立复利会系统性偏高"
+  },
+  {
+    "name": "全链路空对照: 随机游走 OOF AUC≈0.5",
+    "status": "PASS",
+    "detail": {
+      "auc": 0.5089,
+      "max": 0.58,
+      "n_events": 1697,
+      "backtest_return": 0.06049
+    },
+    "note": ""
+  },
+  {
+    "name": "全链路空对照: 数据集体检无致命告警",
+    "status": "PASS",
+    "detail": {
+      "warnings": []
+    },
+    "note": ""
+  },
+  {
+    "name": "复现性: 同 seed 两次训练 OOF 一致",
+    "status": "PASS",
+    "detail": {
+      "max_abs_diff": 0.0
+    },
+    "note": ""
+  }
+]

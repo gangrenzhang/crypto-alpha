@@ -105,8 +105,14 @@ class TSFMExpert(BaseExpert):
             med = np.median(fc[0].numpy(), axis=0)
             return float(np.log(med[-1] + 1e-9) - np.log(s[-1] + 1e-9))
         if self._kind == "timesfm":
-            pred = self._timesfm_forecast(s, horizon)
-            return float(np.log(pred[-1] + 1e-9) - np.log(s[-1] + 1e-9))
+            try:
+                pred = self._timesfm_forecast(s, horizon)
+                return float(np.log(pred[-1] + 1e-9) - np.log(s[-1] + 1e-9))
+            except NotImplementedError:
+                # 未按所装版本实现原生调用 => 不崩, 优雅回退 naive 基线(仅告警一次)
+                if not getattr(self, "_timesfm_warned", False):
+                    print("[warn] TimesFM 前向未实现; 本次回退 naive 基线。")
+                    self._timesfm_warned = True
         # naive: 近端对数收益动量外推
         logret = np.diff(np.log(s[-min(len(s) - 1, 24):] + 1e-9))
         return float(np.mean(logret) * horizon)

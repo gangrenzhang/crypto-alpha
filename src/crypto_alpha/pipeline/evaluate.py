@@ -64,8 +64,10 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     )
 
     payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
+    prices = ds.panel["close"] if "close" in ds.panel.columns else None
     path_sharpes: list[float] = []
     path_trades: list[int] = []
+    path_pnls: list[np.ndarray] = []  # 各路径成交 pnl, 供 DSR 估计经验偏度/峰度
     config_names = None
     perf_rows: list[list[float]] = []
     inner_splits = max(3, int(vcfg["n_splits"]) - 1)
@@ -86,7 +88,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
             p = fitted.predict_proba(Xte)
             if cal is not None:
                 p = cal.transform(p)
-            bt = backtest_events(ds.events.iloc[te], p, cfg["backtest"], cfg["risk"], payoff)
+            bt = backtest_events(ds.events.iloc[te], p, cfg["backtest"], cfg["risk"], payoff, prices)
             col_perf[e.name] = bt["metrics"]["sharpe"]
 
         ens = StackingEnsemble([e.clone() for e in experts], cfg["ensemble"], seed=cfg.seed)
@@ -95,10 +97,15 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         cal_e = _calibrator_from_oof(ens.oof_proba(), ytr, method)
         if cal_e is not None:
             pe = cal_e.transform(pe)
-        bte = backtest_events(ds.events.iloc[te], pe, cfg["backtest"], cfg["risk"], payoff)
+        bte = backtest_events(ds.events.iloc[te], pe, cfg["backtest"], cfg["risk"], payoff, prices)
         col_perf["ensemble"] = bte["metrics"]["sharpe"]
         path_sharpes.append(bte["metrics"]["sharpe"])
         path_trades.append(int(bte["metrics"].get("n_trades", 0)))
+        det = bte.get("detail")
+        if det is not None and "size" in det.columns and "pnl" in det.columns and len(det):
+            traded_pnl = det.loc[det["size"] > 0, "pnl"].to_numpy(dtype=float)
+            if len(traded_pnl):
+                path_pnls.append(traded_pnl)
 
         if config_names is None:
             config_names = list(col_perf.keys())
@@ -109,8 +116,35 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     n_obs = int(np.mean(path_trades)) if path_trades else len(ds.y)
     n_obs = max(n_obs, 2)
     n_trials = max(int(vcfg.get("dsr_n_trials", 50)), perf_matrix.shape[0])
-    dsr = deflated_sharpe_ratio(sr, n_trials=n_trials, n_obs=n_obs)
+    # DSR 用**经验**偏度/峰度(加密逐笔 pnl 尖峰厚尾), 否则默认 skew=0/kurt=3 会低估 SR 方差、
+    # 系统性高估 DSR。汇总各路径成交 pnl 后估计。
+    skew, kurt = 0.0, 3.0
+    if path_pnls:
+        pooled = np.concatenate(path_pnls)
+        if len(pooled) >= 8 and float(np.std(pooled)) > 0:
+            from scipy.stats import kurtosis as _kurt, skew as _skew
+
+            skew = float(_skew(pooled, bias=False))
+            kurt = float(_kurt(pooled, fisher=False, bias=False))
+    dsr = deflated_sharpe_ratio(sr, n_trials=n_trials, n_obs=n_obs, skew=skew, kurt=kurt)
     pbo = probability_of_backtest_overfitting(perf_matrix)
+
+    n_configs = int(perf_matrix.shape[0])
+    pbo_warning = bool(n_configs < 8)
+    caveats: list[str] = []
+    if pbo_warning:
+        caveats.append(
+            f"PBO 仅基于 {n_configs} 个配置(<8), 统计力不足, 数值仅供参考——"
+            "需扫更多超参配置才可信。"
+        )
+    caveats.append(
+        "DSR 的 observed_SR 为各 CPCV 组合(共享数据)per-trade 夏普的均值, 方差被低估, "
+        "偏乐观; dsr_n_trials 须按你真实试过的策略/超参规模如实填写, 否则去偏失效。"
+    )
+    if n_trials <= n_configs:
+        caveats.append(
+            f"dsr_n_trials({n_trials}) ≤ 配置数({n_configs}), 几乎未去偏——请上调为真实研究规模。"
+        )
 
     return {
         "n_paths": cv.n_paths,
@@ -120,8 +154,12 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         "deflated_sharpe": dsr,
         "dsr_n_trials": n_trials,
         "dsr_n_obs": n_obs,
+        "dsr_skew": skew,
+        "dsr_kurt": kurt,
         "pbo": pbo,
-        "pbo_warning": bool(perf_matrix.shape[0] < 8),
+        "pbo_warning": pbo_warning,
+        "n_configs": n_configs,
+        "caveats": caveats,
         "config_names": config_names,
         "perf_matrix": perf_matrix,
         "calibrated": True,

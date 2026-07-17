@@ -68,7 +68,8 @@ def build_higher_tf_features(aux_df: pd.DataFrame, timeframe: str, cfg) -> pd.Da
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd = ema12 - ema26
     signal = macd.ewm(span=9, adjust=False).mean()
-    out[f"{prefix}_macd_hist"] = macd - signal
+    # 归一化为相对量纲(与主面板 macd_hist 口径一致), 避免绝对价格量级漂移
+    out[f"{prefix}_macd_hist"] = (macd - signal) / (close + 1e-12)
 
     atr_s = atr(aux_df, 14)
     out[f"{prefix}_atr_norm"] = atr_s / (close + 1e-12)

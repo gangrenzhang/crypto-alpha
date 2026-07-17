@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import datetime, timezone
 
@@ -15,6 +16,16 @@ import numpy as np
 import pandas as pd
 
 from .storage import load_parquet, save_parquet
+
+
+def stable_symbol_offset(symbol: str, mod: int = 10_000) -> int:
+    """基于 symbol 的**确定性**偏移(跨进程/机器一致)。
+
+    不能用内置 hash(): 它对 str 带进程级随机盐(PYTHONHASHSEED), 会让"同 seed 的合成数据"
+    在不同会话下不一致, 破坏可复现性。此处用 md5 派生稳定整数。
+    """
+    digest = hashlib.md5(symbol.encode("utf-8")).hexdigest()
+    return int(digest, 16) % mod
 
 _TF_MS = {
     "1m": 60_000,
@@ -191,7 +202,7 @@ def generate_synthetic_ohlcv(
     目的: 合成数据刻意包含可学习的结构(动量 + 波动聚集 + regime), 这样
     模型/回测/验证代码能被真实地检验, 而不是对纯随机游走束手无策。
     """
-    rng = np.random.default_rng(seed + hash(symbol) % 10_000)
+    rng = np.random.default_rng(seed + stable_symbol_offset(symbol, 10_000))
     tf_ms = _TF_MS[timeframe]
 
     # regime: 0=震荡, 1=牛, 2=熊; 用马尔可夫链切换

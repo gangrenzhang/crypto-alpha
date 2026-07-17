@@ -1,4 +1,4 @@
-"""专家4: 大语言模型 (Qwen2.5-72B, QLoRA 微调)。
+"""专家4: 大语言模型 (默认 Qwen2.5-32B-Instruct, QLoRA 微调)。
 
 角色: 把 "结构化指标摘要 + 新闻/事件文本" 转成自然语言提示, 让 LLM 做
 事件驱动的推理判断(该方向该不该执行), 覆盖纯数值模型看不到的信息维度。
@@ -7,9 +7,9 @@
 或 "0(不会盈利)", 推理时读取答案位置上 token "1" vs "0" 的 softmax 概率, 得到
 连续的 P(盈利)。这样训练目标(SFT 到 1/0)与推理口径完全一致, 且概率可被下游校准。
 
-显存: Qwen2.5-72B 用 4-bit QLoRA 微调约 48-65GB, 单张 80GB 卡可跑 (≤100GB)。
+显存: 32B 4-bit QLoRA 约 24–48GB; 若改配置为 72B 则约 48–70GB(单卡 80GB)。
 依赖(按需安装): transformers peft bitsandbytes accelerate datasets
-训练脚本: scripts/train_llm_qlora.py。
+训练脚本: scripts/train_llm_qlora.py。集成路径 fit() 只加载 adapter, 不训练。
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ NEG_TOKEN = "0"
 
 _SUMMARY_COLS = [
     "ret_14", "mom_28", "rsi_14", "macd_hist", "zscore_28", "vol_14",
-    "funding_z", "oi_change", "atr_14", "news_sentiment", "news_corroboration",
+    "funding_z", "oi_change", "atr_norm", "news_sentiment", "news_corroboration",
 ]
 
 _SYSTEM = "你是严谨的加密货币交易风控助手, 依据市场指标与方向判断该笔交易是否会盈利。"
@@ -56,16 +56,19 @@ class LLMExpert(BaseExpert):
 
     _news_df = None
     _news_buffer = 5
+    _news_ttl = 24.0
 
-    def set_news(self, news_df, buffer_minutes: int = 5) -> None:
+    def set_news(self, news_df, buffer_minutes: int = 5, ttl_hours: float = 24.0) -> None:
         """提供新闻摘要面板(索引=发布时间), 推理时按事件时间做无泄漏 as-of 对齐。"""
         self._news_df = news_df
         self._news_buffer = int(buffer_minutes)
+        self._news_ttl = float(ttl_hours)
 
     def clone(self) -> "LLMExpert":
         obj = super().clone()
         obj._news_df = self._news_df
         obj._news_buffer = self._news_buffer
+        obj._news_ttl = self._news_ttl
         return obj
 
     def _load(self):
@@ -79,7 +82,7 @@ class LLMExpert(BaseExpert):
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
         import torch
 
-        name = self.cfg.get("model_name", "Qwen/Qwen2.5-72B-Instruct")
+        name = self.cfg.get("model_name", "Qwen/Qwen2.5-32B-Instruct")
         bnb = BitsAndBytesConfig(
             load_in_4bit=bool(self.cfg.get("load_in_4bit", True)),
             bnb_4bit_quant_type="nf4",
@@ -112,7 +115,10 @@ class LLMExpert(BaseExpert):
 
         panel = self._panel
         sides = X["side"].values if "side" in X.columns else np.ones(len(X))
-        news_map = align_news_asof(self._news_df, X.index, self._news_buffer) if self._news_df is not None else {}
+        news_map = (
+            align_news_asof(self._news_df, X.index, self._news_buffer, ttl_hours=self._news_ttl)
+            if self._news_df is not None else {}
+        )
         probs = np.full(len(X), 0.5, dtype=float)
         for i, ts in enumerate(X.index):
             row = panel.loc[ts] if (panel is not None and ts in panel.index) else X.iloc[i]

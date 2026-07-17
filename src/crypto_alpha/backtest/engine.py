@@ -7,8 +7,12 @@
 
 其它口径:
 - 资金费按持有 bar 数累计(funding × bars_held), 手续费/滑点开平各一次。
-- 夏普为"每笔"口径, 另给按成交频率年化的 sharpe_annualized。
-- 日内熔断(risk.daily_max_drawdown): 当日权益回撤触及阈值后, 当日停止新开仓。
+- 夏普为"每笔"口径, 年化用**平均唯一性折算的有效独立成交数**(而非直接 √成交数),
+  因为三重障碍事件持有期高度重叠、并不独立, 直接年化会系统性高估。
+- **盯市(mark-to-market)**: 若传入 `prices`(收盘价序列)且事件含 side, 组合模式会按
+  收盘价重建含持仓浮盈亏的权益曲线, 用于 MDD 与日内熔断——避免"只在出场记账"漏掉
+  并发持仓的浮动回撤。未传 prices 时回退到仅出场记账的旧口径(偏乐观)。
+- 日内熔断(risk.daily_max_drawdown): 当日(盯市)权益回撤触及阈值后, 当日停止新开仓。
 """
 from __future__ import annotations
 
@@ -24,10 +28,15 @@ def backtest_events(
     bt_cfg: dict,
     risk_cfg: dict,
     payoff: float = 1.0,
+    prices: pd.Series | None = None,
 ) -> dict:
-    """events 需含: ret(含方向的对数收益), t1。prob 为校准后概率(与 events 对齐)。"""
+    """events 需含: ret(含方向的对数收益), t1。prob 为校准后概率(与 events 对齐)。
+
+    prices: 可选收盘价序列(索引=bar 时间)。传入且 events 含 side 时, 组合模式启用盯市
+    权益曲线(MDD/日内熔断更真实); 独立复利模式忽略之。
+    """
     if bool(bt_cfg.get("portfolio_mode", True)):
-        return _backtest_portfolio(events, prob, bt_cfg, risk_cfg, payoff)
+        return _backtest_portfolio(events, prob, bt_cfg, risk_cfg, payoff, prices)
     return _backtest_independent(events, prob, bt_cfg, risk_cfg, payoff)
 
 
@@ -99,8 +108,13 @@ def _backtest_portfolio(
     bt_cfg: dict,
     risk_cfg: dict,
     payoff: float,
+    prices: pd.Series | None = None,
 ) -> dict:
-    """组合级: 锁定并发仓位, 平仓释放后再开; 权益仅在出场时更新。"""
+    """组合级: 锁定并发仓位, 平仓释放后再开。
+
+    - 已实现权益(equity)在出场时按标签收益复利, 用于 total_return 与逐笔对账。
+    - 盯市权益(mark)在每个时间线节点按收盘价重估持仓浮盈亏, 用于 MDD 与日内熔断。
+    """
     df = events.copy()
     df["prob"] = np.asarray(prob, dtype=float)
     need = ["prob", "ret", "t1"]
@@ -123,6 +137,19 @@ def _backtest_portfolio(
     daily_max_dd = float(risk_cfg.get("daily_max_drawdown", 0.0) or 0.0)
     has_bars = "bars_held" in df.columns
 
+    # 盯市: 需要收盘价 + 事件方向 side(用于按收盘价重估持仓浮盈亏)
+    mtm_enabled = prices is not None and "side" in df.columns
+    logc = None
+    if mtm_enabled:
+        p = pd.Series(prices).astype(float)
+        p = p[~p.index.duplicated(keep="last")]
+        logc = np.log(p.where(p > 0)).dropna()
+
+    def _logc_at(ts):
+        if logc is None or ts not in logc.index:
+            return None
+        return float(logc.loc[ts])
+
     n = len(df)
     sizes = np.zeros(n, dtype=float)
     pnls = np.zeros(n, dtype=float)
@@ -134,23 +161,39 @@ def _backtest_portfolio(
     exits = [(pd.Timestamp(df["t1"].iloc[i]), 0, i) for i in range(n)]  # kind=0 exit first
     timeline = sorted(entries + exits, key=lambda x: (x[0], x[1]))
 
-    equity = 1.0
+    equity = 1.0          # 已实现权益(出场复利)
     locked = 0.0
     open_pos: dict[int, dict] = {}
     day_key = None
-    day_start_equity = 1.0
+    day_start_ref = 1.0   # 当日起始参考权益(盯市优先, 否则已实现)
     halted_today = False
     equity_pts: list[tuple[pd.Timestamp, float]] = []
+    mtm_pts: list[tuple[pd.Timestamp, float]] = []
+
+    def _mark(ts) -> float:
+        """当前盯市权益 = 已实现权益 ×(1 + 持仓浮动收益之和)。"""
+        if not mtm_enabled:
+            return equity
+        lc = _logc_at(ts)
+        if lc is None:
+            return equity
+        floating = 0.0
+        for pos in open_pos.values():
+            floating += pos["size"] * (np.exp(pos["side"] * (lc - pos["entry_logc"])) - 1.0)
+        return equity * (1.0 + floating)
 
     for ts, kind, i in timeline:
         d = ts.date() if hasattr(ts, "date") else None
+        # 先按当前持仓的盯市权益判定熔断(捕捉并发持仓的浮动回撤)
+        ref = _mark(ts)
         if d != day_key:
             day_key = d
-            day_start_equity = equity
+            day_start_ref = ref
             halted_today = False
         if daily_max_dd > 0 and not halted_today:
-            if equity <= day_start_equity * (1.0 - daily_max_dd):
+            if ref <= day_start_ref * (1.0 - daily_max_dd):
                 halted_today = True
+        mtm_pts.append((ts, ref))
 
         if kind == 0:  # exit
             if i not in open_pos:
@@ -165,6 +208,7 @@ def _backtest_portfolio(
             locked = max(0.0, locked - size)
             pnls[i] = pnl
             equity_pts.append((ts, equity))
+            mtm_pts.append((ts, _mark(ts)))  # 出场后重估
             continue
 
         # entry
@@ -181,9 +225,17 @@ def _backtest_portfolio(
         bars = float(row["bars_held"]) if has_bars else 1.0
         sizes[i] = size
         locked += size
-        open_pos[i] = {"size": size, "bars": bars, "ret": float(row["ret"])}
+        pos = {"size": size, "bars": bars, "ret": float(row["ret"])}
+        if mtm_enabled:
+            pos["side"] = float(row["side"])
+            elc = _logc_at(ts)
+            pos["entry_logc"] = elc if elc is not None else 0.0
+            pos["mtm"] = elc is not None  # 入场价缺失则该仓不参与盯市
+            if elc is None:
+                pos["side"] = 0.0  # 无入场价 => 浮动恒 0, 不污染 mark
+        open_pos[i] = pos
 
-    # 若回测窗口结束仍有未平仓(t1 超出样本), 按标签收益强制了结
+    # 若回测窗口结束仍有未平仓(t1 超出样本), 按标签收益强制了结(记账在实际了结时刻)
     for i, pos in list(open_pos.items()):
         size = pos["size"]
         cost = _cost(size, pos["bars"], fee, slip, funding)
@@ -191,7 +243,9 @@ def _backtest_portfolio(
         equity *= (1.0 + pnl)
         pnls[i] = pnl
         locked = max(0.0, locked - size)
-        equity_pts.append((df.index[i], equity))
+        close_ts = pd.Timestamp(df["t1"].iloc[i])
+        equity_pts.append((close_ts, equity))
+        mtm_pts.append((close_ts, equity))
     open_pos.clear()
 
     df = df.copy()
@@ -207,13 +261,25 @@ def _backtest_portfolio(
     else:
         eq_ser = pd.Series([1.0], index=[df.index[0]] if len(df) else pd.DatetimeIndex([]))
 
-    return _pack_result(df, eq_ser, halted_flags.tolist(), mode="portfolio")
+    mtm_ser = None
+    if mtm_enabled and mtm_pts:
+        mtm_ser = pd.Series({t: e for t, e in mtm_pts}).sort_index()
+        mtm_ser = mtm_ser[~mtm_ser.index.duplicated(keep="last")]
+
+    return _pack_result(df, eq_ser, halted_flags.tolist(), mode="portfolio", mtm_equity=mtm_ser)
 
 
-def _pack_result(df: pd.DataFrame, equity: pd.Series, halted_flags, mode: str) -> dict:
+def _pack_result(
+    df: pd.DataFrame, equity: pd.Series, halted_flags, mode: str,
+    mtm_equity: pd.Series | None = None,
+) -> dict:
     traded = df[df["size"] > 0] if "size" in df.columns and len(df) else df.iloc[0:0]
-    ppy = _periods_per_year(df.index if len(df) else equity.index, len(traded))
+    # 年化: 用平均唯一性折算的**有效独立成交数**, 避免重叠事件把年化夏普放大
+    avg_uniq = _avg_uniqueness_from_intervals(traded) if len(traded) else 1.0
+    ppy = _periods_per_year(df.index if len(df) else equity.index, len(traded), avg_uniq)
     eq_vals = equity.values if len(equity) else np.array([1.0])
+    # MDD: 优先用盯市权益(含持仓浮动回撤), 否则回退到出场记账的已实现权益
+    dd_vals = mtm_equity.values if (mtm_equity is not None and len(mtm_equity)) else eq_vals
     metrics = {
         "n_events": int(len(df)),
         "n_trades": int(len(traded)),
@@ -223,7 +289,11 @@ def _pack_result(df: pd.DataFrame, equity: pd.Series, halted_flags, mode: str) -
         "sharpe_annualized": sharpe_ratio(
             df["pnl"].values if len(df) and "pnl" in df.columns else np.array([]), ppy
         ),
-        "max_drawdown": max_drawdown(eq_vals),
+        "max_drawdown": max_drawdown(dd_vals),
+        "max_drawdown_realized": max_drawdown(eq_vals),
+        "mark_to_market": bool(mtm_equity is not None and len(mtm_equity) > 0),
+        "avg_uniqueness": float(avg_uniq),
+        "n_trades_effective": float(len(traded) * avg_uniq),
         "win_rate": float((traded["pnl"] > 0).mean()) if len(traded) else 0.0,
         "avg_pnl": float(traded["pnl"].mean()) if len(traded) else 0.0,
         "portfolio_mode": mode,
@@ -232,18 +302,63 @@ def _pack_result(df: pd.DataFrame, equity: pd.Series, halted_flags, mode: str) -
         metrics["n_skipped_capacity"] = int(df["skipped_capacity"].sum())
     mdd = abs(metrics["max_drawdown"]) + 1e-9
     metrics["calmar"] = metrics["total_return"] / mdd
-    return {"metrics": metrics, "equity": equity, "detail": df}
+    out_equity = mtm_equity if (mtm_equity is not None and len(mtm_equity)) else equity
+    return {"metrics": metrics, "equity": equity, "equity_mtm": out_equity, "detail": df}
 
 
-def _periods_per_year(index, n_trades: int) -> float:
-    """按成交时间跨度估计"每年成交笔数", 用于把每笔夏普年化。"""
+def _avg_uniqueness_from_intervals(traded: pd.DataFrame) -> float:
+    """成交事件的平均唯一性(时间加权 1/并发数)。
+
+    并发度越高(持有期重叠越多), 唯一性越低; 用于把"每笔夏普"年化时折算有效独立样本数,
+    避免把强重叠的成交当成独立观测而系统性高估年化夏普。返回 (0, 1] 的标量。
+    """
+    if "t1" not in traded.columns or len(traded) == 0:
+        return 1.0
     try:
-        if len(index) < 2 or n_trades < 2:
+        starts = pd.DatetimeIndex(traded.index).asi8.astype(np.int64)
+        ends = pd.DatetimeIndex(pd.to_datetime(traded["t1"].values, utc=True)).asi8.astype(np.int64)
+    except Exception:
+        return 1.0
+    m = len(starts)
+    valid = ends > starts
+    if not valid.any():
+        return 1.0
+    starts, ends = starts[valid], ends[valid]
+    m = len(starts)
+    pts = np.unique(np.concatenate([starts, ends]))
+    if len(pts) < 2:
+        return 1.0
+    seg_len = np.diff(pts).astype(float)                       # 每段时长
+    left = np.searchsorted(pts, starts, side="left")
+    right = np.searchsorted(pts, ends, side="left")            # 覆盖段 [left, right)
+    # 并发数: 差分数组累计
+    diff = np.zeros(len(pts), dtype=float)
+    np.add.at(diff, left, 1.0)
+    np.add.at(diff, right, -1.0)
+    conc = np.cumsum(diff)[:-1]                                # 每段并发数
+    inv = np.divide(1.0, conc, out=np.zeros_like(conc, dtype=float), where=conc > 0)
+    uniq = np.empty(m, dtype=float)
+    for i in range(m):
+        lo, hi = left[i], right[i]
+        dur = seg_len[lo:hi].sum()
+        uniq[i] = (inv[lo:hi] * seg_len[lo:hi]).sum() / dur if dur > 0 else 1.0
+    u = float(np.mean(uniq))
+    return u if np.isfinite(u) and u > 0 else 1.0
+
+
+def _periods_per_year(index, n_trades: int, avg_uniqueness: float = 1.0) -> float:
+    """按成交时间跨度估计"每年**有效独立**成交数", 用于把每笔夏普年化。
+
+    有效独立数 = 成交数 × 平均唯一性(重叠越重、折算越多), 而非直接用成交数。
+    """
+    try:
+        n_eff = max(n_trades * float(avg_uniqueness), 0.0)
+        if len(index) < 2 or n_eff < 2:
             return 0.0
         span_days = (index[-1] - index[0]).total_seconds() / 86400.0
         if span_days <= 0:
             return 0.0
-        return float(n_trades / (span_days / 365.25))
+        return float(n_eff / (span_days / 365.25))
     except Exception:
         return 0.0
 

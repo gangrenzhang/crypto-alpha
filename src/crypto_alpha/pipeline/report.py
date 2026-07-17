@@ -55,7 +55,7 @@ def probe_experts(cfg: Config, requested: list[str]) -> tuple[list[str], dict[st
 
 
 def _probe_llm(cfg: Config) -> str | None:
-    """LLM(72B QLoRA)需要 transformers + CUDA; 否则跳过(CPU 跑 72B 不现实)。"""
+    """LLM(QLoRA)需要 transformers + CUDA; 否则跳过(大参数 Instruct 模型 CPU 不现实)。"""
     from pathlib import Path
 
     try:
@@ -64,7 +64,7 @@ def _probe_llm(cfg: Config) -> str | None:
     except Exception as e:
         return f"缺 transformers/torch: {e}"
     if not torch.cuda.is_available():
-        return "无 CUDA GPU(72B 需 GPU)"
+        return "无 CUDA GPU(LLM QLoRA 需 GPU)"
     adapter = cfg["experts"]["llm"].get("adapter_path")
     if adapter and not (cfg.root / adapter).exists():
         return f"未找到微调 adapter: {adapter}(先跑 train_llm_qlora)"

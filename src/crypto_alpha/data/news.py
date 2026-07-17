@@ -49,10 +49,26 @@ _MARKET_KEYWORDS = ["sec", "cftc", "etf", "fed", "fomc", "cpi", "binance", "coin
                     "regulation", "监管", "美联储", "加息", "降息"]
 
 
+def _kw_hits(text_lower: str, words: set) -> int:
+    """统计词典命中数。
+
+    ASCII 单词用**词边界**匹配, 避免子串误判(如 "against" 含 "gain"、"banks" 含 "ban"、
+    "issue" 含 "sue"); 含空格/连字符的短语与中文(无词边界)仍用子串匹配。
+    """
+    c = 0
+    for w in words:
+        if (" " in w) or ("-" in w) or not re.fullmatch(r"[a-z0-9]+", w):
+            if w in text_lower:
+                c += 1
+        elif re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", text_lower):
+            c += 1
+    return c
+
+
 def _score_sentiment(text: str) -> float:
     t = text.lower()
-    pos = sum(1 for w in _POS if w in t)
-    neg = sum(1 for w in _NEG if w in t)
+    pos = _kw_hits(t, _POS)
+    neg = _kw_hits(t, _NEG)
     if pos + neg == 0:
         return 0.0
     return (pos - neg) / (pos + neg)
@@ -361,8 +377,15 @@ def _fetch_source(cfg, s: dict) -> list[dict]:
 # --------------------------------------------------------------------------
 # 无泄漏 as-of 对齐
 # --------------------------------------------------------------------------
-def align_news_asof(news_df: pd.DataFrame, timestamps, buffer_minutes: int = 5) -> dict:
-    """把新闻摘要 as-of 对齐到事件时间: 只取 published_at + buffer <= 事件时间 的最新摘要。"""
+def align_news_asof(
+    news_df: pd.DataFrame, timestamps, buffer_minutes: int = 5,
+    ttl_hours: float | None = None,
+) -> dict:
+    """把新闻摘要 as-of 对齐到事件时间: 只取 published_at + buffer <= 事件时间 的最新摘要。
+
+    ttl_hours: 若给定, 距事件时间超过该时长的新闻视为过期 => 置空, 避免 ffill 把几天前的
+    旧新闻当作"最近新闻"一直塞进 LLM 提示(与数值新闻特征 feature_ttl_hours 口径一致)。
+    """
     if news_df is None or len(news_df) == 0:
         return {}
     ts_index = pd.DatetimeIndex(pd.to_datetime(list(timestamps), utc=True))
@@ -370,8 +393,24 @@ def align_news_asof(news_df: pd.DataFrame, timestamps, buffer_minutes: int = 5) 
     shifted = news_df.copy()
     shifted.index = shifted.index + pd.Timedelta(minutes=buffer_minutes)
     shifted = shifted.sort_index()
-    aligned = shifted["text"].reindex(shifted.index.union(ts_index)).ffill().reindex(ts_index)
-    return {ts: (aligned.loc[ts] if pd.notna(aligned.loc[ts]) else "") for ts in ts_index}
+    union = shifted.index.union(ts_index)
+    aligned = shifted["text"].reindex(union).ffill().reindex(ts_index)
+    # 记录每个事件所对齐到的新闻(缓冲后)可用时刻, 用于 TTL 过期判定
+    avail = pd.Series(shifted.index, index=shifted.index).reindex(union).ffill().reindex(ts_index)
+
+    out = {}
+    for ts in ts_index:
+        txt = aligned.loc[ts]
+        if pd.isna(txt):
+            out[ts] = ""
+            continue
+        if ttl_hours is not None and pd.notna(avail.loc[ts]):
+            age_h = (ts - avail.loc[ts]).total_seconds() / 3600.0
+            if age_h > float(ttl_hours):
+                out[ts] = ""
+                continue
+        out[ts] = txt
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -379,8 +418,9 @@ def align_news_asof(news_df: pd.DataFrame, timestamps, buffer_minutes: int = 5) 
 # --------------------------------------------------------------------------
 def _synthetic_clusters(cfg, symbol: str) -> list[dict]:
     from . import load_symbol_data
+    from .fetch import stable_symbol_offset
 
-    rng = np.random.default_rng(cfg.seed + (hash(symbol) % 1000))
+    rng = np.random.default_rng(cfg.seed + stable_symbol_offset(symbol, 1000))
     df = load_symbol_data(cfg, symbol)
     close = df["close"]
     fwd = np.log(close.shift(-6) / close)  # 未来 6 bar 收益(新闻应先于行情)
@@ -435,7 +475,8 @@ def load_news_for_events(cfg, symbol: str, timestamps) -> dict:
     """便捷函数: 加载新闻面板并 as-of 对齐到事件时间(供训练/推理共用)。"""
     df = load_news_panel(cfg, symbol)
     buf = int(cfg["news"].get("buffer_minutes", 5))
-    return align_news_asof(df, timestamps, buffer_minutes=buf)
+    ttl = float(cfg["news"].get("feature_ttl_hours", 24))
+    return align_news_asof(df, timestamps, buffer_minutes=buf, ttl_hours=ttl)
 
 
 # ==========================================================================

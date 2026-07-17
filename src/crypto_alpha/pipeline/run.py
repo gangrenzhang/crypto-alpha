@@ -78,7 +78,11 @@ def build_experts(cfg: Config, ds: Dataset) -> list:
 
                 news_df = load_news_panel(cfg, ds.symbol)
                 if news_df is not None:
-                    e.set_news(news_df, int(cfg["news"].get("buffer_minutes", 5)))
+                    e.set_news(
+                        news_df,
+                        int(cfg["news"].get("buffer_minutes", 5)),
+                        float(cfg["news"].get("feature_ttl_hours", 24)),
+                    )
             except Exception as ex:
                 print(f"[warn] 新闻加载失败(LLM 专家将不使用新闻): {ex}")
         experts.append(e)
@@ -114,14 +118,19 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
 
     # 部署用: 在全部干净 OOF 上单独拟合最终校准器 + 保形器
     cal = ProbabilityCalibrator(method=ccfg["method"]).fit(oof[mask], ds.y[mask])
-    conf = ConformalBinary(alpha=float(ccfg["conformal_alpha"])).fit(oof_cal[eval_mask], ds.y[eval_mask])
+    # 保形器须与**实盘概率同一校准基**: 实盘用部署校准器 cal 变换, 故保形器也在
+    # cal 变换后的 OOF 上拟合(而非交叉拟合校准概率 oof_cal), 保证覆盖率保证不失真。
+    conf_prob = cal.transform(oof[mask])
+    conf = ConformalBinary(alpha=float(ccfg["conformal_alpha"])).fit(conf_prob, ds.y[mask])
 
     report = classification_report_probs(oof_cal, ds.y)
 
-    # 回测(用无泄漏、交叉拟合的校准概率)
+    # 回测(用无泄漏、交叉拟合的校准概率; 传入收盘价启用盯市 MDD/熔断)
     payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
+    prices = ds.panel["close"] if "close" in ds.panel.columns else None
     bt = backtest_events(
-        ds.events.loc[eval_mask], oof_cal[eval_mask], cfg["backtest"], cfg["risk"], payoff=payoff
+        ds.events.loc[eval_mask], oof_cal[eval_mask], cfg["backtest"], cfg["risk"],
+        payoff=payoff, prices=prices,
     )
 
     return {

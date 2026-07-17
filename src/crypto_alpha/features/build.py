@@ -55,8 +55,15 @@ def build_feature_matrix(
 
 
 def feature_columns(feat: pd.DataFrame) -> list[str]:
-    """用于建模的特征列: 排除原始价格/成交量等非平稳绝对量。"""
-    exclude = {"open", "high", "low", "close", "volume", "open_interest", "funding_rate"}
+    """用于建模的特征列: 排除原始价格/成交量等非平稳绝对量。
+
+    额外排除 atr_14: 它是**绝对**价格量纲(供标注/decide 计算止损距离用), 直接入模会随
+    价格量级漂移而非平稳; 建模用其相对版本 atr_norm(见 add_technical_features)。
+    """
+    exclude = {
+        "open", "high", "low", "close", "volume", "open_interest", "funding_rate",
+        "atr_14",  # 绝对 ATR, 仅供标注/风控; 建模用 atr_norm
+    }
     return [c for c in feat.columns if c not in exclude]
 
 

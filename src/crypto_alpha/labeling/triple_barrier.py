@@ -11,6 +11,8 @@
 障碍触碰用 **bar 内 high/low** 判定(而非仅收盘路径), 与实盘"止损/止盈常在 bar 内被
 最高/最低价先打到"的真实执行一致, 避免系统性高估胜率、错估持有期。
 同一根 bar 内若止盈止损同时被触及, 无法确定盘中先后, 保守判为止损(悲观)。
+入场价取事件 bar(t0)的收盘价, 触碰扫描从 t0 的**下一根** bar 开始: t0 自身的盘中极值
+发生在入场之前, 入场后已不可成交, 计入会用"入场前价格"误判触碰、使标签偏乐观。
 """
 from __future__ import annotations
 
@@ -74,13 +76,17 @@ def apply_pt_sl_on_t1(
         trgt = events.at[t0, "trgt"]
         pt, sl = pt_mult * trgt, -sl_mult * trgt
         entry = log_close.loc[t0]
+        # 入场价 = t0 收盘价; t0 这根 bar 的 high/low 发生在收盘(入场)之前, 入场后不可再成交,
+        # 因此触碰扫描必须从**下一根** bar 开始, 否则会用"入场前的盘中极值"误判触碰 => 标签偏乐观。
+        path_high = log_high.loc[t0:t1].iloc[1:]
+        path_low = log_low.loc[t0:t1].iloc[1:]
         # 顺方向的有利极值用 high(多)/low(空); 逆方向的不利极值用 low(多)/high(空)
         if side > 0:
-            fav = log_high.loc[t0:t1] - entry
-            adv = log_low.loc[t0:t1] - entry
+            fav = path_high - entry
+            adv = path_low - entry
         else:
-            fav = -(log_low.loc[t0:t1] - entry)
-            adv = -(log_high.loc[t0:t1] - entry)
+            fav = -(path_low - entry)
+            adv = -(path_high - entry)
         pt_touch = fav[fav >= pt].index.min()   # 止盈首次触碰(无则 NaT)
         sl_touch = adv[adv <= sl].index.min()    # 止损首次触碰(无则 NaT)
         t1_list.append(t1)

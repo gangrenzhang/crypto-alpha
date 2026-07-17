@@ -47,14 +47,20 @@ def add_technical_features(df: pd.DataFrame, windows: list[int], vol_window: int
         out[f"bb_pos_{w}"] = (close - ma) / (2 * std + 1e-12)  # 布林带内位置
         out[f"vol_ratio_{w}"] = out["volume"] / (out["volume"].rolling(w).mean() + 1e-12)
 
-    # MACD
+    # MACD: 归一化为相对价格量纲(÷close), 避免多年价格量级漂移导致的非平稳
+    # (BTC 从 ~1万 到 ~6万, 绝对 MACD 量级会翻数倍, 破坏跨 regime/实盘泛化)。
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
-    out["macd"] = ema12 - ema26
-    out["macd_signal"] = out["macd"].ewm(span=9, adjust=False).mean()
-    out["macd_hist"] = out["macd"] - out["macd_signal"]
+    macd_abs = ema12 - ema26
+    macd_signal_abs = macd_abs.ewm(span=9, adjust=False).mean()
+    out["macd"] = macd_abs / (close + 1e-12)
+    out["macd_signal"] = macd_signal_abs / (close + 1e-12)
+    out["macd_hist"] = (macd_abs - macd_signal_abs) / (close + 1e-12)
 
+    # atr_14 保持**绝对**量纲: 标注(_barrier_target)与实盘 decide 需要绝对 ATR 距离;
+    # 建模改用相对 ATR(atr_norm=atr/close), atr_14 由 feature_columns 排除, 不直接进模型。
     out["atr_14"] = atr(out, 14)
+    out["atr_norm"] = out["atr_14"] / (close + 1e-12)
     out["rv"] = realized_volatility(close, vol_window)
 
     # 衍生品衍生特征(若存在)

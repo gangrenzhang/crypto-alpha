@@ -10,8 +10,7 @@ tqdm>=4.66
 ccxt>=4.3              # 交易所统一接口(OHLCV/资金费率/持仓量)
 
 # ===== 专家1: GBDT =====
-lightgbm>=4.3
-catboost>=1.2          # 可选第二种 GBDT
+lightgbm>=4.3          # 当前唯一使用的 GBDT 实现(experts/gbdt.py)
 scikit-learn>=1.4      # 元学习器/校准/指标
 
 # ===== 专家3: 深度时序 (PatchTST 风格, 纯 PyTorch 自实现) =====
@@ -27,7 +26,7 @@ matplotlib>=3.8
 # transformers>=4.40
 # accelerate>=0.30
 
-# ===== 可选专家4: LLM (Qwen2.5-72B QLoRA) =====
+# ===== 可选专家4: LLM (默认 Qwen2.5-32B QLoRA; 可改 72B) =====
 # transformers>=4.44
 # peft>=0.11
 # bitsandbytes>=0.43           # 4-bit 量化
