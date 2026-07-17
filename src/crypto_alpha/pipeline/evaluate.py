@@ -28,6 +28,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
 
     payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
     path_sharpes: list[float] = []
+    path_trades: list[int] = []
     config_names = None
     perf_rows: list[list[float]] = []
 
@@ -54,6 +55,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         bte = backtest_events(ds.events.iloc[te], pe, cfg["backtest"], cfg["risk"], payoff)
         col_perf["ensemble"] = bte["metrics"]["sharpe"]
         path_sharpes.append(bte["metrics"]["sharpe"])
+        path_trades.append(int(bte["metrics"].get("n_trades", 0)))
 
         if config_names is None:
             config_names = list(col_perf.keys())
@@ -61,7 +63,13 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
 
     perf_matrix = np.array(perf_rows).T  # (n_configs, n_splits)
     sr = float(np.mean(path_sharpes))
-    dsr = deflated_sharpe_ratio(sr, n_trials=perf_matrix.shape[0], n_obs=len(ds.y))
+    # n_obs: 支撑该(每笔)夏普的成交笔数(而非全部事件数, 二者口径不同)
+    n_obs = int(np.mean(path_trades)) if path_trades else len(ds.y)
+    n_obs = max(n_obs, 2)
+    # n_trials: 研究过程中试过的策略/超参总次数(应远大于配置数, 否则 DSR 去偏失效)。
+    # 取配置的估计值与实际配置数的较大者; 配置见 validation.dsr_n_trials。
+    n_trials = max(int(vcfg.get("dsr_n_trials", 50)), perf_matrix.shape[0])
+    dsr = deflated_sharpe_ratio(sr, n_trials=n_trials, n_obs=n_obs)
     pbo = probability_of_backtest_overfitting(perf_matrix)
 
     return {
@@ -70,7 +78,10 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         "mean_sharpe": sr,
         "std_sharpe": float(np.std(path_sharpes)),
         "deflated_sharpe": dsr,
+        "dsr_n_trials": n_trials,
+        "dsr_n_obs": n_obs,
         "pbo": pbo,
+        "pbo_warning": bool(perf_matrix.shape[0] < 8),  # 配置维度过小时 PBO 统计力弱
         "config_names": config_names,
         "perf_matrix": perf_matrix,
     }

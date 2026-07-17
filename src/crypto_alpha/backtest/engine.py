@@ -3,6 +3,13 @@
 回测: 对每个事件, 若校准概率 > 阈值则按分数 Kelly 下注, 计入手续费/滑点/资金费。
 PnL 以事件为单位, 按入场时间排序做复利, 得到净值曲线与风险指标。
 DSR / PBO 用于判断 "看起来不错的夏普" 是不是多次尝试或过拟合造成的假象。
+
+重要口径与局限(务必知悉, 勿当作可交易净值):
+- **事件级、假设顺序独立**: 三重障碍事件在时间上会重叠, 这里把每笔当独立资本回合做
+  复利, 未建模并发持仓/组合资金约束, 因此**会高估收益、低估真实回撤**。
+- **资金费按持有 bar 数累计**(funding × bars_held), 手续费/滑点开平各一次。
+- **夏普为"每笔"口径**, 另给按成交频率年化的 sharpe_annualized 便于跨频比较。
+- **日内熔断**(risk.daily_max_drawdown): 当日回撤触及阈值后, 当日剩余事件停止开仓。
 """
 from __future__ import annotations
 
@@ -31,29 +38,54 @@ def backtest_events(
 
     kf = float(risk_cfg.get("kelly_fraction", 0.5))
     maxp = float(risk_cfg.get("max_position_pct", 0.3))
+    daily_max_dd = float(risk_cfg.get("daily_max_drawdown", 0.0) or 0.0)
 
-    sizes, rets = [], []
-    for _, r in df.iterrows():
-        if r["prob"] < thr:
+    has_bars = "bars_held" in df.columns
+    equity_run = 1.0            # 运行净值(用于日内熔断)
+    day_key = None              # 当前 UTC 日期
+    day_start_equity = 1.0      # 当日起始净值
+    halted_today = False
+
+    sizes, rets, halted_flags = [], [], []
+    for ts, r in df.iterrows():
+        # 日内熔断状态维护(按 UTC 自然日)
+        d = ts.date() if hasattr(ts, "date") else None
+        if d != day_key:
+            day_key = d
+            day_start_equity = equity_run
+            halted_today = False
+        if daily_max_dd > 0 and not halted_today:
+            if equity_run <= day_start_equity * (1.0 - daily_max_dd):
+                halted_today = True
+
+        if halted_today or r["prob"] < thr:
             sizes.append(0.0)
             rets.append(0.0)
+            halted_flags.append(bool(halted_today))
             continue
         size = position_size(r["prob"], payoff, kf, maxp)
-        cost = size * (2 * (fee + slip) + funding)  # 开平各一次
+        bars = float(r["bars_held"]) if has_bars else 1.0
+        cost = size * (2 * (fee + slip) + funding * bars)  # 手续费/滑点开平各一次; 资金费按持有 bar 累计
         pnl = size * (np.exp(r["ret"]) - 1.0) - cost
+        equity_run *= (1.0 + pnl)
         sizes.append(size)
         rets.append(pnl)
+        halted_flags.append(False)
 
     df["size"] = sizes
     df["pnl"] = rets
+    df["halted"] = halted_flags
     equity = (1.0 + df["pnl"]).cumprod()
 
     traded = df[df["size"] > 0]
+    ppy = _periods_per_year(df.index, len(traded))
     metrics = {
         "n_events": int(len(df)),
         "n_trades": int(len(traded)),
+        "n_halted": int(sum(halted_flags)),
         "total_return": float(equity.iloc[-1] - 1.0) if len(equity) else 0.0,
-        "sharpe": sharpe_ratio(df["pnl"].values),
+        "sharpe": sharpe_ratio(df["pnl"].values),                       # 每笔口径
+        "sharpe_annualized": sharpe_ratio(df["pnl"].values, ppy),        # 按成交频率年化
         "max_drawdown": max_drawdown(equity.values),
         "win_rate": float((traded["pnl"] > 0).mean()) if len(traded) else 0.0,
         "avg_pnl": float(traded["pnl"].mean()) if len(traded) else 0.0,
@@ -63,7 +95,20 @@ def backtest_events(
     return {"metrics": metrics, "equity": equity, "detail": df}
 
 
-def sharpe_ratio(returns: np.ndarray, periods_per_year: int = 0) -> float:
+def _periods_per_year(index, n_trades: int) -> float:
+    """按成交时间跨度估计"每年成交笔数", 用于把每笔夏普年化。"""
+    try:
+        if len(index) < 2 or n_trades < 2:
+            return 0.0
+        span_days = (index[-1] - index[0]).total_seconds() / 86400.0
+        if span_days <= 0:
+            return 0.0
+        return float(n_trades / (span_days / 365.25))
+    except Exception:
+        return 0.0
+
+
+def sharpe_ratio(returns: np.ndarray, periods_per_year: float = 0.0) -> float:
     r = np.asarray(returns, dtype=float)
     r = r[r != 0] if (r != 0).any() else r
     if len(r) < 2 or r.std() == 0:

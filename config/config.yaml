@@ -106,6 +106,9 @@ validation:
   n_splits: 6              # CPCV 的分组数 N
   n_test_groups: 2         # 每次测试选取的组数 k (CPCV)
   embargo_pct: 0.01        # 禁运比例
+  # DSR 去偏用的"研究试验总次数"估计(应≈你实际试过的策略/超参组合数, 远大于配置数,
+  # 否则 DSR 无法真正去偏)。仅作近似, 请如实按研究规模调整。
+  dsr_n_trials: 50
 
 # ---------------- 专家模型 ----------------
 experts:
@@ -167,11 +170,14 @@ ensemble:
   meta_learner: logistic   # logistic / gbdt
   # 元学习器 C 正则
   C: 1.0
+  # 弱专家剪枝: OOF AUC 低于此阈值(0.5=随机)的专家自动剔除(至少保留 1 个)。设 0 关闭。
+  min_expert_auc: 0.5
 
 # ---------------- 校准 / 保形预测 ----------------
 calibration:
   method: isotonic         # isotonic / sigmoid
   conformal_alpha: 0.1     # 保形预测显著性(1-覆盖率)
+  calib_splits: 5          # 交叉拟合校准的折数(评估用无泄漏校准概率)
 
 # ---------------- 回测 ----------------
 backtest:
@@ -197,4 +203,4 @@ risk:
   kelly_fraction: 0.5      # 半 Kelly
   max_position_pct: 0.30   # 单币最大仓位
   atr_stop_mult: 1.5       # ATR 止损倍数
-  daily_max_drawdown: 0.05 # 日内熔断
+  daily_max_drawdown: 0.05 # 日内熔断: 当日回撤触及此比例后, 当日剩余事件停止开仓(回测已实现); 设 0 关闭

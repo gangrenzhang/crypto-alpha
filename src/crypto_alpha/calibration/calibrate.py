@@ -62,6 +62,37 @@ class ConformalBinary:
         return {"in_class1": in_1, "in_class0": in_0, "confident": confident}
 
 
+def cross_fitted_calibrated(
+    prob: np.ndarray, y: np.ndarray, t1, method: str = "isotonic",
+    n_splits: int = 5, embargo_pct: float = 0.01,
+) -> np.ndarray:
+    """交叉拟合校准: 用 Purged K-Fold 在训练折拟合校准器、在测试折 transform,
+    得到**无泄漏**的校准概率, 供报告/回测评估(避免"拟合即评估"的乐观偏差)。
+
+    prob 与 y、t1 一一对齐(prob 中的 NaN 表示该行无 OOF)。返回同长度数组,
+    不可交叉拟合的位置为 NaN。部署用的最终校准器仍在全量上单独拟合。
+    """
+    from ..validation.purged_kfold import PurgedKFold
+    import pandas as pd
+
+    prob = np.asarray(prob, dtype=float)
+    yy = np.asarray(y, dtype=int)
+    out = np.full(len(prob), np.nan)
+    pos = np.where(~np.isnan(prob))[0]
+    if len(pos) < n_splits * 2:
+        return out  # 样本过少, 不足以交叉拟合(调用方会回退)
+
+    t1 = pd.Series(t1)
+    idx = t1.index[pos]
+    t1m = t1.loc[idx]
+    Xdummy = pd.DataFrame(index=idx)
+    pkf = PurgedKFold(n_splits=n_splits, t1=t1m, embargo_pct=embargo_pct)
+    for tr, te in pkf.split(Xdummy):
+        cal = ProbabilityCalibrator(method).fit(prob[pos[tr]], yy[pos[tr]])
+        out[pos[te]] = cal.transform(prob[pos[te]])
+    return out
+
+
 def classification_report_probs(prob: np.ndarray, y: np.ndarray) -> dict:
     from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 

@@ -25,6 +25,7 @@ class ModelBundle:
     ensemble: object
     calibrator: object
     feature_cols: list
+    conformal: object = None
 
 
 class DecisionService:
@@ -43,6 +44,7 @@ class DecisionService:
             ensemble=trained["ensemble"],
             calibrator=trained["calibrator"],
             feature_cols=ds.feature_cols,
+            conformal=trained.get("conformal"),
         )
         m = trained["backtest"]["metrics"]
         print(f"[train] {symbol}: 事件={m['n_events']} 夏普={m['sharpe']:.3f} 胜率={m['win_rate']:.3f}")
@@ -80,6 +82,10 @@ class DecisionService:
         X_last["side"] = side_ser.loc[ts]
         prob = float(bundle.calibrator.transform(bundle.ensemble.predict_proba(X_last))[0])
 
+        confident = True
+        if bundle.conformal is not None:
+            confident = bool(bundle.conformal.predict_set(np.array([prob]))["confident"][0])
+
         side = int(side_ser.loc[ts])
         entry = float(feat["close"].loc[ts])
         atr = float(feat["atr_14"].loc[ts]) if "atr_14" in feat.columns else entry * 0.01
@@ -87,6 +93,7 @@ class DecisionService:
         d = decide(
             prob, side, entry, atr, self.cfg["risk"],
             prob_threshold=float(self.cfg["backtest"]["prob_threshold"]), payoff=payoff,
+            confident=confident,
         )
         d["symbol"] = symbol
         d["timestamp"] = str(ts)

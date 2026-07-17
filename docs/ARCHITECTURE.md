@@ -197,7 +197,9 @@ flowchart TD
 - **下障碍(止损)** = `−sl × 当时波动`
 - **垂直障碍(时间)** = 最多持有 `vertical_barrier_bars` 根
 
-首次触碰哪条决定结果。**止损宽度由波动率自适应**(而非固定点数),与 ATR 止损口径一致——**止损天然内建于标签**,无需模型另猜。
+首次触碰哪条决定结果,且**用 bar 内 `high/low` 判定盘中触碰**(与实盘"止损/止盈常在 bar 内被最高/最低价先打到"一致;同 bar 双触保守判止损)。**止损宽度由波动率(`trgt=rv`)自适应**(而非固定点数)——**止损天然内建于标签**,无需模型另猜。
+
+> ⚠️ **口径差异(需知悉)**:标签/回测的障碍用 `rv`(对数收益滚动 std)× `pt_sl` 倍数;而实盘 `risk.decide()` 展示的止损/止盈用 `ATR × atr_stop_mult`。两者是**不同的波动度量**,数值不完全对应。回测胜率/盈亏比对应的是 `rv` 障碍,实盘挂单口径为 ATR。若要严格一致,应把二者统一为同一度量(路线见 §19)。
 
 ### 5.3 主信号 + 元标签(`meta_labeling.py`)
 
@@ -308,8 +310,10 @@ flowchart TD
 ## 11. 风控层(`risk/sizing.py`)
 
 - **分数 Kelly**:`f* = (p·(b+1)−1)/b`(b=盈亏比),乘以 `kelly_fraction`(默认半 Kelly)并封顶 `max_position_pct`。**优势**:Kelly 最大化长期复利,分数 Kelly 大幅降低回撤波动。
-- **ATR 止损**:`stop = entry − side × atr_stop_mult × ATR`,与三重障碍标注口径一致。
-- **`decide()`**:输出结构化决策——`signal`(LONG/SHORT/HOLD)、`win_probability`、`entry_price`、`stop_loss`、`take_profit`、`suggested_position_pct`、`atr`。这就是系统的"使用方式":输入最新市场状态,输出这条 JSON。
+- **ATR 止损**:`stop = entry − side × atr_stop_mult × ATR`(注意与标签的 `rv` 障碍是不同波动度量,见 §5.2)。
+- **保形弃权**:`decide(..., confident=...)` 接入 `ConformalBinary.predict_set`——预测集不唯一(低置信)时**强制 `HOLD`**,与研究链(`latest_decision`)、实盘链(`serve.decide_live`)口径一致。
+- **HOLD 不出挂单**:`signal=HOLD` 时 `stop_loss/take_profit` 置 `None`(并给出 `reason`),避免被误当作可执行订单。
+- **`decide()`**:输出结构化决策——`signal`(LONG/SHORT/HOLD)、`win_probability`、`entry_price`、`stop_loss`、`take_profit`、`suggested_position_pct`、`atr`、`confident`。这就是系统的"使用方式":输入最新市场状态,输出这条 JSON。
 
 ---
 
@@ -490,19 +494,32 @@ python scripts/07_serve.py --loop          # 常驻轮询 + 播报
 
 ## 17. 横切关注点:防泄漏 & 防过拟合
 
+> 说明:以下清单用**三态**标注,避免"文档声称 ≠ 代码实现"。
+> `[x]` 已实现且有测试/代码支撑 · `[~]` 已实现但有简化/需人工开启 · `[ ]` 未接线/路线图。
+
 **防泄漏检查表**(贯穿全系统):
-- [x] 所有特征仅用 t 及之前信息(技术指标、分数阶差分因果实现)
-- [x] 新闻桶用桶末标记 + `buffer_minutes` 传播缓冲 + `merge_asof(backward)`
+- [x] 所有特征仅用 t 及之前信息(技术指标、分数阶差分、aux 多周期均因果实现)
+- [x] 新闻桶用桶末标记 + `buffer_minutes` 传播缓冲 + `merge_asof(backward)` — `tests/test_leakage.py` 验证
 - [x] 三重障碍/样本权重保留 tz-aware 时间(避免时区丢失导致的错配)
-- [x] Stacking OOF 用 Purged K-Fold(+ Embargo)
-- [x] 校准/回测均用无泄漏 OOF 概率
+- [x] Stacking 一层 OOF 用 Purged K-Fold(+ Embargo) — `tests/test_leakage.py` 验证
+- [x] **二层元学习器亦走 nested OOF**(此前"自训自评"泄漏已修复)
+- [x] **校准用交叉拟合**(`cross_fitted_calibrated`),回测/报告用无泄漏概率(此前"拟合即评估"乐观偏差已修复)
+- [x] **合成新闻守卫**:真实价格禁用未来构造的合成新闻(`tests/test_leakage.py` 验证)
+- [x] 三重障碍 `high/low` bar 内触碰(`tests/test_leakage.py` 验证)
 
 **防过拟合检查表**:
-- [x] CPCV 多路径 → 夏普分布(而非单一路径)
-- [x] DSR 校正多次尝试的选择偏差
-- [x] PBO 量化"最优配置样本外失效"的概率
-- [x] 样本权重降低重叠样本主导
-- [x] 概率校准 + 保形弃权,只在高置信下注
+- [~] CPCV 多路径 → 夏普分布(有代码,`10_run_all` 需显式 `--cpcv` 开启)
+- [~] DSR 校正多次尝试偏差(`n_obs` 用成交笔数;`n_trials` 由 `validation.dsr_n_trials` **人工如实**设定,否则去偏失效)
+- [~] PBO 量化"最优配置样本外失效"概率(配置维度 <8 时统计力弱,结果带 `pbo_warning`)
+- [x] 样本权重降低重叠样本主导(一层与二层元学习器均加权)
+- [x] 弱专家剪枝:OOF AUC < `ensemble.min_expert_auc`(默认 0.5)自动剔除
+- [x] 概率校准 + 保形弃权,只在高置信下注(已接入 `decide`/`serve`)
+
+**回测真实性(务必知悉的简化)**:
+- [~] 事件级、假设顺序独立复利 → **会高估收益、低估回撤**(未建模并发持仓/组合资金约束)
+- [x] 资金费按持有 `bars_held` 累计;手续费/滑点开平各一次
+- [x] 夏普另给按成交频率年化的 `sharpe_annualized`
+- [x] 日内熔断 `risk.daily_max_drawdown`:当日回撤触阈后停开当日剩余仓位
 
 ---
 
@@ -521,8 +538,13 @@ python scripts/07_serve.py --loop          # 常驻轮询 + 播报
 |---|---|---|
 | 合成数据天花板 | 合成行情/新闻 AUC≈0.52–0.53 | ★★★ 切真实数据 + 真实历史新闻,用 CPCV 判 alpha |
 | 缺微观结构 | 仅价量 + 简化衍生品 | ★★★ 接真实资金费率/基差/OI/清算/多空比 |
-| 深度时序未增值 | 短样本 OOF AUC 偶 <0.5 | ★★ 真实多年数据 + 超参搜索;OOF AUC<0.5 自动剪枝 |
+| 深度时序未增值 | 短样本 OOF AUC 偶 <0.5 | ★★ 真实多年数据 + 超参搜索(OOF AUC<0.5 已自动剪枝) |
 | CPCV 默认关 | `10_run_all` 默认不跑 CPCV | ★★★ 发布前必跑 `--cpcv`,PBO>0.5 拒上线 |
+| 回测并发仓位 | 事件级独立复利,未建模组合资金约束 | ★★ 组合级敞口/资金占用 + vol targeting(当前会高估收益) |
+| 标签/实盘止损口径 | 标签用 `rv` 障碍,实盘 `decide` 用 ATR | ★★ 统一为同一波动度量(rv 或 ATR) |
+| TSFM 未真微调 | 冻结预测 + 浅头(TimesFM 未实现) | ★★ 真监督微调或降级为显式基线 |
+| LLM 偏重 | 默认 72B 目标偏重且非默认启用 | ★ 先 14B/32B 对照,评估性价比 |
+| DSR n_trials | 需人工如实设定研究试验次数 | ★ 接入实验追踪(MLflow)自动统计试验数 |
 | 校准全局单一 | 不分市场状态 | ★ 分 regime 校准 |
 | 障碍固定倍数 | `pt_sl` 恒定 | ★ 随 regime 自适应障碍 |
 | 执行成本简化 | 固定 bps + 近似资金费 | ★ 更真实的滑点/延迟/资金费建模 + vol targeting |

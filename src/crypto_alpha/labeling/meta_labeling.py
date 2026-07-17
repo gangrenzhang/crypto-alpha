@@ -38,6 +38,8 @@ def build_meta_labels(df: pd.DataFrame, cfg) -> pd.DataFrame:
     """
     lc = cfg["labeling"]
     close = df["close"]
+    high = df["high"] if "high" in df.columns else close
+    low = df["low"] if "low" in df.columns else close
 
     side = primary_signal(close, kind=lc["primary_signal"], lookback=int(lc["primary_lookback"]))
 
@@ -51,16 +53,19 @@ def build_meta_labels(df: pd.DataFrame, cfg) -> pd.DataFrame:
     if len(t_events) < 50:  # 事件太少则退回全量采样
         t_events = close.index[int(lc["primary_lookback"]) :]
 
+    pt_sl = tuple(lc["pt_sl"])
     events = get_events(
         close=close,
+        high=high,
+        low=low,
         t_events=t_events,
-        pt_sl=tuple(lc["pt_sl"]),
+        pt_sl=pt_sl,
         trgt=trgt,
         vertical_bars=int(lc["vertical_barrier_bars"]),
         side=side,
         min_ret=float(lc["min_ret"]),
     )
     events["trgt"] = trgt.reindex(events.index)
-    bins = get_bins(events, close)
+    bins = get_bins(events, close, pt_sl)
     bins["trgt"] = events["trgt"].values
     return bins.dropna(subset=["bin", "t1"])

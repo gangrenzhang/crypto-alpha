@@ -85,6 +85,25 @@ def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd
                 out["funding_rate"] = s.reindex(index, method="ffill")
     except Exception:
         pass  # 衍生品缺失不阻断主流程
+
+    try:  # 持仓量(Open Interest): 部分交易所支持历史查询, 缺失则保持 NaN
+        import ccxt
+
+        ex = getattr(ccxt, exchange)({"enableRateLimit": True})
+        if ex.has.get("fetchOpenInterestHistory"):
+            tf = "1h" if index.freqstr is None else index.freqstr
+            oi = ex.fetch_open_interest_history(symbol, timeframe="1h", limit=1000)
+            if oi:
+                def _oi_val(r):
+                    return r.get("openInterestAmount") or r.get("openInterestValue") or (
+                        (r.get("info") or {}).get("sumOpenInterest")
+                    )
+                s = pd.Series(
+                    {pd.to_datetime(r["timestamp"], unit="ms", utc=True): _oi_val(r) for r in oi if r.get("timestamp")}
+                ).astype(float)
+                out["open_interest"] = s.reindex(index, method="ffill")
+    except Exception:
+        pass
     return out
 
 

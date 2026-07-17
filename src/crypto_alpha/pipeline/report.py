@@ -266,11 +266,11 @@ def _render_symbol(d: dict) -> str:
     p.append("<div class='card'><div class='decision'>")
     p.append(f"<div class='sig {sig}'>{sig}</div>")
     p.append("<div class='grid' style='flex:1'>")
-    p.append(_kpi("胜率概率", _fmt(dec["win_probability"])))
-    p.append(_kpi("建议仓位", _fmt(dec["suggested_position_pct"], pct=True)))
-    p.append(_kpi("入场价", _fmt(dec["entry_price"], 2)))
-    p.append(_kpi("止损", _fmt(dec["stop_loss"], 2)))
-    p.append(_kpi("止盈", _fmt(dec["take_profit"], 2)))
+    p.append(_kpi("胜率概率", _fmt(dec.get("win_probability"))))
+    p.append(_kpi("建议仓位", _fmt(dec.get("suggested_position_pct"), pct=True)))
+    p.append(_kpi("入场价", _fmt(dec.get("entry_price"), 2)))
+    p.append(_kpi("止损", _fmt(dec.get("stop_loss"), 2)))
+    p.append(_kpi("止盈", _fmt(dec.get("take_profit"), 2)))
     p.append("</div></div></div>")
 
     # 集成 + 回测 KPI

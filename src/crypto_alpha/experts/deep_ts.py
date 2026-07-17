@@ -88,6 +88,13 @@ class DeepTSExpert(BaseExpert):
         dev = p.get("device", "auto")
         device = torch.device("cuda" if (dev == "auto" and torch.cuda.is_available()) or dev == "cuda" else "cpu")
 
+        # 可复现: 固定 torch 种子 + DataLoader 采样器 generator(否则跨折/多次运行结果漂移)
+        torch.manual_seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+        g = torch.Generator()
+        g.manual_seed(self.seed)
+
         Xw = self._windows(X.index)
         # 标准化(按训练集统计), 保存供推理使用
         self.mu_ = Xw.reshape(-1, Xw.shape[-1]).mean(0)
@@ -103,7 +110,7 @@ class DeepTSExpert(BaseExpert):
         ds = TensorDataset(
             torch.tensor(Xw), torch.tensor(y.astype(np.float32)), torch.tensor(w.astype(np.float32))
         )
-        dl = DataLoader(ds, batch_size=int(p.get("batch_size", 256)), shuffle=True)
+        dl = DataLoader(ds, batch_size=int(p.get("batch_size", 256)), shuffle=True, generator=g)
 
         self.model.train()
         for _ in range(int(p.get("epochs", 15))):

@@ -278,6 +278,15 @@ def _collect_clusters(cfg, symbol: str) -> list[dict]:
                 return dedup_corroborate(items, window_hours=win)
         print("[warn] news.use_history=true 但历史原始库为空; 请先运行 09_backfill_news。")
     if ncfg.get("use_synthetic", True):
+        # 防前视泄漏: 合成新闻情绪由**未来**收益构造。若行情为真实数据, 用它会把
+        # 未来信息注入特征 -> 严重泄漏。此组合下拒绝合成新闻(改用 use_history 或真实源)。
+        if not cfg["data"].get("use_synthetic", True):
+            raise ValueError(
+                "检测到 data.use_synthetic=false 但 news.use_synthetic=true: "
+                "合成新闻由未来收益构造, 用于真实行情会造成前视泄漏。"
+                "请改用 news.use_history=true(先运行 09_backfill_news)或配置真实新闻源, "
+                "或将 news.as_feature 设为 false 关闭新闻特征。"
+            )
         return _synthetic_clusters(cfg, symbol)
     items = []
     for s in ncfg.get("sources", []):
