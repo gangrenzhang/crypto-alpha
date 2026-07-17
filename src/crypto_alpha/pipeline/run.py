@@ -173,11 +173,12 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     side = int(side_ser.loc[ts])
     entry = float(panel["close"].loc[ts])
     atr = float(panel["atr_14"].loc[ts]) if "atr_14" in panel.columns else entry * 0.01
-    payoff = float(lc["pt_sl"][0]) / float(lc["pt_sl"][1])
+    pt_sl = (float(lc["pt_sl"][0]), float(lc["pt_sl"][1]))
+    payoff = pt_sl[0] / pt_sl[1]
     d = decide(
         prob, side, entry, atr, cfg["risk"],
         prob_threshold=float(cfg["backtest"]["prob_threshold"]), payoff=payoff,
-        confident=confident,
+        confident=confident, pt_sl=pt_sl,
     )
     d["symbol"] = ds.symbol
     d["timestamp"] = str(ts)

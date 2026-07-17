@@ -77,11 +77,11 @@ python scripts/10_run_all.py               # ★一键全专家联跑 + 生成 H
 python scripts/11_make_canvas.py           # ★把结果生成可交互 Cursor Canvas 面板
 ```
 
-切到真实数据: 编辑 `config/config.yaml`, 设 `data.use_synthetic: false`, 并 `pip install -e ".[data]"`。
+默认已是真实数据模式(`data.use_synthetic: false` / `news.use_synthetic: false`)。离线冒烟请在测试里显式打开合成, 或临时改配置。依赖: `pip install -e ".[data]"`。
 
 ### 真实 OHLCV 多年回测(缓存 + 增量更新)
 
-`data.use_synthetic: false` 时, `load_symbol_data` 会:
+真实模式下, `load_symbol_data` 会:
 1. 用 ccxt **分页拉取** `data.since`(默认 2020-01-01)至今的多年 K 线;
 2. **落盘缓存** `data/raw/<SYMBOL>.parquet`(`data.cache: true`), 之后复用避免重复拉取;
 3. **增量更新**(`data.incremental_update: true`): 每次只拉缓存最后一根 bar 之后的新数据并合并。

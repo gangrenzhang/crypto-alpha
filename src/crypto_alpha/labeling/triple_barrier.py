@@ -112,8 +112,16 @@ def get_events(
     touches = apply_pt_sl_on_t1(close, high, low, events, pt_sl)
     events["pt_touch"] = touches["pt"]
     events["sl_touch"] = touches["sl"]
-    # 首次触碰时间(垂直/止盈/止损三者最早)
-    events["t1_touch"] = touches[["t1", "pt", "sl"]].min(axis=1)
+    # 首次触碰时间(垂直/止盈/止损三者最早); 显式跳过 NaT, 避免 object/float 混型 min 报错
+    t1_touch = []
+    for i in range(len(touches)):
+        cands = [touches["t1"].iloc[i]]
+        for col in ("pt", "sl"):
+            v = touches[col].iloc[i]
+            if pd.notna(v):
+                cands.append(v)
+        t1_touch.append(min(cands))
+    events["t1_touch"] = t1_touch
     return events
 
 

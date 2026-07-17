@@ -17,18 +17,19 @@ data:
   timeframe: "1h"
   aux_timeframes: ["4h", "1d"]
   since: "2020-01-01T00:00:00Z"   # 真实数据回填起点(多年回测)
-  # 无网络/无 key 时使用合成数据把整条流水线跑通
-  use_synthetic: true
+  # 研究/实盘默认用真实数据; 无网络时 load_symbol_data 会自动降级合成。
+  # CI/冒烟测试在代码里显式打开 use_synthetic, 勿依赖本默认值做演示。
+  use_synthetic: false
   synthetic_bars: 20000
   # 真实数据缓存: 落盘 data/raw/<SYMBOL>.parquet, 复用避免重复拉取(合成模式不缓存)
   cache: true
   incremental_update: true        # 每次运行只增量拉取缓存之后的新 bar
-  # 衍生品数据(资金费率/持仓量), 部分交易所/接口可能不可用, 会优雅降级
+  # 衍生品数据(资金费率/持仓量): 分页回填覆盖 since→今, 失败则优雅降级 NaN
   fetch_derivatives: true
 
 # ---------------- 新闻(喂给 LLM 专家) ----------------
 news:
-  use_synthetic: true          # 无网络/无 key 时用合成新闻跑通链路
+  use_synthetic: false         # 实盘/研究默认关; 无语料时再临时打开(禁止与真实价格混用, 有守卫)
   use_history: false           # true=优先用回填的历史原始库聚合(支撑几年期回测)
   output_dir: data/news        # 每币种落盘 <SYMBOL>.parquet
   # 历史回填(多年期回测): 分页/分窗抓取真实历史新闻 -> 追加去重到原始语料库
@@ -91,7 +92,9 @@ features:
 
 # ---------------- 标注: 三重障碍 + 元标签 ----------------
 labeling:
-  # 止盈/止损相对波动率的倍数 [pt, sl]
+  # 障碍波动度量: atr(相对 ATR=atr/close, 与 decide 一致) | rv(已实现波动, 旧口径)
+  barrier_vol: atr
+  # 止盈/止损相对波动率的倍数 [pt, sl] — 与 risk 下单倍数共用
   pt_sl: [1.5, 1.5]
   # 垂直障碍(最大持有期), 单位=主时间框架的 bar 数
   vertical_barrier_bars: 24
@@ -100,6 +103,7 @@ labeling:
   # 主模型信号来源: momentum(动量) / meanrev(均值回归)
   primary_signal: momentum
   primary_lookback: 24
+  min_cusum_events: 50         # CUSUM 事件少于此数则退回全量采样
 
 # ---------------- 验证: Purged CV / CPCV ----------------
 validation:
@@ -132,6 +136,8 @@ experts:
     batch_size: 256
     lr: 1.0e-3
     device: auto           # auto/cpu/cuda
+    val_frac: 0.15         # 时间切分验证集比例(early stopping)
+    early_stop_patience: 3 # 验证损失无改善的容忍 epoch; 0=关闭
   tsfm:
     backend: chronos        # chronos / timesfm / naive(离线兜底)
     model_name: amazon/chronos-bolt-base
@@ -140,7 +146,7 @@ experts:
     head: logistic          # 概率头: logistic / gbdt
     covariate_cols: auto    # auto=面板中的新闻数值特征; 或显式列名列表
   llm:
-    model_name: Qwen/Qwen2.5-72B-Instruct
+    model_name: Qwen/Qwen2.5-32B-Instruct   # 性价比默认; 需要更强再改 72B
     load_in_4bit: true
     adapter_path: artifacts/qwen_qlora_adapter   # 微调产物; 推理时加载
     # --- LoRA ---
@@ -185,6 +191,9 @@ backtest:
   slippage_bps: 2.0        # 滑点(基点)
   funding_bps_per_bar: 0.0 # 资金费率近似(基点/bar), 简化
   prob_threshold: 0.55     # 低于此概率则观望
+  # true=组合级资金占用(并发仓位共享权益, 推荐); false=旧版事件独立复利(会高估)
+  portfolio_mode: true
+  min_position_pct: 0.01   # 可用资金不足时跳过开仓的最小仓位
 
 # ---------------- 实时服务 / 播报 ----------------
 serve:
@@ -201,6 +210,7 @@ serve:
 # ---------------- 风控 ----------------
 risk:
   kelly_fraction: 0.5      # 半 Kelly
-  max_position_pct: 0.30   # 单币最大仓位
-  atr_stop_mult: 1.5       # ATR 止损倍数
+  max_position_pct: 0.30   # 单笔最大仓位
+  max_gross_exposure: 1.0  # 并发持仓合计上限(组合回测锁定仓位用)
+  atr_stop_mult: 1.5       # 仅当未传 pt_sl 时的回退; 正常与 labeling.pt_sl 对齐
   daily_max_drawdown: 0.05 # 日内熔断: 当日回撤触及此比例后, 当日剩余事件停止开仓(回测已实现); 设 0 关闭

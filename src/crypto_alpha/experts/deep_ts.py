@@ -107,20 +107,59 @@ class DeepTSExpert(BaseExpert):
         loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
 
         w = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, dtype=np.float32)
-        ds = TensorDataset(
-            torch.tensor(Xw), torch.tensor(y.astype(np.float32)), torch.tensor(w.astype(np.float32))
-        )
-        dl = DataLoader(ds, batch_size=int(p.get("batch_size", 256)), shuffle=True, generator=g)
+        # 时间切分验证集(非随机), 用于 early stopping, 降低短样本过拟合
+        n = len(y)
+        val_frac = float(p.get("val_frac", 0.15))
+        patience = int(p.get("early_stop_patience", 3))
+        n_val = max(int(n * val_frac), 1) if n >= 40 and patience > 0 else 0
+        n_tr = n - n_val if n_val else n
 
-        self.model.train()
-        for _ in range(int(p.get("epochs", 15))):
-            for xb, yb, wb in dl:
+        def _run_epoch(loader, train: bool) -> float:
+            self.model.train(train)
+            total, wsum = 0.0, 0.0
+            for xb, yb, wb in loader:
                 xb, yb, wb = xb.to(device), yb.to(device), wb.to(device)
-                opt.zero_grad()
+                if train:
+                    opt.zero_grad()
                 logit = self.model(xb)
-                loss = (loss_fn(logit, yb) * wb).mean()
-                loss.backward()
-                opt.step()
+                loss_vec = loss_fn(logit, yb) * wb
+                loss = loss_vec.mean()
+                if train:
+                    loss.backward()
+                    opt.step()
+                total += float(loss_vec.sum().detach().cpu())
+                wsum += float(wb.sum().detach().cpu())
+            return total / max(wsum, 1e-8)
+
+        tr_ds = TensorDataset(
+            torch.tensor(Xw[:n_tr]), torch.tensor(y[:n_tr].astype(np.float32)),
+            torch.tensor(w[:n_tr].astype(np.float32)),
+        )
+        tr_dl = DataLoader(tr_ds, batch_size=int(p.get("batch_size", 256)), shuffle=True, generator=g)
+        va_dl = None
+        if n_val:
+            va_ds = TensorDataset(
+                torch.tensor(Xw[n_tr:]), torch.tensor(y[n_tr:].astype(np.float32)),
+                torch.tensor(w[n_tr:].astype(np.float32)),
+            )
+            va_dl = DataLoader(va_ds, batch_size=int(p.get("batch_size", 256)), shuffle=False)
+
+        best_state, best_val, wait = None, float("inf"), 0
+        for _ in range(int(p.get("epochs", 15))):
+            _run_epoch(tr_dl, train=True)
+            if va_dl is None:
+                continue
+            vloss = _run_epoch(va_dl, train=False)
+            if vloss < best_val - 1e-6:
+                best_val = vloss
+                best_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
+                wait = 0
+            else:
+                wait += 1
+                if wait >= patience:
+                    break
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
         self.device = device
         return self
 

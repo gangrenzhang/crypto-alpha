@@ -89,11 +89,12 @@ class DecisionService:
         side = int(side_ser.loc[ts])
         entry = float(feat["close"].loc[ts])
         atr = float(feat["atr_14"].loc[ts]) if "atr_14" in feat.columns else entry * 0.01
-        payoff = float(lc["pt_sl"][0]) / float(lc["pt_sl"][1])
+        pt_sl = (float(lc["pt_sl"][0]), float(lc["pt_sl"][1]))
+        payoff = pt_sl[0] / pt_sl[1]
         d = decide(
             prob, side, entry, atr, self.cfg["risk"],
             prob_threshold=float(self.cfg["backtest"]["prob_threshold"]), payoff=payoff,
-            confident=confident,
+            confident=confident, pt_sl=pt_sl,
         )
         d["symbol"] = symbol
         d["timestamp"] = str(ts)

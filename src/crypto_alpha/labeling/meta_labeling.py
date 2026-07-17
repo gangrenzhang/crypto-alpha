@@ -5,6 +5,9 @@
 2. 三重障碍在该方向上给出 bin(该信号是否盈利)。
 3. 二层模型(四专家集成)学习 "该不该执行主信号 + 概率", 即元标签。
 这正是 "做多做空概率 + 止损" 的标准范式。
+
+障碍宽度与实盘 decide 共用同一波动度量(默认相对 ATR = atr/close),
+避免 "标签用 rv、下单用 ATR" 的训练/执行错位。
 """
 from __future__ import annotations
 
@@ -31,26 +34,53 @@ def primary_signal(close: pd.Series, kind: str = "momentum", lookback: int = 24)
     return side.rename("side")
 
 
+def _barrier_target(df: pd.DataFrame, close: pd.Series, lc: dict, vol_window: int) -> pd.Series:
+    """障碍单位波动: 与实盘止损同一度量, 并换算到对数收益空间。
+
+    - atr: (atr_14 / close), 近似相对波幅, 与 decide 的 ATR 倍数一致。
+    - rv: 已实现对数收益波动(旧口径, 可配置回退)。
+    """
+    kind = str(lc.get("barrier_vol", "atr")).lower()
+    if kind == "rv":
+        if "rv" in df.columns:
+            trgt = df["rv"]
+        else:
+            trgt = np.log(close).diff().rolling(vol_window).std()
+    else:  # atr (default)
+        if "atr_14" in df.columns:
+            atr_abs = df["atr_14"]
+        else:
+            from ..features.technical import atr as atr_fn
+
+            atr_abs = atr_fn(df, 14)
+        trgt = atr_abs / close.replace(0, np.nan)
+    trgt = trgt.reindex(close.index).ffill()  # 仅前向填充, 避免 bfill 把未来波动灌到首部
+    return trgt
+
+
 def build_meta_labels(df: pd.DataFrame, cfg) -> pd.DataFrame:
     """端到端生成元标签数据集。
 
     返回索引为事件时间戳的 DataFrame, 含: ret, bin, side, t1, trgt。
     """
     lc = cfg["labeling"]
+    try:
+        vol_window = int(cfg["features"]["vol_window"])
+    except Exception:
+        vol_window = 50
+
     close = df["close"]
     high = df["high"] if "high" in df.columns else close
     low = df["low"] if "low" in df.columns else close
 
     side = primary_signal(close, kind=lc["primary_signal"], lookback=int(lc["primary_lookback"]))
-
-    # 目标波动: 用已实现波动率(若无则用滚动 std)
-    trgt = df["rv"] if "rv" in df.columns else np.log(close).diff().rolling(50).std()
-    trgt = trgt.reindex(close.index).ffill().bfill()
+    trgt = _barrier_target(df, close, lc, vol_window)
 
     # CUSUM 事件采样: 阈值取目标波动中位数
     thr = float(np.nanmedian(trgt.values)) or 0.005
     t_events = cusum_filter(close, threshold=thr)
-    if len(t_events) < 50:  # 事件太少则退回全量采样
+    min_events = int(lc.get("min_cusum_events", 50))
+    if len(t_events) < min_events:  # 事件太少则退回全量采样
         t_events = close.index[int(lc["primary_lookback"]) :]
 
     pt_sl = tuple(lc["pt_sl"])

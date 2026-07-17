@@ -67,17 +67,70 @@ def fetch_ohlcv(
     return df[["open", "high", "low", "close", "volume"]].astype(float)
 
 
+def _paginate_funding(ex, symbol: str, start_ms: int, end_ms: int, max_pages: int = 500) -> list:
+    """分页拉取资金费率历史, 覆盖 [start_ms, end_ms], 避免单次 limit=1000 截断多年数据。"""
+    rows, since, pages = [], int(start_ms), 0
+    while pages < max_pages and since <= end_ms:
+        batch = ex.fetch_funding_rate_history(symbol, since=since, limit=1000)
+        pages += 1
+        if not batch:
+            break
+        rows.extend(batch)
+        last_ts = int(batch[-1]["timestamp"])
+        if last_ts >= end_ms or len(batch) < 1000:
+            break
+        nxt = last_ts + 1
+        if nxt <= since:  # 防护: 交易所若不前进时间戳则停止
+            break
+        since = nxt
+    return rows
+
+
+def _paginate_oi(ex, symbol: str, start_ms: int, end_ms: int, max_pages: int = 500) -> list:
+    """分页拉取持仓量历史。"""
+    rows, since, pages = [], int(start_ms), 0
+    while pages < max_pages and since <= end_ms:
+        kwargs = {"symbol": symbol, "timeframe": "1h", "since": since, "limit": 1000}
+        try:
+            batch = ex.fetch_open_interest_history(**kwargs)
+        except TypeError:
+            batch = ex.fetch_open_interest_history(symbol, "1h", since, 1000)
+        pages += 1
+        if not batch:
+            break
+        rows.extend(batch)
+        ts_list = [r.get("timestamp") for r in batch if r.get("timestamp")]
+        if not ts_list:
+            break
+        last_ts = int(max(ts_list))
+        if last_ts >= end_ms or len(batch) < 1000:
+            break
+        nxt = last_ts + 1
+        if nxt <= since:
+            break
+        since = nxt
+    return rows
+
+
 def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd.DataFrame:
-    """尝试拉取资金费率与持仓量, 对齐到给定索引。任何失败都优雅降级为 NaN 列。"""
+    """尝试拉取资金费率与持仓量, 对齐到给定索引。任何失败都优雅降级为 NaN 列。
+
+    对多年回测做分页拉取(不再单次 limit=1000 截断)。
+    """
     out = pd.DataFrame(index=index)
     out["funding_rate"] = np.nan
     out["open_interest"] = np.nan
+    if len(index) == 0:
+        return out
+    start_ms = int(pd.Timestamp(index[0]).timestamp() * 1000)
+    end_ms = int(pd.Timestamp(index[-1]).timestamp() * 1000)
+
     try:
         import ccxt
 
         ex = getattr(ccxt, exchange)({"enableRateLimit": True})
         if ex.has.get("fetchFundingRateHistory"):
-            fr = ex.fetch_funding_rate_history(symbol, limit=1000)
+            fr = _paginate_funding(ex, symbol, start_ms, end_ms)
             if fr:
                 s = pd.Series(
                     {pd.to_datetime(r["timestamp"], unit="ms", utc=True): r["fundingRate"] for r in fr}
@@ -86,13 +139,12 @@ def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd
     except Exception:
         pass  # 衍生品缺失不阻断主流程
 
-    try:  # 持仓量(Open Interest): 部分交易所支持历史查询, 缺失则保持 NaN
+    try:
         import ccxt
 
         ex = getattr(ccxt, exchange)({"enableRateLimit": True})
         if ex.has.get("fetchOpenInterestHistory"):
-            tf = "1h" if index.freqstr is None else index.freqstr
-            oi = ex.fetch_open_interest_history(symbol, timeframe="1h", limit=1000)
+            oi = _paginate_oi(ex, symbol, start_ms, end_ms)
             if oi:
                 def _oi_val(r):
                     return r.get("openInterestAmount") or r.get("openInterestValue") or (
@@ -200,7 +252,7 @@ def load_symbol_data(cfg, symbol: str) -> pd.DataFrame:
       首次或无缓存时全量分页拉取多年历史并落盘。网络失败降级合成。
     """
     d = cfg["data"]
-    if d.get("use_synthetic", True):
+    if d.get("use_synthetic", False):
         return generate_synthetic_ohlcv(
             symbol, n_bars=int(d.get("synthetic_bars", 20_000)),
             timeframe=d["timeframe"], seed=cfg.seed,

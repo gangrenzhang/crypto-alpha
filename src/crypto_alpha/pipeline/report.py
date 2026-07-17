@@ -80,8 +80,16 @@ def run_all(cfg: Config, symbols: list[str], experts: list[str],
     available, skipped = probe_experts(cfg, experts)
     if not available:
         raise RuntimeError("没有可运行的专家; 请检查依赖安装。")
-    cfg["experts"]["enabled"] = available
+    # 不永久污染 Config: 仅在本函数作用域内覆盖 enabled
+    prev_enabled = list(cfg.raw["experts"].get("enabled") or [])
+    cfg.raw["experts"]["enabled"] = available
+    try:
+        return _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv)
+    finally:
+        cfg.raw["experts"]["enabled"] = prev_enabled
 
+
+def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
     results: dict = {
         "meta": {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -89,9 +97,9 @@ def run_all(cfg: Config, symbols: list[str], experts: list[str],
             "experts_run": available,
             "experts_skipped": skipped,
             "seed": cfg.seed,
-            "data_mode": "合成" if cfg["data"].get("use_synthetic", True) else "真实",
+            "data_mode": "合成" if cfg["data"].get("use_synthetic", False) else "真实",
             "news_mode": ("历史库" if cfg["news"].get("use_history") else
-                          ("合成" if cfg["news"].get("use_synthetic", True) else "实时")),
+                          ("合成" if cfg["news"].get("use_synthetic", False) else "实时")),
             "do_cpcv": do_cpcv,
         },
         "symbols": {},

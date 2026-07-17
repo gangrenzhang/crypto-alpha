@@ -15,9 +15,11 @@ from crypto_alpha.pipeline import prepare_dataset, train_and_validate, latest_de
 def _small_cfg() -> Config:
     cfg = Config.load()
     cfg.raw["data"]["use_synthetic"] = True
+    cfg.raw["news"]["use_synthetic"] = True  # 与合成行情配对, 守卫允许
     cfg.raw["data"]["synthetic_bars"] = 4000
     cfg.raw["experts"]["enabled"] = ["gbdt"]  # 冒烟只用 GBDT
     cfg.raw["validation"]["n_splits"] = 4
+    cfg.raw["backtest"]["portfolio_mode"] = True
     return cfg
 
 
