@@ -260,6 +260,58 @@ def test_roundtrip_cost_null_matches_backtest_and_decide():
     assert d_zero["suggested_position_pct"] >= d0["suggested_position_pct"]
 
 
+def test_equity_sharpe_additive_does_not_change_per_trade_sharpe():
+    """权益夏普为增量字段: 旧 sharpe 仍等于 sharpe_ratio(pnl); 权益口径保留平坦段。"""
+    from crypto_alpha.backtest.engine import (
+        backtest_events,
+        equity_curve_sharpe,
+        sharpe_ratio,
+    )
+
+    idx = pd.date_range("2023-01-01", periods=10, freq="1h", tz="UTC")
+    events = pd.DataFrame({
+        "ret": [np.log(1.05), np.log(0.97), np.log(1.08), np.log(1.02)],
+        "t1": [idx[3], idx[5], idx[7], idx[9]],
+        "bars_held": [3, 4, 4, 5],
+        "side": [1, -1, 1, 1],
+    }, index=idx[[0, 1, 2, 4]])
+    prob = np.array([0.9, 0.9, 0.9, 0.9])
+    bt_cfg = {
+        "prob_threshold": 0.55, "fee_bps": 5.0, "slippage_bps": 2.0,
+        "funding_bps_per_bar": 0.0, "portfolio_mode": True, "min_position_pct": 0.01,
+    }
+    risk_cfg = {
+        "kelly_fraction": 0.5, "max_position_pct": 0.3,
+        "max_gross_exposure": 1.0, "daily_max_drawdown": 0.0,
+        "roundtrip_cost_frac": None,
+    }
+    out = backtest_events(events, prob, bt_cfg, risk_cfg, payoff=1.0)
+    m = out["metrics"]
+    expected_trade_sr = sharpe_ratio(out["detail"]["pnl"].values)
+    assert abs(m["sharpe"] - expected_trade_sr) < 1e-12
+    for k in (
+        "sharpe_equity", "sharpe_equity_annualized",
+        "sharpe_equity_mtm", "sharpe_equity_mtm_annualized",
+    ):
+        assert k in m
+        assert np.isfinite(m[k])
+    eq_sr = equity_curve_sharpe(out["equity"])
+    assert abs(m["sharpe_equity"] - eq_sr["sharpe"]) < 1e-12
+    assert abs(m["sharpe_equity_annualized"] - eq_sr["sharpe_annualized"]) < 1e-12
+
+    # 权益函数保留零收益段(不去零)
+    eq = pd.Series(
+        [1.0, 1.0, 1.1, 1.1, 1.05],
+        index=pd.date_range("2023-01-01", periods=5, freq="1D", tz="UTC"),
+    )
+    got = equity_curve_sharpe(eq)
+    rets = eq.pct_change().iloc[1:].values
+    assert got["n_periods"] == 4
+    assert abs(got["sharpe"] - float(np.mean(rets) / (np.std(rets) + 1e-12))) < 1e-9
+    trade_like = sharpe_ratio(rets)
+    assert abs(got["sharpe"] - trade_like) > 1e-9
+
+
 def test_dsr_sqrt_clamps_negative_variance():
     """极端偏度下 DSR 方差项为负时不得抛错。"""
     from crypto_alpha.backtest.engine import deflated_sharpe_ratio

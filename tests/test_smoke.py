@@ -36,6 +36,8 @@ def test_trunk_runs():
 
     bt = trained["backtest"]["metrics"]
     assert "sharpe" in bt and "max_drawdown" in bt
+    # 权益夏普为增量字段, 不得缺席; 旧 sharpe 键名与语义保留
+    assert "sharpe_equity" in bt and "sharpe_equity_annualized" in bt
 
     assert ds.data_source == "synthetic"
     d = latest_decision(cfg, ds, trained)

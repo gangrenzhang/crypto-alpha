@@ -98,6 +98,8 @@ RESEARCH_DISCLAIMERS: list[str] = [
     "CPCV（若开启）评估单元是相关组合(combo)，不是拼接后的完整路径；"
     "请阅读 caveats；DSR/PBO 在配置数少或 dsr_n_trials 低估时偏乐观。",
     "execution_assumption 当前仅实现 close_fill；未实现取值会在加载配置时报错。",
+    "回测 Sharpe 字段为每笔 pnl_frac 口径(可丢弃零收益)；账户表现请看 "
+    "sharpe_equity / sharpe_equity_mtm（及年化字段）。DSR/CPCV 仍基于每笔口径。",
 ]
 
 
@@ -343,7 +345,15 @@ def _render_symbol(d: dict) -> str:
     p.append(_kpi("Brier", _fmt(ens.get("brier"))))
     p.append(_kpi("准确率", _fmt(ens.get("accuracy"), pct=True)))
     p.append(_kpi("样本数", str(d["n_events"])))
-    p.append(_kpi("Sharpe", _fmt(bt["sharpe"]), cls=_cls(bt["sharpe"])))
+    p.append(_kpi("每笔Sharpe", _fmt(bt["sharpe"]), cls=_cls(bt["sharpe"])))
+    # 权益曲线夏普(增量字段; 缺省时不崩旧 summary)
+    eq_ann = bt.get("sharpe_equity_annualized")
+    if eq_ann is None:
+        eq_ann = bt.get("sharpe_equity")
+    p.append(_kpi("权益Sharpe年化", _fmt(eq_ann), cls=_cls(eq_ann if eq_ann is not None else 0.0)))
+    if bt.get("mark_to_market") and bt.get("sharpe_equity_mtm_annualized") is not None:
+        mtm_ann = bt["sharpe_equity_mtm_annualized"]
+        p.append(_kpi("盯市权益Sharpe年化", _fmt(mtm_ann), cls=_cls(mtm_ann)))
     p.append(_kpi("总收益", _fmt(bt["total_return"], pct=True), cls=_cls(bt["total_return"])))
     p.append(_kpi("最大回撤", _fmt(bt["max_drawdown"], pct=True), cls="neg"))
     p.append(_kpi("Calmar", _fmt(bt["calmar"])))

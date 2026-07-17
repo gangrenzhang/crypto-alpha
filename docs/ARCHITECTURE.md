@@ -391,9 +391,17 @@ OHLCV(+衍生品)
 
 旧口径，**会高估收益、低估回撤**，仅作对照。
 
-指标：每笔 Sharpe、**年化 Sharpe（按平均唯一性折算）**、MDD（盯市优先）、`max_drawdown_realized`、`avg_uniqueness`、`n_trades_effective`、Calmar、胜率；另有 `deflated_sharpe_ratio`、`probability_of_backtest_overfitting`。
+指标（**旧字段语义冻结**，仅增量扩展）：
 
-DSR：方差项在开方前 **clamp ≥ 0**（极端偏度/夏普下公式括号可为负）；clamp 后标准差为 0 则返回 `nan`，避免污染报告。
+| 字段 | 口径 | 说明 |
+|------|------|------|
+| `sharpe` / `sharpe_annualized` | 每笔 `pnl_frac`（可丢弃恰好为 0 的收益）；年化按平均唯一性折算有效成交数 | **历史主字段**；CPCV / DSR 仍用此口径，勿改语义 |
+| `sharpe_equity` / `sharpe_equity_annualized` | 已实现权益曲线相邻点简单收益；**保留**平坦段（不去零） | 账户级对照；由 `equity_curve_sharpe` 计算 |
+| `sharpe_equity_mtm` / `sharpe_equity_mtm_annualized` | 盯市权益曲线同上；无盯市时与已实现字段相同 | 与 MDD 所用曲线一致时更贴近浮盈回撤 |
+
+另有：`max_drawdown`（盯市优先）、`max_drawdown_realized`、`avg_uniqueness`、`n_trades_effective`、Calmar、胜率；以及 `deflated_sharpe_ratio`、`probability_of_backtest_overfitting`。
+
+DSR：方差项在开方前 **clamp ≥ 0**（极端偏度/夏普下公式括号可为负）；clamp 后标准差为 0 则返回 `nan`，避免污染报告。DSR 的 observed SR 仍取自每笔口径（与 CPCV `combo_sharpes` 一致），**不**自动切换为权益夏普。
 
 ---
 
@@ -637,7 +645,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 |------|------|
 | `test_smoke.py` | 合成 + 仅 GBDT 全链路 |
 | `test_leakage.py` | 新闻 as-of（决策时刻）、Purged 无重叠、合成新闻守卫、盘中止损 |
-| `test_design_fixes.py` | pt_sl/ATR/加性空头、组合敞口、CUSUM 无前视、null 成本、DSR clamp、小样本 stacking、execution_assumption、新闻覆盖率、看板 disclaimer、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations**、**MTF+空新闻路径** |
+| `test_design_fixes.py` | pt_sl/ATR/加性空头、组合敞口、CUSUM 无前视、null 成本、DSR clamp、**权益夏普增量字段**、小样本 stacking、execution_assumption、新闻覆盖率、看板 disclaimer、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations**、**MTF+空新闻路径** |
 | `test_mtf.py` | 辅周期无前视（对齐层须为 NaN）、拒绝更细周期、特征含 MTF |
 | `test_pipeline_integrity.py` | 闭环完整性闸门（见 18.1；空对照默认关 MTF/新闻，见局限） |
 
@@ -689,12 +697,13 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - [x] 默认组合级 + **入场名义加性记账**  
 - [x] 回测接入保形 `confident` 掩码（全 False → 零开仓有测）  
 - [x] 标签与 decide 共用 ATR × `pt_sl`（多空加性；Kelly 成本 `null→2*(fee+slip)` 回测/实盘一致）  
-- [x] 盯市 MDD/日内熔断；年化夏普按唯一性折算  
+- [x] 盯市 MDD/日内熔断；每笔年化夏普按唯一性折算；**并行**权益/盯市权益夏普  
 - [x] `data_source` / 看板 `data_mode` 反映真实或降级合成；**Degradations** 上板  
 - [x] `execution_assumption` **仅允许已实现值**（当前 `close_fill`）；未实现配置 fail-fast  
 - [x] 新闻特征覆盖率过低 → `news_features_sparse`；衍生品不可用 → `derivatives_*_unavailable`  
 - [x] 实盘缺特征列 → `feature_schema_mismatch` HOLD（非静默填 0 开仓）  
-- [~] 资金费默认 0；跨币种仍分账户；盯市仍为事件节点稀疏采样；报告夏普仍为**每笔** `pnl_frac` 口径（非权益曲线）  
+- [x] 报告并行输出权益曲线夏普（`sharpe_equity*` / `sharpe_equity_mtm*`）；旧 `sharpe` 每笔口径与 CPCV/DSR 不变；看板区分「每笔 / 权益」  
+- [~] 资金费默认 0；跨币种仍分账户；盯市仍为事件节点稀疏采样  
 - [~] 障碍触达按挂单价记账（缺口穿越相对可交易 PnL 偏乐观）  
 
 ---
@@ -725,7 +734,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | OOF ≠ walk-forward | Purged/CPCV 为组合式评估，非实盘滚动再训练；**看板/summary 已强制 disclaimer** | ★★ 上线前另做 WF |
 | integrity 空对照 | `_cpu_cfg` 默认关 MTF/新闻；「20 项 PASS」不覆盖默认特征面全开路径（另有 MTF+空新闻装配测） | ★★ 开 MTF+新闻的空对照闸门 |
 | 组合回测回撤 | 加性记账 + 盯市；浮动仍不按障碍封顶；盯市为事件节点稀疏采样 | ★ high/low 路径重演 |
-| 报告夏普口径 | 每笔 `pnl_frac` SR（可丢弃 size=0），非盯市权益曲线 SR；DSR 吃该口径 | ★ 权益曲线夏普并行输出 |
+| 报告夏普口径 | 每笔 `sharpe*` 保留；已并行 `sharpe_equity*` / `sharpe_equity_mtm*`；DSR/CPCV 仍吃每笔口径 | —（已落地；权益曲线仍为事件节点稀疏采样） |
 | 障碍缺口 | 触达按理论挂单价记账，跳空时相对可交易 PnL 偏乐观 | ★ 按实际穿越价记账（可选） |
 | 实盘特征 schema | 缺列已强制 HOLD + `degradations`；不在坏分布上推理 | —（已落地） |
 | 仓位 / 执行 | Kelly 启发式；`null` 成本已与回测统一；**仅 `close_fill` 已实现**（未实现取值报错） | ★ 实现后再开放 `next_open` |

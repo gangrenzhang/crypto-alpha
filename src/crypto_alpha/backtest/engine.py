@@ -11,6 +11,8 @@
 - 资金费按持有 bar 数累计(funding × bars_held), 手续费/滑点开平各一次。
 - 夏普为"每笔"口径, 年化用**平均唯一性折算的有效独立成交数**(而非直接 √成交数),
   因为三重障碍事件持有期高度重叠、并不独立, 直接年化会系统性高估。
+  字段 ``sharpe`` / ``sharpe_annualized`` 语义不变; 另**并行**输出权益曲线夏普
+  (``sharpe_equity*`` / ``sharpe_equity_mtm*``), 不替换旧字段、不改 CPCV/DSR 输入。
 - **盯市(mark-to-market)**: 若传入 `prices`(收盘价序列)且事件含 side, 组合模式会按
   收盘价重建含持仓浮盈亏的权益曲线, 用于 MDD 与日内熔断——避免"只在出场记账"漏掉
   并发持仓的浮动回撤。未传 prices 时回退到仅出场记账的旧口径(偏乐观)。
@@ -318,6 +320,7 @@ def _pack_result(
         "n_trades": int(len(traded)),
         "n_halted": int(sum(halted_flags)) if halted_flags is not None else 0,
         "total_return": float(eq_vals[-1] - 1.0) if len(eq_vals) else 0.0,
+        # 每笔口径(历史字段, 语义冻结; CPCV/DSR 仍吃此口径)
         "sharpe": sharpe_ratio(df["pnl"].values) if len(df) and "pnl" in df.columns else 0.0,
         "sharpe_annualized": sharpe_ratio(
             df["pnl"].values if len(df) and "pnl" in df.columns else np.array([]), ppy
@@ -331,6 +334,17 @@ def _pack_result(
         "avg_pnl": float(traded["pnl"].mean()) if len(traded) else 0.0,
         "portfolio_mode": mode,
     }
+    # 权益曲线夏普: 纯增量字段, 不改 sharpe / sharpe_annualized / 成交明细
+    eq_sr = equity_curve_sharpe(equity)
+    metrics["sharpe_equity"] = eq_sr["sharpe"]
+    metrics["sharpe_equity_annualized"] = eq_sr["sharpe_annualized"]
+    if mtm_equity is not None and len(mtm_equity) > 0:
+        mtm_sr = equity_curve_sharpe(mtm_equity)
+        metrics["sharpe_equity_mtm"] = mtm_sr["sharpe"]
+        metrics["sharpe_equity_mtm_annualized"] = mtm_sr["sharpe_annualized"]
+    else:
+        metrics["sharpe_equity_mtm"] = metrics["sharpe_equity"]
+        metrics["sharpe_equity_mtm_annualized"] = metrics["sharpe_equity_annualized"]
     if "skipped_capacity" in df.columns:
         metrics["n_skipped_capacity"] = int(df["skipped_capacity"].sum())
     mdd = abs(metrics["max_drawdown"]) + 1e-9
@@ -397,6 +411,11 @@ def _periods_per_year(index, n_trades: int, avg_uniqueness: float = 1.0) -> floa
 
 
 def sharpe_ratio(returns: np.ndarray, periods_per_year: float = 0.0) -> float:
+    """每笔 ``pnl_frac`` 夏普(历史口径)。
+
+    丢弃恰好为 0 的收益后再算 mean/std——与早期实现一致, **请勿改此行为**
+    (CPCV/DSR/既有实验依赖)。账户级表现请看 ``equity_curve_sharpe``。
+    """
     r = np.asarray(returns, dtype=float)
     r = r[r != 0] if (r != 0).any() else r
     if len(r) < 2 or r.std() == 0:
@@ -405,6 +424,66 @@ def sharpe_ratio(returns: np.ndarray, periods_per_year: float = 0.0) -> float:
     if periods_per_year:
         sr *= np.sqrt(periods_per_year)
     return float(sr)
+
+
+def equity_curve_sharpe(equity: pd.Series | np.ndarray) -> dict:
+    """由权益曲线相邻点简单收益计算夏普(与每笔 ``sharpe_ratio`` 独立)。
+
+    - 保留 0 收益段(平坦权益), **不**套用 ``sharpe_ratio`` 的去零逻辑。
+    - 年化: ``(mean/std) * sqrt(n_periods / years)``, years 由首末时间戳跨度估计;
+      无时间索引或跨度无效时 ``sharpe_annualized=0``。
+    - 不修改任何回测成交/仓位逻辑; 仅供 ``metrics`` 增量字段。
+
+    返回 ``{sharpe, sharpe_annualized, n_periods, periods_per_year}``。
+    """
+    out = {
+        "sharpe": 0.0,
+        "sharpe_annualized": 0.0,
+        "n_periods": 0,
+        "periods_per_year": 0.0,
+    }
+    if isinstance(equity, pd.Series):
+        eq = equity.astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+        idx = eq.index
+        vals = eq.values
+    else:
+        vals = np.asarray(equity, dtype=float)
+        vals = vals[np.isfinite(vals)]
+        idx = None
+    if len(vals) < 2:
+        return out
+
+    # 简单收益; 权益非正则跳过该段(防御)
+    prev = vals[:-1]
+    curr = vals[1:]
+    ok = (np.abs(prev) > 1e-15) & np.isfinite(prev) & np.isfinite(curr)
+    if not ok.any():
+        return out
+    rets = (curr[ok] - prev[ok]) / prev[ok]
+    out["n_periods"] = int(len(rets))
+    if len(rets) < 2 or float(np.std(rets)) == 0.0:
+        return out
+    raw = float(np.mean(rets) / (float(np.std(rets)) + 1e-12))
+    out["sharpe"] = raw
+
+    ppy = 0.0
+    if idx is not None and len(idx) >= 2:
+        try:
+            t0 = pd.Timestamp(idx[0])
+            t1 = pd.Timestamp(idx[-1])
+            if t0.tzinfo is None:
+                t0 = t0.tz_localize("UTC")
+            if t1.tzinfo is None:
+                t1 = t1.tz_localize("UTC")
+            span_days = (t1 - t0).total_seconds() / 86400.0
+            if span_days > 0:
+                ppy = float(len(rets) / (span_days / 365.25))
+        except Exception:
+            ppy = 0.0
+    out["periods_per_year"] = ppy
+    if ppy > 0:
+        out["sharpe_annualized"] = float(raw * np.sqrt(ppy))
+    return out
 
 
 def max_drawdown(equity: np.ndarray) -> float:
