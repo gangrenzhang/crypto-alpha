@@ -341,19 +341,30 @@ def _load_synthetic(cfg, symbol: str, timeframe: str) -> pd.DataFrame:
     return resample_ohlcv(main, timeframe)
 
 
+def _tag_source(df: pd.DataFrame, source: str) -> pd.DataFrame:
+    """在 DataFrame.attrs 标记数据来源, 供看板/审计读取(不改变列数据)。"""
+    out = df
+    try:
+        out.attrs["data_source"] = source
+    except Exception:
+        pass
+    return out
+
+
 def load_symbol_data(cfg, symbol: str, timeframe: str | None = None) -> pd.DataFrame:
     """按配置加载单个币种、指定周期的 OHLCV。
 
     - 合成模式: 主周期确定性生成; 辅周期由主周期 resample(价格路径一致, 不缓存)。
     - 真实模式: 每周期独立 parquet 缓存 + 增量更新; 网络失败时主周期可降级合成,
       辅周期失败则抛给上层(由 load_aux_timeframes 降级跳过)。
+    - 产物 `df.attrs["data_source"]` ∈ {synthetic, real, cache, synthetic_fallback}。
     """
     d = cfg["data"]
     main_tf = d["timeframe"]
     tf = timeframe or main_tf
 
     if d.get("use_synthetic", False):
-        return _load_synthetic(cfg, symbol, tf)
+        return _tag_source(_load_synthetic(cfg, symbol, tf), "synthetic")
 
     cache = raw_cache_path(cfg, symbol, tf)
     use_cache = bool(d.get("cache", True))
@@ -370,18 +381,24 @@ def load_symbol_data(cfg, symbol: str, timeframe: str | None = None) -> pd.DataF
                 df = drop_incomplete_last_bar(df, tf)
         else:
             df = drop_incomplete_last_bar(df, tf)
-        return df
+        return _tag_source(df, "cache")
 
     try:
         df = _fetch_real(cfg, symbol, tf)
     except Exception as e:
         if tf == main_tf:
-            print(f"[warn] 真实数据拉取失败 ({e}); 降级为合成数据。")
-            return _load_synthetic(cfg, symbol, tf)
+            allow = bool(d.get("allow_synthetic_fallback", True))
+            print(
+                f"[warn] 真实数据拉取失败 ({e}); "
+                + ("降级为合成数据(data_source=synthetic_fallback)。" if allow else "且禁止降级。")
+            )
+            if not allow:
+                raise
+            return _tag_source(_load_synthetic(cfg, symbol, tf), "synthetic_fallback")
         raise
     if use_cache and len(df):
         save_parquet(df, cache)
-    return df
+    return _tag_source(df, "real")
 
 
 def load_aux_timeframes(

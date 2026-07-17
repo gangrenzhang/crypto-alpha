@@ -10,6 +10,9 @@
 显存: 32B 4-bit QLoRA 约 24–48GB; 若改配置为 72B 则约 48–70GB(单卡 80GB)。
 依赖(按需安装): transformers peft bitsandbytes accelerate datasets
 训练脚本: scripts/train_llm_qlora.py。集成路径 fit() 只加载 adapter, 不训练。
+
+伪 OOF: ``pseudo_oof=True`` — 不得假装折内重训。Stacking 默认
+``exclude_pseudo_oof_from_meta=true`` 将其排除出元学习器, 分数仅保留诊断。
 """
 from __future__ import annotations
 
@@ -53,6 +56,8 @@ def build_messages(row: pd.Series, side: int, news: str = "") -> list[dict]:
 class LLMExpert(BaseExpert):
     name = "llm"
     needs_panel = True
+    # fit 仅加载 adapter → 非折内重训; stacking 默认排除出 meta(见 ensemble 配置)
+    pseudo_oof = True
 
     _news_df = None
     _news_buffer = 5

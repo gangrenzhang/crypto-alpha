@@ -3,6 +3,8 @@ from .calibrate import (
     ConformalBinary,
     classification_report_probs,
     cross_fitted_calibrated,
+    cross_fitted_conformal_flags,
+    fit_deploy_calibrator_and_conformal,
 )
 
 __all__ = [
@@ -10,4 +12,6 @@ __all__ = [
     "ConformalBinary",
     "classification_report_probs",
     "cross_fitted_calibrated",
+    "cross_fitted_conformal_flags",
+    "fit_deploy_calibrator_and_conformal",
 ]

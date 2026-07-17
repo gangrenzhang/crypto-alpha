@@ -29,10 +29,34 @@ class TSFMExpert(BaseExpert):
     name = "tsfm"
     needs_panel = True
 
+    def __init__(self, cfg: dict, feature_cols: list[str], seed: int = 42):
+        super().__init__(cfg, feature_cols, seed)
+        self.degraded = False
+        self.degraded_reason: str | None = None
+        self._kind = "naive"
+
+    def clone(self) -> "TSFMExpert":
+        obj = super().clone()
+        obj.degraded = self.degraded
+        obj.degraded_reason = self.degraded_reason
+        obj._kind = getattr(self, "_kind", "naive")
+        if hasattr(self, "pipe"):
+            obj.pipe = self.pipe
+        if hasattr(self, "_tfm"):
+            obj._tfm = self._tfm
+        return obj
+
+    def _mark_degraded(self, reason: str) -> None:
+        self.degraded = True
+        self.degraded_reason = reason
+        self._kind = "naive"
+
     # ---------------- 后端加载 ----------------
     def _load_backend(self):
         backend = self.cfg.get("backend", "chronos")
         self._kind = "naive"
+        self.degraded = False
+        self.degraded_reason = None
         if backend == "naive":
             return
         if backend == "chronos":
@@ -47,6 +71,7 @@ class TSFMExpert(BaseExpert):
                 self._kind = "chronos"
             except Exception as e:
                 print(f"[warn] Chronos 不可用({e}); TSFM 回退 naive 基线。")
+                self._mark_degraded(f"chronos_unavailable:{e}")
         elif backend == "timesfm":
             try:
                 import timesfm  # type: ignore
@@ -55,8 +80,10 @@ class TSFMExpert(BaseExpert):
                 self._kind = "timesfm"
             except Exception as e:
                 print(f"[warn] TimesFM 不可用({e}); TSFM 回退 naive 基线。")
+                self._mark_degraded(f"timesfm_unavailable:{e}")
         else:
             print(f"[warn] 未知 TSFM backend={backend}; 使用 naive 基线。")
+            self._mark_degraded(f"unknown_backend:{backend}")
 
     # ---------------- 上下文与协变量 ----------------
     def _context_series(self, index: pd.Index) -> list[np.ndarray]:
@@ -109,10 +136,11 @@ class TSFMExpert(BaseExpert):
                 pred = self._timesfm_forecast(s, horizon)
                 return float(np.log(pred[-1] + 1e-9) - np.log(s[-1] + 1e-9))
             except NotImplementedError:
-                # 未按所装版本实现原生调用 => 不崩, 优雅回退 naive 基线(仅告警一次)
+                # 未按所装版本实现原生调用 => 不崩, 标记降级并回退 naive
                 if not getattr(self, "_timesfm_warned", False):
-                    print("[warn] TimesFM 前向未实现; 本次回退 naive 基线。")
+                    print("[warn] TimesFM 前向未实现; 本次回退 naive 基线(degraded=True)。")
                     self._timesfm_warned = True
+                self._mark_degraded("timesfm_forward_not_implemented")
         # naive: 近端对数收益动量外推
         logret = np.diff(np.log(s[-min(len(s) - 1, 24):] + 1e-9))
         return float(np.mean(logret) * horizon)

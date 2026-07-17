@@ -45,12 +45,13 @@ def test_news_asof_no_future_leak(monkeypatch):
     feat = pd.DataFrame({"close": np.arange(5, dtype=float)}, index=idx)
     out = add_news_features(feat, cfg, "BTC/USDT")
 
-    # 10:00 这根 bar(新闻尚未"可用")必须取不到该新闻
-    assert out.loc[idx[2], "has_recent_news"] == 0.0
-    assert out.loc[idx[2], "news_sentiment_raw"] == 0.0
-    # 11:00 这根 bar 才应看到(已过缓冲)
-    assert out.loc[idx[3], "has_recent_news"] == 1.0
-    assert out.loc[idx[3], "news_sentiment_raw"] > 0.0
+    # 决策时刻 = 开盘 + 1h; 新闻可用=10:05
+    # 09:00 bar → 决策 10:00 < 10:05 → 不得看到
+    assert out.loc[idx[1], "has_recent_news"] == 0.0
+    assert out.loc[idx[1], "news_sentiment_raw"] == 0.0
+    # 10:00 bar → 决策 11:00 ≥ 10:05 → 应看到
+    assert out.loc[idx[2], "has_recent_news"] == 1.0
+    assert out.loc[idx[2], "news_sentiment_raw"] > 0.0
 
 
 # --------------------------------------------------------------------------
@@ -91,6 +92,48 @@ def test_synthetic_news_guard_on_real_prices():
 
     with pytest.raises(ValueError):
         build_news_panel(cfg, "BTC/USDT")
+
+
+def test_synthetic_history_providers_guard_on_real_prices():
+    """真实行情下 history.providers 仅含 synthetic 亦应拒绝。"""
+    from crypto_alpha.data.news import build_news_panel
+
+    cfg = Config.load()
+    cfg.raw["data"]["use_synthetic"] = False
+    cfg.raw["news"]["use_synthetic"] = False
+    cfg.raw["news"]["use_history"] = True
+    cfg.raw["news"]["history"]["providers"] = ["synthetic"]
+
+    with pytest.raises(ValueError):
+        build_news_panel(cfg, "BTC/USDT")
+
+
+def test_news_sentiment_raw_respects_ttl(monkeypatch):
+    """过期新闻的 news_sentiment_raw 必须归零(无 TTL 旁路)。"""
+    import crypto_alpha.data.news as news_mod
+    from crypto_alpha.features.news_features import add_news_features
+
+    cfg = Config.load()
+    cfg.raw["news"]["as_feature"] = True
+    cfg.raw["news"]["buffer_minutes"] = 0
+    cfg.raw["news"]["feature_ttl_hours"] = 1.0  # 1 小时过期
+    cfg.raw["news"]["feature_halflife_hours"] = 6
+
+    idx = pd.date_range("2023-01-01 08:00", periods=6, freq="1h", tz="UTC")
+    news_ts = pd.DatetimeIndex([pd.Timestamp("2023-01-01 08:00", tz="UTC")])
+    news_panel = pd.DataFrame(
+        {"sentiment": [1.0], "corroboration": [1], "n_items": [1], "max_authority": [1.0]},
+        index=news_ts,
+    )
+    news_panel.index.name = "timestamp"
+    monkeypatch.setattr(news_mod, "load_news_panel", lambda cfg, symbol: news_panel)
+
+    feat = pd.DataFrame({"close": np.arange(6, dtype=float)}, index=idx)
+    out = add_news_features(feat, cfg, "BTC/USDT")
+    # 决策时刻=09:00 时新闻刚可用且未过期; 决策=14:00(idx[5] open 13:00+1h) 已过 TTL
+    # idx[5]=13:00 → decision 14:00, age from news avail 08:00 = 6h > 1h → raw=0
+    assert out.loc[idx[5], "news_sentiment_raw"] == 0.0
+    assert out.loc[idx[5], "has_recent_news"] == 0.0
 
 
 # --------------------------------------------------------------------------

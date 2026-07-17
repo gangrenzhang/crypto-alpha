@@ -294,7 +294,7 @@ def count_cv_overlaps(
 
 
 def embargo_gap_ok(t1: pd.Series, n_splits: int = 5, embargo_pct: float = 0.05) -> bool:
-    """禁运有效性: 每个测试段结束后, 紧邻的 embargo 根样本不得进入训练集。"""
+    """禁运有效性: 每个测试段结束后, 紧邻的 embargo 根(clamp 到末尾)不得进入训练集。"""
     from ..validation.purged_kfold import PurgedKFold
 
     n = len(t1)
@@ -302,12 +302,12 @@ def embargo_gap_ok(t1: pd.Series, n_splits: int = 5, embargo_pct: float = 0.05) 
     if embargo <= 0:
         return True
     X = pd.DataFrame(index=t1.index)
-    indices = np.arange(n)
     for tr, te in PurgedKFold(n_splits, t1, embargo_pct).split(X):
         end = int(te[-1]) + 1
-        if end + embargo > n:
-            continue
-        banned = set(range(end, end + embargo))
+        ban_end = min(end + embargo, n)
+        if end >= ban_end:
+            continue  # 最后一折之后无样本可禁运
+        banned = set(range(end, ban_end))
         if banned & set(tr.tolist()):
             return False
     return True
@@ -317,19 +317,27 @@ def embargo_gap_ok(t1: pd.Series, n_splits: int = 5, embargo_pct: float = 0.05) 
 # 回测对账                                                                     #
 # --------------------------------------------------------------------------- #
 def backtest_reconciliation(bt: dict, tol: float = 1e-6) -> dict:
-    """回测自洽对账: 末端权益应等于逐笔 pnl 的累计复利, total_return 与之一致。"""
+    """回测自洽对账。
+
+    - 独立复利 / 无 entry_equity: 末端权益 = ∏(1+pnl)
+    - 组合加性(含 entry_equity): 末端权益 = 1 + Σ(entry_equity × pnl_frac)
+    """
     detail = bt["detail"]
     equity = bt["equity"]
     pnl = detail["pnl"].values if "pnl" in detail.columns else np.array([])
-    recon_equity = float(np.prod(1.0 + pnl)) if len(pnl) else 1.0
+    if len(pnl) and "entry_equity" in detail.columns:
+        ee = detail["entry_equity"].fillna(0.0).values.astype(float)
+        recon_equity = float(1.0 + np.sum(ee * pnl))
+    else:
+        recon_equity = float(np.prod(1.0 + pnl)) if len(pnl) else 1.0
     end_equity = float(equity.values[-1]) if len(equity) else 1.0
     reported = 1.0 + float(bt["metrics"]["total_return"])
     return {
         "recon_from_pnl": recon_equity,
         "end_equity": end_equity,
         "reported_total_return_equity": reported,
-        "equity_matches_pnl": abs(recon_equity - end_equity) <= tol * max(1.0, recon_equity),
-        "metric_matches_equity": abs(reported - end_equity) <= tol * max(1.0, reported),
+        "equity_matches_pnl": abs(recon_equity - end_equity) <= tol * max(1.0, abs(recon_equity)),
+        "metric_matches_equity": abs(reported - end_equity) <= tol * max(1.0, abs(reported)),
     }
 
 

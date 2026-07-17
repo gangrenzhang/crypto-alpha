@@ -54,7 +54,8 @@ class CombinatorialPurgedCV:
                 overlap = (self.t1 >= t0).values & (self.t1.index <= test_end_time)
                 train_mask &= ~overlap
                 end = gi[-1] + 1
-                if embargo > 0 and end + embargo <= n:
-                    train_mask[end : end + embargo] = False
+                # 与 PurgedKFold 一致: 禁运带 clamp 到 n, 近末组也不得整段跳过
+                if embargo > 0 and end < n:
+                    train_mask[end : min(end + embargo, n)] = False
 
             yield np.where(train_mask)[0], test_idx, combo

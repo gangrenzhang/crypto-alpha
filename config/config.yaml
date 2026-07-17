@@ -21,6 +21,8 @@ data:
   # CI/冒烟测试在代码里显式打开 use_synthetic, 勿依赖本默认值做演示。
   use_synthetic: false
   synthetic_bars: 20000
+  # 真实拉取失败时是否允许降级合成(会写入 data_source=synthetic_fallback; 看板不再谎报「真实」)
+  allow_synthetic_fallback: true
   # 真实数据缓存: 主周期 data/raw/<SYMBOL>.parquet; 辅周期 data/raw/<SYMBOL>__4h.parquet
   cache: true
   incremental_update: true        # 每次运行只增量拉取缓存之后的新 bar
@@ -37,7 +39,8 @@ news:
     raw_dir: data/news_raw     # 原始语料库(corpus.parquet)+续跑检查点目录
     start: "2021-01-01T00:00:00Z"  # 回填起点
     end: null                  # 回填终点(null=至今)
-    providers: ["synthetic"]   # synthetic / cryptocompare(lTs分页) / gdelt(日期窗)
+    # 真实行情下禁止仅用 synthetic(有硬守卫); 离线演示请同时打开 data.use_synthetic
+    providers: ["cryptocompare", "gdelt"]   # synthetic / cryptocompare / gdelt
     window_days: 7             # GDELT 分窗宽度(每窗<=250条)
     rate_limit_sec: 5.0        # 每次请求间隔(对公共API友好, 防封)
     max_windows: 400           # GDELT 窗口数安全上限
@@ -110,6 +113,8 @@ labeling:
   primary_signal: momentum
   primary_lookback: 24
   min_cusum_events: 50         # CUSUM 事件少于此数则退回全量采样
+  cusum_min_periods: 50        # 因果扩展中位数阈值的最小样本数
+  serve_require_cusum: true    # 实盘/最新决策须落在 CUSUM 事件上(与训练对齐; 全量回退时自动放宽)
 
 # ---------------- 验证: Purged CV / CPCV ----------------
 validation:
@@ -184,12 +189,16 @@ ensemble:
   C: 1.0
   # 弱专家剪枝: OOF AUC 低于此阈值(0.5=随机)的专家自动剔除(至少保留 1 个)。设 0 关闭。
   min_expert_auc: 0.5
+  # 伪 OOF 专家(如 LLM: fit 只加载 adapter)默认不进入元学习器, 避免污染 nested OOF/回测
+  # false=仍把冻结分数喂给 meta(不推荐; 会记 degradations)
+  exclude_pseudo_oof_from_meta: true
 
 # ---------------- 校准 / 保形预测 ----------------
 calibration:
   method: isotonic         # isotonic / sigmoid
   conformal_alpha: 0.1     # 保形预测显著性(1-覆盖率)
-  calib_splits: 5          # 交叉拟合校准的折数(评估用无泄漏校准概率)
+  calib_splits: 5          # 交叉拟合校准/保形的折数(评估用无泄漏)
+  conformal_frac: 0.3      # 部署: 较晚该比例 OOF 专供保形拟合(与校准器时间切分独立)
 
 # ---------------- 回测 ----------------
 backtest:
@@ -215,8 +224,12 @@ serve:
 
 # ---------------- 风控 ----------------
 risk:
-  kelly_fraction: 0.5      # 半 Kelly
+  kelly_fraction: 0.5      # 半 Kelly(实为置信度→仓位启发式, 见 ARCHITECTURE §12)
   max_position_pct: 0.30   # 单笔最大仓位
   max_gross_exposure: 1.0  # 并发持仓合计上限(组合回测锁定仓位用)
   atr_stop_mult: 1.5       # 仅当未传 pt_sl 时的回退; 正常与 labeling.pt_sl 对齐
   daily_max_drawdown: 0.05 # 日内熔断: 当日回撤触及此比例后, 当日剩余事件停止开仓(回测已实现); 设 0 关闭
+  # 往返成本分数(相对仓位名义); null 则 resolve_roundtrip_cost → 2*(fee+slip), 回测与 decide 共用
+  roundtrip_cost_frac: null
+  # 执行假设: close_fill=用当根收盘特征并按该收盘成交(研究默认; 实盘通常更接近下一根开盘)
+  execution_assumption: close_fill

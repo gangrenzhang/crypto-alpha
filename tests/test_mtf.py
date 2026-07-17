@@ -131,7 +131,9 @@ def test_prepare_dataset_with_mtf_smoke():
     mtf_in_x = [c for c in ds.feature_cols if c.startswith("tf4h_") or c.startswith("tf1d_") or c == "mtf_confluence"]
     assert len(mtf_in_x) > 0, "数据集特征应含多周期列"
     assert len(ds.y) > 100
-    assert ds.X.shape[1] == len(ds.feature_cols) + 1  # + side
+    assert "side" in ds.feature_cols
+    assert "side" in ds.X.columns
+    assert ds.X.shape[1] == len(ds.feature_cols)  # side 已在 feature_cols 内
 
 
 if __name__ == "__main__":

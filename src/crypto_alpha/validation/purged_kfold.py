@@ -52,8 +52,8 @@ class PurgedKFold:
             overlap = (train_t1 >= t0).values & (train_t1.index <= test_end_time)
             train_mask &= ~overlap
 
-            # 禁运: 测试段之后 embargo 根样本也剔除
-            if embargo > 0 and end + embargo <= X.shape[0]:
-                train_mask[end : end + embargo] = False
+            # 禁运: 测试段之后最多 embargo 根样本剔除(末折/近末折也 clamp 到 n, 禁止整段跳过)
+            if embargo > 0 and end < X.shape[0]:
+                train_mask[end : min(end + embargo, X.shape[0])] = False
 
             yield indices[train_mask], test_idx

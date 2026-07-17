@@ -37,9 +37,14 @@ def test_trunk_runs():
     bt = trained["backtest"]["metrics"]
     assert "sharpe" in bt and "max_drawdown" in bt
 
+    assert ds.data_source == "synthetic"
     d = latest_decision(cfg, ds, trained)
     assert d["signal"] in {"LONG", "SHORT", "HOLD"}
-    assert 0.0 <= d["win_probability"] <= 1.0
+    if d.get("reason") == "not_cusum_event":
+        assert d["signal"] == "HOLD"  # 与训练 CUSUM 事件对齐
+    else:
+        assert d["win_probability"] is not None
+        assert 0.0 <= d["win_probability"] <= 1.0
     print("SMOKE OK:", {"auc": rep["auc"], "sharpe": bt["sharpe"], "decision": d["signal"]})
 
 

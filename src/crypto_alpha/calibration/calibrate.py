@@ -93,6 +93,68 @@ def cross_fitted_calibrated(
     return out
 
 
+def cross_fitted_conformal_flags(
+    prob: np.ndarray, y: np.ndarray, t1, alpha: float = 0.1,
+    n_splits: int = 5, embargo_pct: float = 0.01,
+) -> np.ndarray:
+    """交叉拟合保形弃权旗标: 训练折拟合 ConformalBinary, 测试折出 confident。
+
+    与回测/评估对齐, 避免用部署保形器在同一批 OOF 上自评。无法交叉拟合时默认 True
+    (不额外弃权, 由概率阈值单独把关)。
+    """
+    from ..validation.purged_kfold import PurgedKFold
+    import pandas as pd
+
+    prob = np.asarray(prob, dtype=float)
+    yy = np.asarray(y, dtype=int)
+    out = np.ones(len(prob), dtype=bool)
+    pos = np.where(~np.isnan(prob))[0]
+    if len(pos) < n_splits * 2:
+        return out
+
+    t1 = pd.Series(t1)
+    idx = t1.index[pos]
+    t1m = t1.loc[idx]
+    Xdummy = pd.DataFrame(index=idx)
+    pkf = PurgedKFold(n_splits=n_splits, t1=t1m, embargo_pct=embargo_pct)
+    for tr, te in pkf.split(Xdummy):
+        if len(np.unique(yy[pos[tr]])) < 2 or len(tr) < 10:
+            continue
+        conf = ConformalBinary(alpha=alpha).fit(prob[pos[tr]], yy[pos[tr]])
+        out[pos[te]] = conf.predict_set(prob[pos[te]])["confident"]
+    return out
+
+
+def fit_deploy_calibrator_and_conformal(
+    prob: np.ndarray, y: np.ndarray, method: str = "isotonic",
+    alpha: float = 0.1, conformal_frac: float = 0.3,
+) -> tuple[ProbabilityCalibrator, ConformalBinary]:
+    """部署用校准器 + 保形器: **时间切分**独立保形集, 保证 split conformal 覆盖率语义。
+
+    - 较早 (1-conformal_frac) 的有效 OOF 拟合校准器;
+    - 较晚 conformal_frac 在**该校准器变换后**的概率上拟合保形器;
+    - 返回的校准器即部署所用(与保形同一基), 不再在全量上重拟合以免破坏分割。
+    """
+    prob = np.asarray(prob, dtype=float)
+    y = np.asarray(y, dtype=int)
+    m = ~np.isnan(prob)
+    p, yy = prob[m], y[m]
+    n = len(p)
+    if n < 40:
+        cal = ProbabilityCalibrator(method=method).fit(p, yy)
+        conf = ConformalBinary(alpha=alpha).fit(cal.transform(p), yy)
+        return cal, conf
+
+    frac = float(np.clip(conformal_frac, 0.15, 0.5))
+    n_conf = max(int(n * frac), 20)
+    n_cal = n - n_conf
+    # 假定 prob 与事件时间顺序一致(OOF 按 X.index 排列)
+    cal = ProbabilityCalibrator(method=method).fit(p[:n_cal], yy[:n_cal])
+    conf_p = cal.transform(p[n_cal:])
+    conf = ConformalBinary(alpha=alpha).fit(conf_p, yy[n_cal:])
+    return cal, conf
+
+
 def classification_report_probs(prob: np.ndarray, y: np.ndarray) -> dict:
     from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 

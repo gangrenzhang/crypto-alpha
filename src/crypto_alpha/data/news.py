@@ -287,6 +287,22 @@ def _collect_clusters(cfg, symbol: str) -> list[dict]:
     ncfg = cfg["news"]
     win = float(ncfg.get("dedup_window_hours", 48.0))
     if ncfg.get("use_history", False):
+        # 历史库若仅配置 synthetic provider, 在真实行情下等同合成新闻泄漏
+        hist_providers = [
+            str(p).lower()
+            for p in (ncfg.get("history") or {}).get("providers") or []
+        ]
+        if (
+            hist_providers
+            and all(p == "synthetic" for p in hist_providers)
+            and not cfg["data"].get("use_synthetic", False)
+        ):
+            raise ValueError(
+                "检测到 data.use_synthetic=false 但 news.history.providers 仅含 synthetic: "
+                "合成历史新闻由未来收益构造, 用于真实行情会造成前视泄漏。"
+                "请将 history.providers 改为 cryptocompare/gdelt 等真实源, "
+                "或先关闭 news.use_history。"
+            )
         raw = _load_raw_store(cfg)
         if raw is not None and len(raw):
             items = _raw_to_items(raw, symbol, cfg)

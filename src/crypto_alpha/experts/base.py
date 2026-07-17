@@ -19,6 +19,8 @@ class BaseExpert(ABC):
     name: str = "base"
     #: 是否需要完整时序面板(而非仅事件行)
     needs_panel: bool = False
+    #: True: fit 不按折重训(如只加载固定权重); Stacking 默认将其排除出元学习器
+    pseudo_oof: bool = False
 
     def __init__(self, cfg: dict, feature_cols: list[str], seed: int = 42):
         self.cfg = cfg

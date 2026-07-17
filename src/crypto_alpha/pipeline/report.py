@@ -97,7 +97,8 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
             "experts_run": available,
             "experts_skipped": skipped,
             "seed": cfg.seed,
-            "data_mode": "合成" if cfg["data"].get("use_synthetic", False) else "真实",
+            # data_mode 在跑完首个 symbol 后按实际 data_source 回填, 避免配置与降级不一致
+            "data_mode": "待检测",
             "news_mode": ("历史库" if cfg["news"].get("use_history") else
                           ("合成" if cfg["news"].get("use_synthetic", False) else "实时")),
             "do_cpcv": do_cpcv,
@@ -110,6 +111,12 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
         ds = prepare_dataset(cfg, symbol)
         trained = train_and_validate(cfg, ds)
         decision = latest_decision(cfg, ds, trained)
+        results["meta"]["data_mode"] = trained.get(
+            "data_mode_zh",
+            "合成" if cfg["data"].get("use_synthetic", False) else "真实",
+        )
+        if trained.get("degradations"):
+            results["meta"]["degradations"] = trained["degradations"]
 
         eq = trained["backtest"]["equity"]
         entry = {
@@ -117,12 +124,14 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
             "pos_rate": float(np.mean(ds.y)),
             "date_start": str(ds.X.index.min()),
             "date_end": str(ds.X.index.max()),
+            "data_source": ds.data_source,
             "ensemble_report": trained["report"],
             "expert_reports": trained["base_report"],
             "backtest": trained["backtest"]["metrics"],
             "decision": decision,
             "equity_curve": _downsample_equity(eq, n=180),
             "equity_b64": _equity_png_b64(eq, f"{symbol}  OOF equity"),
+            "degradations": trained.get("degradations", []),
         }
         print(f"  集成 AUC={trained['report'].get('auc', float('nan')):.3f} "
               f"Sharpe={trained['backtest']['metrics']['sharpe']:.3f} "

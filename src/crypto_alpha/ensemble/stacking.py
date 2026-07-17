@@ -9,6 +9,8 @@
   行上做预测。因此 oof_proba() 返回的融合概率对二层同样是样本外, 主面板指标与
   CPCV 路径口径一致(此前二层"自训自评"会让 AUC/Brier/回测系统性虚高)。
 - 弱专家剪枝: OOF AUC 明显低于 0.5(随机)的专家会被自动剔除, 避免拖累集成。
+- 伪 OOF 专家(pseudo_oof=True, 如 LLM fit 只加载 adapter): 默认**不进入元学习器**,
+  分数仅保留供诊断; 避免污染 nested OOF / 回测 / 校准。
 """
 from __future__ import annotations
 
@@ -25,6 +27,9 @@ class StackingEnsemble:
         self.cfg = cfg
         self.seed = seed
         self.dropped_experts: list[tuple[str, float]] = []
+        self.degradations: list[str] = []
+        #: 被排除出元学习器的伪 OOF 分数(列=专家名), 仅诊断用
+        self.pseudo_oof_: pd.DataFrame = pd.DataFrame()
 
     def _new_meta(self):
         kind = self.cfg.get("meta_learner", "logistic")
@@ -52,32 +57,61 @@ class StackingEnsemble:
         self, X: pd.DataFrame, y: np.ndarray, t1: pd.Series, sample_weight: np.ndarray | None,
         n_splits: int, embargo_pct: float,
     ) -> pd.DataFrame:
-        """用 Purged K-Fold 生成各专家的 OOF 概率矩阵。"""
+        """用 Purged K-Fold 生成各专家的 OOF 概率矩阵。
+
+        伪 OOF 专家(pseudo_oof=True, fit 为 no-op)只 fit+predict 一次, 广播到所有折,
+        避免重复加载模型且诚实标记非真正 CV。
+        """
         pkf = PurgedKFold(n_splits=n_splits, t1=t1, embargo_pct=embargo_pct)
         oof = pd.DataFrame(index=X.index, columns=[e.name for e in self.experts], dtype=float)
+
+        # 分离伪 OOF 专家: 非真正 CV, 只跑一次
+        pseudo_experts = [e for e in self.experts if getattr(e, "pseudo_oof", False)]
+        regular_experts = [e for e in self.experts if not getattr(e, "pseudo_oof", False)]
+        for e in pseudo_experts:
+            tag = f"{e.name}:pseudo_oof_not_cross_validated"
+            if tag not in self.degradations:
+                self.degradations.append(tag)
+            clone = e.clone()
+            clone.fit(X, y, sample_weight=sample_weight)
+            prob = clone.predict_proba(X)
+            # 广播到所有折(标注为伪 OOF, 不做真正交叉验证)
+            col_idx = oof.columns.get_loc(e.name)
+            for _tr, te in pkf.split(X):
+                oof.iloc[te, col_idx] = prob[te]
 
         for tr, te in pkf.split(X):
             Xtr, Xte = X.iloc[tr], X.iloc[te]
             ytr = y[tr]
             wtr = None if sample_weight is None else sample_weight[tr]
-            for e in self.experts:
+            for e in regular_experts:
                 clone = e.clone()
                 clone.fit(Xtr, ytr, sample_weight=wtr)
                 oof.iloc[te, oof.columns.get_loc(e.name)] = clone.predict_proba(Xte)
         return oof.astype(float)
 
     def _prune_weak_experts(self, oof: pd.DataFrame, y: np.ndarray) -> pd.DataFrame:
-        """剔除 OOF AUC < min_expert_auc 的弱专家(至少保留 1 个)。"""
+        """剔除弱专家: 仅用**时间上较早一半** OOF 算 AUC 做选型, 避免 selection-on-evaluation。
+
+        元学习器随后仍在全部保留专家的完整 OOF 上 nested 交叉拟合。
+        """
         min_auc = float(self.cfg.get("min_expert_auc", 0.5))
         if min_auc <= 0 or len(self.experts) <= 1:
             return oof
         from sklearn.metrics import roc_auc_score
 
         mask = oof.notna().all(axis=1).values
-        yv = np.asarray(y)[mask]
+        # 按行序(=事件时间序)取前半作选型集
+        pos = np.where(mask)[0]
+        if len(pos) < 20:
+            select = mask
+        else:
+            select = np.zeros_like(mask)
+            select[pos[: max(len(pos) // 2, 10)]] = True
+        yv = np.asarray(y)[select]
         aucs: dict[str, float] = {}
         for e in self.experts:
-            col = oof[e.name].values[mask]
+            col = oof[e.name].values[select]
             try:
                 aucs[e.name] = float(roc_auc_score(yv, col))
             except Exception:
@@ -90,9 +124,39 @@ class StackingEnsemble:
         self.dropped_experts = [(e.name, aucs[e.name]) for e in self.experts if e not in keep]
         if self.dropped_experts:
             info = ", ".join(f"{n}(auc={a:.3f})" for n, a in self.dropped_experts)
-            print(f"[ensemble] 剔除弱专家: {info}")
+            print(f"[ensemble] 剔除弱专家(选型半窗): {info}")
         self.experts = keep
         return oof[[e.name for e in keep]]
+
+    def _exclude_pseudo_oof_from_meta(self, oof: pd.DataFrame) -> pd.DataFrame:
+        """默认把伪 OOF 专家移出元学习器, 防止冻结 adapter 污染评估/回测。
+
+        分数写入 ``pseudo_oof_`` 供 base_report 诊断; 配置
+        ``exclude_pseudo_oof_from_meta: false`` 可关闭(不推荐)。
+        """
+        if not bool(self.cfg.get("exclude_pseudo_oof_from_meta", True)):
+            return oof
+        pseudo = [e for e in self.experts if getattr(e, "pseudo_oof", False)]
+        regular = [e for e in self.experts if not getattr(e, "pseudo_oof", False)]
+        if not pseudo:
+            return oof
+        names = [e.name for e in pseudo]
+        self.pseudo_oof_ = oof[names].copy()
+        for n in names:
+            tag = f"{n}:excluded_from_meta_pseudo_oof"
+            if tag not in self.degradations:
+                self.degradations.append(tag)
+        print(
+            f"[ensemble] WARN: 伪OOF专家不进入元学习器(避免污染 nested OOF): {names}; "
+            f"分数保留于 pseudo_oof_ 供诊断"
+        )
+        if not regular:
+            raise ValueError(
+                "enabled 专家全部为伪OOF(如仅 llm), 无法构建 stacking 元学习器。"
+                "请至少启用一个可折内重训的专家(gbdt / deep_ts / tsfm)。"
+            )
+        self.experts = regular
+        return oof[[e.name for e in regular]]
 
     def _meta_cross_fit(
         self, oof: pd.DataFrame, y: np.ndarray, t1: pd.Series,
@@ -102,7 +166,14 @@ class StackingEnsemble:
         mask = oof.notna().all(axis=1)
         idx = oof.index[mask.values]
         pred = pd.Series(np.nan, index=oof.index)
-        if len(idx) < n_splits * 2:  # 样本过少无法交叉拟合 -> 退回单折(会有轻微乐观, 但已剪枝)
+        if len(idx) < n_splits * 2:
+            # 样本过少无法 nested CV → 同批 fit+predict(评估偏乐观); 显式降级可追踪
+            tag = f"meta_nested_oof_fallback_insample(n={len(idx)},n_splits={n_splits})"
+            if tag not in self.degradations:
+                self.degradations.append(tag)
+            print(
+                f"[ensemble] WARN: {tag}; 二层 OOF 退回自训自评, 指标可能偏乐观"
+            )
             m = self._new_meta()
             w = None if sample_weight is None else sample_weight[mask.values]
             self._fit_meta(m, oof.loc[idx].values, y[mask.values], w)
@@ -125,19 +196,22 @@ class StackingEnsemble:
         self, X: pd.DataFrame, y: np.ndarray, t1: pd.Series,
         sample_weight: np.ndarray | None = None, n_splits: int = 6, embargo_pct: float = 0.01,
     ):
-        # 1) 一层 OOF 特征
+        self.pseudo_oof_ = pd.DataFrame(index=X.index)
+        # 1) 一层 OOF 特征(伪 OOF 专家仅冻结推理并记 degradations)
         oof = self.build_oof(X, y, t1, sample_weight, n_splits, embargo_pct)
-        # 2) 弱专家剪枝(基于 OOF AUC)
+        # 2) 伪 OOF 默认不进元学习器(护栏)
+        oof = self._exclude_pseudo_oof_from_meta(oof)
+        # 3) 弱专家剪枝(基于真 OOF AUC)
         oof = self._prune_weak_experts(oof, y)
         self.oof_ = oof
-        # 3) 二层 nested OOF: 无泄漏融合概率(用于校准/回测/评估)
+        # 4) 二层 nested OOF: 无泄漏融合概率(用于校准/回测/评估)
         self.meta_oof_ = self._meta_cross_fit(oof, y, t1, sample_weight, n_splits, embargo_pct)
-        # 4) 部署用元学习器: 在全部干净 OOF 行上拟合一次
+        # 5) 部署用元学习器: 在全部干净 OOF 行上拟合一次
         mask = oof.notna().all(axis=1).values
         self.meta_ = self._new_meta()
         w = None if sample_weight is None else np.asarray(sample_weight)[mask]
         self._fit_meta(self.meta_, oof.values[mask], np.asarray(y)[mask], w)
-        # 5) 各(保留的)专家在全量数据上重训, 供部署推理
+        # 6) 各(进入 meta 的)专家在全量数据上重训, 供部署推理
         for e in self.experts:
             e.fit(X, y, sample_weight=(None if sample_weight is None else sample_weight))
         return self

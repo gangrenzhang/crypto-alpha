@@ -59,6 +59,9 @@ def feature_columns(feat: pd.DataFrame) -> list[str]:
 
     额外排除 atr_14: 它是**绝对**价格量纲(供标注/decide 计算止损距离用), 直接入模会随
     价格量级漂移而非平稳; 建模用其相对版本 atr_norm(见 add_technical_features)。
+
+    ``side``(+1/-1) 若已写入面板则**保留**: 元标签需要显式方向, 供 GBDT/DeepTS 等共享
+    (由 pipeline.prepare_dataset 注入, 与 labels.side 对齐)。
     """
     exclude = {
         "open", "high", "low", "close", "volume", "open_interest", "funding_rate",

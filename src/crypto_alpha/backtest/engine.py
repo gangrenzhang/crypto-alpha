@@ -3,7 +3,9 @@
 默认 **组合级资金占用** 回测:
 - 重叠的三重障碍事件共享同一权益池; 开仓锁定仓位比例, 平仓后释放。
 - 单笔 ≤ max_position_pct, 并发合计 ≤ max_gross_exposure, 避免旧版"独立复利"虚高。
+- 出场按**入场名义加性**记账(ΔE = E_entry × pnl_frac), 避免重叠仓乘积复利虚高。
 - 可选 portfolio_mode=false 回退到旧的事件独立复利(仅作对照, 勿当可交易净值)。
+- 可选传入 confident 掩码与实盘保形弃权对齐。
 
 其它口径:
 - 资金费按持有 bar 数累计(funding × bars_held), 手续费/滑点开平各一次。
@@ -19,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..risk.sizing import position_size
+from ..risk.sizing import position_size, resolve_roundtrip_cost
 
 
 def backtest_events(
@@ -29,15 +31,21 @@ def backtest_events(
     risk_cfg: dict,
     payoff: float = 1.0,
     prices: pd.Series | None = None,
+    confident: np.ndarray | None = None,
 ) -> dict:
     """events 需含: ret(含方向的对数收益), t1。prob 为校准后概率(与 events 对齐)。
 
     prices: 可选收盘价序列(索引=bar 时间)。传入且 events 含 side 时, 组合模式启用盯市
     权益曲线(MDD/日内熔断更真实); 独立复利模式忽略之。
+    confident: 可选布尔数组(与 events 对齐); False 视为保形弃权, 不开仓(与实盘 HOLD 对齐)。
     """
     if bool(bt_cfg.get("portfolio_mode", True)):
-        return _backtest_portfolio(events, prob, bt_cfg, risk_cfg, payoff, prices)
-    return _backtest_independent(events, prob, bt_cfg, risk_cfg, payoff)
+        return _backtest_portfolio(
+            events, prob, bt_cfg, risk_cfg, payoff, prices, confident=confident,
+        )
+    return _backtest_independent(
+        events, prob, bt_cfg, risk_cfg, payoff, confident=confident,
+    )
 
 
 def _cost(size: float, bars: float, fee: float, slip: float, funding: float) -> float:
@@ -50,10 +58,13 @@ def _backtest_independent(
     bt_cfg: dict,
     risk_cfg: dict,
     payoff: float,
+    confident: np.ndarray | None = None,
 ) -> dict:
     """旧口径: 每笔独立对全权益复利(会高估收益)。仅作对照。"""
     df = events.copy()
     df["prob"] = prob
+    if confident is not None:
+        df["confident"] = np.asarray(confident, dtype=bool)
     df = df.dropna(subset=["prob", "ret"]).sort_index()
 
     thr = float(bt_cfg.get("prob_threshold", 0.55))
@@ -62,7 +73,9 @@ def _backtest_independent(
     funding = float(bt_cfg.get("funding_bps_per_bar", 0.0)) / 1e4
     kf = float(risk_cfg.get("kelly_fraction", 0.5))
     maxp = float(risk_cfg.get("max_position_pct", 0.3))
+    rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip)
     daily_max_dd = float(risk_cfg.get("daily_max_drawdown", 0.0) or 0.0)
+    has_conf = "confident" in df.columns
 
     has_bars = "bars_held" in df.columns
     equity_run = 1.0
@@ -81,12 +94,13 @@ def _backtest_independent(
             if equity_run <= day_start_equity * (1.0 - daily_max_dd):
                 halted_today = True
 
-        if halted_today or r["prob"] < thr:
+        conf_ok = bool(r["confident"]) if has_conf else True
+        if halted_today or (not conf_ok) or r["prob"] < thr:
             sizes.append(0.0)
             rets.append(0.0)
             halted_flags.append(bool(halted_today))
             continue
-        size = position_size(r["prob"], payoff, kf, maxp)
+        size = position_size(r["prob"], payoff, kf, maxp, cost=rt_cost)
         bars = float(r["bars_held"]) if has_bars else 1.0
         cost = _cost(size, bars, fee, slip, funding)
         pnl = size * (np.exp(r["ret"]) - 1.0) - cost
@@ -109,14 +123,19 @@ def _backtest_portfolio(
     risk_cfg: dict,
     payoff: float,
     prices: pd.Series | None = None,
+    confident: np.ndarray | None = None,
 ) -> dict:
     """组合级: 锁定并发仓位, 平仓释放后再开。
 
-    - 已实现权益(equity)在出场时按标签收益复利, 用于 total_return 与逐笔对账。
+    - 已实现权益(equity)在出场时按**入场名义加性**记账:
+      Δequity = entry_equity × (size×(e^ret-1) - cost), 避免重叠仓乘积复利虚高。
+    - pnl 列仍为相对入场权益的分数贡献(供夏普/胜率); entry_equity 列供对账。
     - 盯市权益(mark)在每个时间线节点按收盘价重估持仓浮盈亏, 用于 MDD 与日内熔断。
     """
     df = events.copy()
     df["prob"] = np.asarray(prob, dtype=float)
+    if confident is not None:
+        df["confident"] = np.asarray(confident, dtype=bool)
     need = ["prob", "ret", "t1"]
     df = df.dropna(subset=need).sort_index()
     if len(df) == 0:
@@ -124,6 +143,7 @@ def _backtest_portfolio(
         empty["size"] = []
         empty["pnl"] = []
         empty["halted"] = []
+        empty["entry_equity"] = []
         return _pack_result(empty, pd.Series(dtype=float), [], mode="portfolio")
 
     thr = float(bt_cfg.get("prob_threshold", 0.55))
@@ -134,8 +154,10 @@ def _backtest_portfolio(
     kf = float(risk_cfg.get("kelly_fraction", 0.5))
     maxp = float(risk_cfg.get("max_position_pct", 0.3))
     max_gross = float(risk_cfg.get("max_gross_exposure", 1.0))
+    rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip)
     daily_max_dd = float(risk_cfg.get("daily_max_drawdown", 0.0) or 0.0)
     has_bars = "bars_held" in df.columns
+    has_conf = "confident" in df.columns
 
     # 盯市: 需要收盘价 + 事件方向 side(用于按收盘价重估持仓浮盈亏)
     mtm_enabled = prices is not None and "side" in df.columns
@@ -153,6 +175,7 @@ def _backtest_portfolio(
     n = len(df)
     sizes = np.zeros(n, dtype=float)
     pnls = np.zeros(n, dtype=float)
+    entry_equities = np.zeros(n, dtype=float)
     halted_flags = np.zeros(n, dtype=bool)
     skipped_cap = np.zeros(n, dtype=bool)
 
@@ -161,7 +184,7 @@ def _backtest_portfolio(
     exits = [(pd.Timestamp(df["t1"].iloc[i]), 0, i) for i in range(n)]  # kind=0 exit first
     timeline = sorted(entries + exits, key=lambda x: (x[0], x[1]))
 
-    equity = 1.0          # 已实现权益(出场复利)
+    equity = 1.0          # 已实现权益(加性记账)
     locked = 0.0
     open_pos: dict[int, dict] = {}
     day_key = None
@@ -171,7 +194,7 @@ def _backtest_portfolio(
     mtm_pts: list[tuple[pd.Timestamp, float]] = []
 
     def _mark(ts) -> float:
-        """当前盯市权益 = 已实现权益 ×(1 + 持仓浮动收益之和)。"""
+        """当前盯市权益 = 已实现权益 + 各仓按入场权益计的浮动盈亏。"""
         if not mtm_enabled:
             return equity
         lc = _logc_at(ts)
@@ -179,8 +202,9 @@ def _backtest_portfolio(
             return equity
         floating = 0.0
         for pos in open_pos.values():
-            floating += pos["size"] * (np.exp(pos["side"] * (lc - pos["entry_logc"])) - 1.0)
-        return equity * (1.0 + floating)
+            frac = pos["size"] * (np.exp(pos["side"] * (lc - pos["entry_logc"])) - 1.0)
+            floating += pos["entry_equity"] * frac
+        return equity + floating
 
     for ts, kind, i in timeline:
         d = ts.date() if hasattr(ts, "date") else None
@@ -202,21 +226,24 @@ def _backtest_portfolio(
             size = pos["size"]
             bars = pos["bars"]
             ret = pos["ret"]
+            entry_eq = pos["entry_equity"]
             cost = _cost(size, bars, fee, slip, funding)
-            pnl = size * (np.exp(ret) - 1.0) - cost
-            equity *= (1.0 + pnl)
+            pnl_frac = size * (np.exp(ret) - 1.0) - cost
+            equity += entry_eq * pnl_frac
             locked = max(0.0, locked - size)
-            pnls[i] = pnl
+            pnls[i] = pnl_frac
+            entry_equities[i] = entry_eq
             equity_pts.append((ts, equity))
             mtm_pts.append((ts, _mark(ts)))  # 出场后重估
             continue
 
         # entry
         row = df.iloc[i]
-        if halted_today or float(row["prob"]) < thr:
+        conf_ok = bool(row["confident"]) if has_conf else True
+        if halted_today or (not conf_ok) or float(row["prob"]) < thr:
             halted_flags[i] = bool(halted_today)
             continue
-        want = position_size(float(row["prob"]), payoff, kf, maxp)
+        want = position_size(float(row["prob"]), payoff, kf, maxp, cost=rt_cost)
         avail = max(0.0, max_gross - locked)
         size = min(want, avail)
         if size < min_size:
@@ -225,7 +252,10 @@ def _backtest_portfolio(
         bars = float(row["bars_held"]) if has_bars else 1.0
         sizes[i] = size
         locked += size
-        pos = {"size": size, "bars": bars, "ret": float(row["ret"])}
+        pos = {
+            "size": size, "bars": bars, "ret": float(row["ret"]),
+            "entry_equity": float(equity),
+        }
         if mtm_enabled:
             pos["side"] = float(row["side"])
             elc = _logc_at(ts)
@@ -238,10 +268,12 @@ def _backtest_portfolio(
     # 若回测窗口结束仍有未平仓(t1 超出样本), 按标签收益强制了结(记账在实际了结时刻)
     for i, pos in list(open_pos.items()):
         size = pos["size"]
+        entry_eq = pos["entry_equity"]
         cost = _cost(size, pos["bars"], fee, slip, funding)
-        pnl = size * (np.exp(pos["ret"]) - 1.0) - cost
-        equity *= (1.0 + pnl)
-        pnls[i] = pnl
+        pnl_frac = size * (np.exp(pos["ret"]) - 1.0) - cost
+        equity += entry_eq * pnl_frac
+        pnls[i] = pnl_frac
+        entry_equities[i] = entry_eq
         locked = max(0.0, locked - size)
         close_ts = pd.Timestamp(df["t1"].iloc[i])
         equity_pts.append((close_ts, equity))
@@ -251,6 +283,7 @@ def _backtest_portfolio(
     df = df.copy()
     df["size"] = sizes
     df["pnl"] = pnls
+    df["entry_equity"] = entry_equities
     df["halted"] = halted_flags
     df["skipped_capacity"] = skipped_cap
 
@@ -394,7 +427,11 @@ def deflated_sharpe_ratio(
         return float("nan")
     emc = 0.5772156649
     max_z = (1 - emc) * norm.ppf(1 - 1.0 / n_trials) + emc * norm.ppf(1 - 1.0 / (n_trials * np.e))
-    sr_std = np.sqrt((1 - skew * observed_sr + (kurt - 1) / 4 * observed_sr**2) / (n_obs - 1))
+    # 高偏度/高夏普时括号内可为负; clamp 后再开方, 避免 NaN 污染报告
+    var_term = (1 - skew * observed_sr + (kurt - 1) / 4 * observed_sr**2) / (n_obs - 1)
+    sr_std = float(np.sqrt(max(var_term, 0.0)))
+    if sr_std <= 0.0:
+        return float("nan")
     dsr = norm.cdf((observed_sr - max_z * sr_std) / (sr_std + 1e-12))
     return float(dsr)
 
