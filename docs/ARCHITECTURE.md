@@ -78,7 +78,7 @@ flowchart TD
 | 目录 | 职责 | 关键文件 |
 |---|---|---|
 | `data/` | 数据/新闻采集、缓存、情绪、历史回填 | `fetch.py` `news.py` `sentiment.py` `storage.py` |
-| `features/` | 分数阶差分、技术指标、新闻数值特征 | `frac_diff.py` `technical.py` `news_features.py` `build.py` |
+| `features/` | 分数阶差分、技术指标、多周期上下文、新闻数值特征 | `frac_diff.py` `technical.py` `mtf.py` `news_features.py` `build.py` |
 | `labeling/` | 三重障碍、元标签、样本权重 | `triple_barrier.py` `meta_labeling.py` `sample_weights.py` |
 | `validation/` | Purged K-Fold、CPCV | `purged_kfold.py` `cpcv.py` |
 | `experts/` | 四专家 + 抽象基类 | `gbdt.py` `deep_ts.py` `tsfm.py` `llm.py` `base.py` |
@@ -167,9 +167,25 @@ flowchart TD
 
 多窗口(`[7,14,28,56]`)计算:收益率、动量、滚动波动、RSI(EWM 实现)、z-score、布林带内位置、量比;外加 MACD、ATR(止损/障碍基准)、已实现波动率 `rv`(标签目标尺度)。衍生品:`funding_z`(资金费率 z-score)、`oi_change`(持仓量变化)。
 
-**为什么多窗口**:不同周期捕捉不同节奏的动量/均值回归结构,给树模型更丰富的切分维度。
+**为什么多窗口**:不同周期捕捉不同节奏的动量/均值回归结构,给树模型更丰富的切分维度。注意这是**同一主周期上的不同回看长度**,不是另拉 5m/15m K 线。
 
-### 4.3 新闻数值特征(`features/news_features.py`)——不止喂 LLM
+### 4.3 多周期上下文 MTF(`features/mtf.py`)——方案B
+
+**做法**:主周期(默认 `1h`)负责标注与训练索引;辅周期(`aux_timeframes`,默认 `4h`/`1d`)只提供**已收盘**高周期趋势/波动特征,经 as-of 并入主面板。**不**按周期分别训练多套模型。
+
+**防泄漏**:
+- 交易所惯例:K 线时间戳=开盘时刻;
+- 辅周期 bar 开盘 `u`、长度 `Δ_aux` ⇒ 可用时刻 `available_at = u + Δ_aux`;
+- 主周期 bar 开盘 `t`、长度 `Δ_main` ⇒ 决策时刻 `decision_at = t + Δ_main`(与「索引 t 的特征已含该 bar close」口径一致);
+- `merge_asof(backward)` 条件:`available_at ≤ decision_at`。
+
+因此 09:00 的 1h bar(决策 10:00)看不到 08:00–12:00 尚未收盘的 4h 特征;11:00 的 1h bar(决策 12:00)才能用上。
+
+**合成模式**:辅周期由主周期 `resample`(open/high/low/close/volume),保证同一价格路径,禁止独立再生成一套假 4h/1d。
+
+**配置**:`data.aux_timeframes` + `features.mtf_enabled` / `mtf_lookbacks` / `mtf_include_confluence`。细于主周期的辅周期会被拒绝/跳过。
+
+### 4.4 新闻数值特征(`features/news_features.py`)——不止喂 LLM
 
 新闻的数值信号(情绪/互证/条数/权威度)以**无泄漏 as-of + 时间衰减**并入面板,供 **GBDT/DeepTS/TSFM 全体专家共享**。
 
@@ -336,7 +352,7 @@ flowchart TD
 ### data
 | 键 | 作用 |
 |---|---|
-| `exchange` / `symbols` / `timeframe` / `aux_timeframes` | 交易所、币种、主/辅时间框架 |
+| `exchange` / `symbols` / `timeframe` / `aux_timeframes` | 交易所、币种、主周期、辅周期(仅上下文特征,须粗于主周期) |
 | `since` | 真实数据回填起点(多年回测) |
 | `use_synthetic` | true=合成兜底;false=真实数据 |
 | `synthetic_bars` | 合成 bar 数 |
@@ -360,6 +376,7 @@ flowchart TD
 |---|---|
 | `features.frac_diff_d` / `frac_diff_thres` | 分数阶差分阶数/截断阈 |
 | `features.windows` / `vol_window` | 技术指标窗口 / 波动窗口 |
+| `features.mtf_enabled` / `mtf_lookbacks` / `mtf_*` | 多周期上下文开关与辅周期特征窗口 |
 | `labeling.pt_sl` | 止盈/止损倍数 [pt, sl] |
 | `labeling.vertical_barrier_bars` | 最大持有 bar 数 |
 | `labeling.min_ret` / `primary_signal` / `primary_lookback` | 最小目标波动 / 主信号类型 / 回看 |
@@ -383,7 +400,7 @@ flowchart TD
 ```
 prepare_dataset(cfg, symbol)                      # pipeline/run.py
 ├─ load_symbol_data            → 行情(缓存/增量/合成)
-├─ build_feature_matrix        → 分数阶差分 + 技术指标
+├─ build_feature_matrix        → 分数阶差分 + 技术指标 + 多周期MTF(4h/1d as-of)
 ├─ add_news_features           → 新闻数值特征(as-of + 衰减)
 └─ build_meta_labels           → CUSUM → 三重障碍 → 元标签 + 样本权重
         │
@@ -498,7 +515,8 @@ python scripts/07_serve.py --loop          # 常驻轮询 + 播报
 > `[x]` 已实现且有测试/代码支撑 · `[~]` 已实现但有简化/需人工开启 · `[ ]` 未接线/路线图。
 
 **防泄漏检查表**(贯穿全系统):
-- [x] 所有特征仅用 t 及之前信息(技术指标、分数阶差分、aux 多周期均因果实现)
+- [x] 所有特征仅用 t 及之前信息(技术指标、分数阶差分因果实现)
+- [x] 多周期辅特征:辅 bar 收盘可用时刻 ≤ 主 bar 决策时刻(`features/mtf.py`) — `tests/test_mtf.py` 验证
 - [x] 新闻桶用桶末标记 + `buffer_minutes` 传播缓冲 + `merge_asof(backward)` — `tests/test_leakage.py` 验证
 - [x] 三重障碍/样本权重保留 tz-aware 时间(避免时区丢失导致的错配)
 - [x] Stacking 一层 OOF 用 Purged K-Fold(+ Embargo) — `tests/test_leakage.py` 验证
@@ -539,6 +557,7 @@ python scripts/07_serve.py --loop          # 常驻轮询 + 播报
 |---|---|---|
 | 真实数据依赖网络 | 默认 `use_synthetic=false`, 失败自动降级合成 | ★★★ 预拉缓存 + 真实历史新闻回填后跑 `--cpcv` |
 | 缺微观结构 | 资金费率/OI 已分页回填, 仍无清算/多空比/链上 | ★★★ 接清算/多空比/基差 |
+| 多周期已落地为特征 | 辅周期不单独训练;默认 4h/1d(`features/mtf.py`) | ★ 若需入场精度再评估更细主周期(成本/SNR 权衡) |
 | 深度时序未增值 | 已加时间切分 early stop; 短样本仍可能被剪枝 | ★★ 真实多年数据 + 超参搜索 |
 | CPCV 默认关 | 有代码且路径内已校准; `10_run_all` 需 `--cpcv` | ★★★ 发布前必跑 `--cpcv`,PBO>0.5 拒上线 |
 | 多币种组合 | 单币回测已组合化; BTC+ETH 仍分账户 | ★ 跨标的统一权益池 |

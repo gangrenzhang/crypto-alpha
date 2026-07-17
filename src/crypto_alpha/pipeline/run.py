@@ -37,7 +37,7 @@ class Dataset:
 
 def prepare_dataset(cfg: Config, symbol: str) -> Dataset:
     raw = load_symbol_data(cfg, symbol)
-    feat = build_feature_matrix(raw, cfg)
+    feat = build_feature_matrix(raw, cfg, symbol=symbol)
     feat["close"] = raw["close"]  # 回测/TSFM 需要收盘价
     feat = add_news_features(feat, cfg, symbol)  # 新闻数值特征并入(供所有专家共享)
     fcols = feature_columns(feat)

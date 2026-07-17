@@ -1,6 +1,7 @@
-"""特征矩阵装配: 原始数据 -> 技术指标 + 分数阶差分 + 多周期特征。
+"""特征矩阵装配: 原始数据 -> 技术指标 + 分数阶差分 + 多周期(MTF)特征。
 
 产出的 DataFrame 索引为主时间框架时间戳, 列为全部特征, 保证无未来信息泄漏。
+多周期: 辅周期(4h/1d 等)仅作高周期上下文, as-of 对齐进主面板(见 features/mtf.py)。
 """
 from __future__ import annotations
 
@@ -9,42 +10,24 @@ import pandas as pd
 
 from .frac_diff import frac_diff_ffd
 from .technical import add_technical_features
+from .mtf import add_mtf_features, MTF_COL_RE
 
-_PANDAS_RULE = {"1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "12h": "12h", "1d": "1D", "1w": "1W"}
 
+def build_feature_matrix(
+    df: pd.DataFrame,
+    cfg,
+    symbol: str | None = None,
+    aux_frames: dict[str, pd.DataFrame] | None = None,
+) -> pd.DataFrame:
+    """构建主周期特征, 并按需无泄漏并入辅周期上下文。
 
-def add_multitf_features(df: pd.DataFrame, aux_timeframes: list[str]) -> pd.DataFrame:
-    """由主时间框架 OHLCV **因果地**重采样出更高周期特征(4h/1d 等)。
-
-    纪律: 用 label='right'/closed='right' 使每根高周期 bar 以其**收盘时刻**为索引,
-    再以 as-of(ffill) 对齐回主 bar —— 主 bar t 只会看到收盘时刻 <= t 的高周期 bar,
-    绝不使用"仍在形成中"的高周期 bar, 故无未来泄漏。
+    Parameters
+    ----------
+    df : 主周期 OHLCV(+可选衍生品)
+    cfg : 全局配置
+    symbol : 币种; 若提供且未显式传入 aux_frames, 将自动 load_aux_timeframes
+    aux_frames : 可选预加载的 `{timeframe: OHLCV}`; 传入则可避免重复 IO
     """
-    out = pd.DataFrame(index=df.index)
-    agg_map = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
-    for tf in aux_timeframes or []:
-        rule = _PANDAS_RULE.get(tf, tf)
-        try:
-            agg = df.resample(rule, label="right", closed="right").agg(agg_map).dropna(subset=["close"])
-        except Exception:
-            continue
-        if len(agg) < 15:
-            continue
-        c = agg["close"]
-        ret = np.log(c / c.shift(1))
-        vol = ret.rolling(14).std()
-        ma = c.rolling(10).mean()
-        trend = np.sign(c - ma)
-        feats = pd.DataFrame(
-            {f"aux_{tf}_ret": ret, f"aux_{tf}_vol": vol, f"aux_{tf}_trend": trend}
-        )
-        # as-of 对齐到主 bar: 只取收盘 <= 当前主 bar 时间的高周期 bar
-        aligned = feats.reindex(feats.index.union(df.index)).ffill().reindex(df.index)
-        out = out.join(aligned)
-    return out
-
-
-def build_feature_matrix(df: pd.DataFrame, cfg) -> pd.DataFrame:
     fcfg = cfg["features"]
     windows = fcfg["windows"]
     vol_window = int(fcfg["vol_window"])
@@ -57,19 +40,29 @@ def build_feature_matrix(df: pd.DataFrame, cfg) -> pd.DataFrame:
     fd = frac_diff_ffd(logprice, d=float(fcfg["frac_diff_d"]), thres=float(fcfg["frac_diff_thres"]))
     feat[fd.name] = fd
 
-    # 多周期(aux)因果特征: 4h/1d 等由主 bar 重采样, as-of 对齐, 无泄漏
-    aux_tfs = cfg["data"].get("aux_timeframes", [])
-    if aux_tfs:
-        mtf = add_multitf_features(df, aux_tfs)
-        for col in mtf.columns:
-            feat[col] = mtf[col]
+    # --- 多周期上下文(方案B): 独立辅周期 OHLCV → as-of 对齐, 无前视 ---
+    if fcfg.get("mtf_enabled", True):
+        frames = aux_frames
+        if frames is None and symbol is not None:
+            from ..data.fetch import load_aux_timeframes
 
-    # 保留 OHLC 原始列供标注/回测使用, 但特征列不用绝对价格(非平稳)
+            frames = load_aux_timeframes(cfg, symbol, main_df=df)
+        if frames:
+            feat = add_mtf_features(feat, frames, cfg, main_tf=cfg["data"]["timeframe"])
+
     feat = feat.replace([np.inf, -np.inf], np.nan)
     return feat
 
 
 def feature_columns(feat: pd.DataFrame) -> list[str]:
     """用于建模的特征列: 排除原始价格/成交量等非平稳绝对量。"""
-    exclude = {"open", "high", "low", "close", "volume", "open_interest"}
+    exclude = {"open", "high", "low", "close", "volume", "open_interest", "funding_rate"}
     return [c for c in feat.columns if c not in exclude]
+
+
+def mtf_columns(feat: pd.DataFrame) -> list[str]:
+    """诊断用: 列出多周期特征列。"""
+    cols = [c for c in feat.columns if MTF_COL_RE.match(c)]
+    if "mtf_confluence" in feat.columns:
+        cols.append("mtf_confluence")
+    return cols
