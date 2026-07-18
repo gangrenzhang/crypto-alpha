@@ -1033,7 +1033,8 @@ def test_notifier_hold_reason_not_always_threshold():
     text = format_decision({
         "signal": "HOLD", "symbol": "BTC/USDT",
         "win_probability": None, "reason": "not_cusum_event",
-        "timestamp": "t",
+        "timestamp": "2026-07-18 07:00:00+00:00",
+        "close": 65000.0,
     })
     assert "CUSUM" in text
     assert "低于阈值" not in text
@@ -1043,12 +1044,18 @@ def test_notifier_hold_reason_not_always_threshold():
         "win_probability": 0.62, "entry_price": 2000.0,
         "stop_loss": 1900.0, "take_profit": 2100.0,
         "suggested_position_pct": 0.1, "atr": 50.0,
-        "timestamp": "t", "execution_assumption": "close_fill",
+        "timestamp": "2026-07-18 07:00:00+00:00",
+        "execution_assumption": "close_fill",
         "data_mode_zh": "真实(缓存)",
     })
     assert "description" in d
     assert "做多" in d["description"]
     assert "真实(缓存)" in d["description"]
+    assert d["close"] == 2000.0  # 由 entry_price 回填
+    assert d["timestamp_beijing"].startswith("2026-07-18 15:00:00")
+    assert "+08:00" in d["timestamp_beijing"]
+    assert "收盘价" in d["description"]
+    assert "北京" in d["description"]
 
 
 def test_align_news_asof_uses_decision_delta():

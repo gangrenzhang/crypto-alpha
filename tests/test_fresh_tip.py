@@ -60,3 +60,39 @@ def test_exchange_candidates_tip_prefers_gate():
     tip = exchange_candidates(cfg, for_tip=True)
     assert tip[0] == "gate"
     assert "binance" in tip
+
+
+def test_drop_incomplete_30m():
+    idx = pd.date_range("2026-07-18 07:00", periods=3, freq="30min", tz="UTC")
+    df = _ohlcv(idx)
+    # 07:45 → 07:30 根未收盘
+    now = pd.Timestamp("2026-07-18 07:45", tz="UTC")
+    out = drop_incomplete_last_bar(df, "30m", now=now)
+    assert out.index[-1] == pd.Timestamp("2026-07-18 07:00", tz="UTC")
+
+
+def test_cache_path_30m_does_not_use_legacy_1h(tmp_path):
+    from crypto_alpha.data.fetch import raw_cache_path, resolve_raw_cache_path
+
+    cfg = {
+        "data": {"timeframe": "30m"},
+        "data_dir": tmp_path,
+    }
+    # 伪造 Config 鸭子类型
+    class _C:
+        def __getitem__(self, k):
+            return cfg[k] if k != "data" else cfg["data"]
+
+        @property
+        def data_dir(self):
+            return tmp_path
+
+    c = _C()
+    legacy = tmp_path / "raw"
+    legacy.mkdir()
+    (legacy / "BTC_USDT.parquet").write_bytes(b"not-used")
+    preferred = raw_cache_path(c, "BTC/USDT", "30m")
+    assert preferred.name == "BTC_USDT__30m.parquet"
+    # 30m 不得回退到无后缀 1h 遗留文件
+    assert resolve_raw_cache_path(c, "BTC/USDT", "30m") == preferred
+    assert not preferred.exists()

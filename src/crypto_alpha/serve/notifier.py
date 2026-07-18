@@ -6,6 +6,45 @@ import os
 import urllib.parse
 import urllib.request
 
+import pandas as pd
+
+
+def format_timestamp_beijing(ts) -> str | None:
+    """K 线开盘时间戳 → 北京时间字符串(Asia/Shanghai, 含 +08:00)。"""
+    if ts is None:
+        return None
+    try:
+        t = pd.Timestamp(ts)
+    except Exception:
+        return None
+    if t.tzinfo is None:
+        t = t.tz_localize("UTC")
+    else:
+        t = t.tz_convert("UTC")
+    return str(t.tz_convert("Asia/Shanghai"))
+
+
+def enrich_decision_display(d: dict) -> dict:
+    """补齐决策展示字段: ``close``(末根收盘价) + ``timestamp_beijing``。
+
+    - ``timestamp`` 仍为 UTC 开盘时刻(与面板索引一致);
+    - ``timestamp_beijing`` 为同一根 K 线的北京时间;
+    - 若未显式给 ``close`` 但有 ``entry_price``(close_fill 入场=收盘), 回填 close。
+    """
+    if not isinstance(d, dict):
+        return d
+    ts = d.get("timestamp")
+    if ts is not None:
+        bj = format_timestamp_beijing(ts)
+        if bj is not None:
+            d["timestamp_beijing"] = bj
+    if d.get("close") is None and d.get("entry_price") is not None:
+        try:
+            d["close"] = float(d["entry_price"])
+        except (TypeError, ValueError):
+            pass
+    return d
+
 
 def _hold_reason_text(d: dict) -> str:
     """按决策 reason / degradations 生成 HOLD 说明(勿一律写「低于阈值」)。"""
@@ -31,6 +70,16 @@ def _hold_reason_text(d: dict) -> str:
     return "观望(未满足开仓条件)"
 
 
+def _time_lines(d: dict) -> str:
+    """UTC + 北京时间 + 收盘价(有则展示)。"""
+    lines = [f"时间(UTC): {d.get('timestamp')}"]
+    if d.get("timestamp_beijing") is not None:
+        lines.append(f"时间(北京): {d.get('timestamp_beijing')}")
+    if d.get("close") is not None:
+        lines.append(f"收盘价: {d.get('close')}")
+    return "\n".join(lines)
+
+
 def format_decision(d: dict) -> str:
     """把决策 JSON 格式化为可读播报文本。"""
     sig = d.get("signal", "HOLD")
@@ -40,7 +89,7 @@ def format_decision(d: dict) -> str:
         head = f"[观望] {d.get('symbol')}"
         return (
             f"{head}\n概率={d.get('win_probability')}  ({_hold_reason_text(d)})\n"
-            f"时间: {d.get('timestamp')}"
+            f"{_time_lines(d)}"
             f"{mode_line}"
         )
     arrow = "做多 LONG" if sig == "LONG" else "做空 SHORT"
@@ -48,21 +97,23 @@ def format_decision(d: dict) -> str:
     return (
         f"[{arrow}] {d.get('symbol')}\n"
         f"盈利概率: {d.get('win_probability')}\n"
+        f"收盘价:   {d.get('close', d.get('entry_price'))}\n"
         f"入场价:   {d.get('entry_price')}\n"
         f"止损:     {d.get('stop_loss')}\n"
         f"止盈:     {d.get('take_profit')}\n"
         f"建议仓位: {d.get('suggested_position_pct')}\n"
         f"ATR:      {d.get('atr')}\n"
-        f"时间: {d.get('timestamp')}\n"
+        f"{_time_lines(d)}\n"
         f"执行假设: {exec_a}"
         f"{mode_line}"
     )
 
 
 def attach_decision_description(d: dict) -> dict:
-    """就地写入 ``description`` 可读文案, 与 JSON 一并返回/落盘。"""
+    """就地写入展示字段 + ``description`` 可读文案, 与 JSON 一并返回/落盘。"""
     if not isinstance(d, dict):
         return d
+    enrich_decision_display(d)
     d["description"] = format_decision(d)
     return d
 

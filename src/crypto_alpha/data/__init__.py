@@ -7,6 +7,10 @@ from .fetch import (
     refresh_market_data,
     resample_ohlcv,
     timeframe_delta,
+    timeframe_to_pandas_freq,
+    raw_cache_path,
+    resolve_raw_cache_path,
+    supported_timeframes,
 )
 from .storage import save_parquet, load_parquet
 from .news import (
@@ -29,6 +33,10 @@ __all__ = [
     "refresh_market_data",
     "resample_ohlcv",
     "timeframe_delta",
+    "timeframe_to_pandas_freq",
+    "raw_cache_path",
+    "resolve_raw_cache_path",
+    "supported_timeframes",
     "save_parquet",
     "load_parquet",
     "build_news_panel",

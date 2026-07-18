@@ -361,13 +361,17 @@ def _aggregate_clusters(clusters: list[dict], cfg) -> pd.DataFrame:
     scorer = build_scorer(cfg)
     df["sent"] = scorer.score(df["title"].astype(str).tolist())
 
+    from .fetch import timeframe_to_pandas_freq
+
     bucket = ncfg.get("bucket", "1h")
-    freq_td = pd.to_timedelta(bucket)  # 桶宽, 用于把桶左沿标记改为桶末(可用时刻)
+    # ccxt 风格(30m)→pandas 安全 freq(30min); 避免 Grouper 把 m 当成「月」
+    bucket_freq = timeframe_to_pandas_freq(str(bucket))
+    freq_td = pd.to_timedelta(bucket_freq)  # 桶宽, 用于把桶左沿标记改为桶末(可用时刻)
     df = df.set_index("published_at").sort_index()
     top_k = int(ncfg.get("top_k", 3))
 
     rows = []
-    for ts, g in df.groupby(pd.Grouper(freq=bucket)):
+    for ts, g in df.groupby(pd.Grouper(freq=bucket_freq)):
         if len(g) == 0:
             continue
         # 桶 [ts, ts+freq) 内的新闻在桶末才算"可用", 以此为时间戳可根除同期前视泄漏

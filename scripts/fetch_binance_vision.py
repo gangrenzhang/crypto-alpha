@@ -22,12 +22,14 @@ import numpy as np
 import pandas as pd
 
 from crypto_alpha.config import Config
+from crypto_alpha.data.fetch import raw_cache_path
 
 VISION = "https://data.binance.vision/data"
 SPOT_KLINE = VISION + "/spot/monthly/klines/{sym}/{tf}/{sym}-{tf}-{ym}.zip"
 FUNDING = VISION + "/futures/um/monthly/fundingRate/{sym}/{sym}-fundingRate-{ym}.zip"
 
-TF_MAP = {"1h": "1h", "4h": "4h", "1d": "1d"}
+# ccxt/配置周期 → Vision 目录名
+TF_MAP = {"30m": "30m", "1h": "1h", "2h": "2h", "4h": "4h", "1d": "1d"}
 
 
 def _month_range(start: str, end: str) -> list[str]:
@@ -139,12 +141,15 @@ def main():
     for symbol in cfg["data"]["symbols"]:
         sym_id = symbol.replace("/", "")
         main_tf = cfg["data"]["timeframe"]
+        if main_tf not in TF_MAP:
+            raise ValueError(f"Vision 不支持 timeframe={main_tf}; 可选 {list(TF_MAP)}")
         print(f"\n===== {symbol} main {main_tf} =====")
         main = fetch_spot_klines(sym_id, TF_MAP[main_tf], months)
         main["funding_rate"] = fetch_funding(sym_id, months, main.index)
         main["open_interest"] = float("nan")  # Vision 现货包无 OI; 记缺失由特征层降级
         main.attrs["data_source"] = "real"
-        path = out_dir / f"{symbol.replace('/', '_')}.parquet"
+        path = raw_cache_path(cfg, symbol, main_tf)
+        path.parent.mkdir(parents=True, exist_ok=True)
         # attrs 不进 parquet; 用文件即表示真实回填。load 时标 cache。
         main.drop(columns=[], errors="ignore").to_parquet(path)
         # 重新读确保可加载
@@ -155,9 +160,12 @@ def main():
         for tf in cfg["data"].get("aux_timeframes") or []:
             if tf == main_tf:
                 continue
+            if tf not in TF_MAP:
+                print(f"[skip] Vision 无 {tf} 映射")
+                continue
             print(f"===== {symbol} aux {tf} =====")
             aux = fetch_spot_klines(sym_id, TF_MAP[tf], months)
-            apath = out_dir / f"{symbol.replace('/', '_')}__{tf}.parquet"
+            apath = raw_cache_path(cfg, symbol, tf)
             aux.to_parquet(apath)
             print(f"[saved] {apath} rows={len(aux)}")
 

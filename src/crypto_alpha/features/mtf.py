@@ -1,8 +1,8 @@
 """多周期(MTF)特征: 高周期上下文 as-of 对齐到主周期。
 
 方案B(主周期建模 + 辅周期特征):
-- 主周期(默认 1h)负责事件采样 / 标注 / 训练索引;
-- 辅周期(如 4h / 1d)只提供**已收盘**K线算出的趋势/波动上下文;
+- 主周期(默认 30m)负责事件采样 / 标注 / 训练索引;
+- 辅周期(如 2h / 4h / 1d)只提供**已收盘**K线算出的趋势/波动上下文;
 - 用 merge_asof(backward) 对齐, 严格无前视。
 
 防泄漏铁律(与交易所惯例一致: K线时间戳 = 开盘时刻):
@@ -166,9 +166,15 @@ def add_mtf_features(
             aligned_trend_cols.append(trend_c)
 
     if mcfg["include_confluence"] and aligned_trend_cols:
-        # 与主信号同口径的动量方向做共振(缺主列则跳过)
+        # 与主信号同口径的动量方向做共振: 优先 labeling.primary_lookback 对应列
         main_side = None
-        for cand in ("mom_24", "mom_28", "mom_14", "ret_24", "ret_14"):
+        lb = int((cfg.get("labeling") or {}).get("primary_lookback", 24))
+        candidates = [
+            f"mom_{lb}", f"ret_{lb}",
+            "mom_28", "mom_14", "ret_28", "ret_14",
+            "mom_24", "ret_24",  # 兼容旧 1h 配置
+        ]
+        for cand in candidates:
             if cand in out.columns:
                 main_side = np.sign(out[cand]).replace(0.0, 0.0)
                 break

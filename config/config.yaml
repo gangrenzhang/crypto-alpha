@@ -19,25 +19,27 @@ data:
   rest_timeout_ms: 8000
   symbols: ["BTC/USDT", "ETH/USDT"]
   # 主时间框架用于建模/标注/训练索引; 辅周期只作高周期上下文特征(方案B, 不分别训练)
-  timeframe: "1h"
-  aux_timeframes: ["4h", "1d"]   # 必须粗于主周期; 由 as-of 无泄漏并入特征
+  timeframe: "30m"
+  aux_timeframes: ["2h", "4h", "1d"]   # 必须严格粗于主周期; 由 as-of 无泄漏并入特征
   since: "2020-01-01T00:00:00Z"   # 真实数据回填起点(多年回测)
   # 研究/实盘默认用真实数据; 无网络时 load_symbol_data 会自动降级合成。
   # CI/冒烟测试在代码里显式打开 use_synthetic, 勿依赖本默认值做演示。
   use_synthetic: false
-  synthetic_bars: 20000
+  # 30m 下约等于原 1h×20000 的墙钟跨度(~833 天)
+  synthetic_bars: 40000
   # 真实拉取失败时是否允许降级合成(会写入 data_source=synthetic_fallback; 看板不再谎报「真实」)
   # 主干正式训练：禁止降级，避免断网时静默用合成数据污染结论
   allow_synthetic_fallback: false
-  # 真实数据缓存: 主周期 data/raw/<SYMBOL>.parquet; 辅周期 data/raw/<SYMBOL>__4h.parquet
+  # 缓存统一 data/raw/<SYMBOL>__{tf}.parquet(含主周期); 旧无后缀文件仅当 tf=1h 可读
   cache: true
   # 训练/特征构建默认不增量(避免每次 load 被 REST 拖慢); 决策路径见 refresh_before_decide
   incremental_update: false
   # 06_decide / serve.decide_live: 强制增量到「当下已收盘」最后一根 K 线
   refresh_before_decide: true
   # 刷新后若已收盘 tip 落后超过 N 根主周期 → fail-fast(避免再用 6 月底冷缓存决策)
+  # 4×30m ≈ 原 2×1h 的墙钟容差
   require_fresh_for_decide: true
-  max_closed_bar_lag: 2
+  max_closed_bar_lag: 4
   # 衍生品数据(资金费率/持仓量): 分页回填覆盖 since→今, 失败则优雅降级 NaN
   fetch_derivatives: true
   # 决策 tip 增量默认不重拉衍生品(慢); 新 tip 行 ffill 历史 funding/OI
@@ -62,7 +64,7 @@ news:
     max_pages: 400             # CryptoCompare 分页数安全上限
     gdelt_query: "(bitcoin OR ethereum)"
     synthetic_per_day: 8       # 合成历史: 日均条数(泊松均值)
-  bucket: "1h"                 # 摘要聚合粒度(建议对齐主时间框架)
+  bucket: "30m"                # 摘要聚合粒度(对齐主周期; 内部转为 30min 供 pandas Grouper)
   top_k: 3                     # 每个 bucket 摘要保留的头条数
   buffer_minutes: 5            # 传播缓冲: 只用 publish_time+buffer<=决策时刻(开盘+主周期)的新闻
   dedup_window_hours: 48       # 互证归并的时间窗: 仅合并窗内多源报道(防多年语料塌缩)
@@ -73,7 +75,7 @@ news:
   as_feature: false
   feature_ttl_hours: 24        # 新闻超过此时长视为过期, 数值归零
   feature_halflife_hours: 6    # 新闻影响的指数衰减半衰期
-  feature_ema_span: 12         # 新闻情绪 EMA 平滑跨度(bar)
+  feature_ema_span: 24         # 新闻情绪 EMA 平滑跨度(bar); 30m 下≈原 12×1h 墙钟
   # 新闻特征覆盖率(has_recent_news 均值)低于此阈值 → warn + degradations(不改数值);
   # 长回测默认 use_history=false 时易触发。设 0 关闭告警。
   min_coverage_warn: 0.05
@@ -113,12 +115,13 @@ features:
   # 分数阶差分 (López de Prado): 平稳且保留记忆
   frac_diff_d: 0.4
   frac_diff_thres: 1.0e-4
-  # 技术指标窗口(主周期 bar 数)
-  windows: [7, 14, 28, 56]
-  vol_window: 50            # 波动率(用于止盈止损/标签)估计窗口
+  # 技术指标窗口(主周期 bar 数); 相对 1h 配置×2, 保持相近墙钟跨度
+  # 含 48: 与 labeling.primary_lookback 对齐, 供 MTF confluence 同口径共振
+  windows: [14, 28, 48, 56, 112]
+  vol_window: 100           # 波动率(用于止盈止损/标签)估计窗口
   # --- 多周期上下文(方案B): 辅周期特征 as-of 并入主面板, 不按周期分别训练 ---
   mtf_enabled: true
-  mtf_lookbacks: [1, 3, 7]  # 辅周期自身的收益回看(单位=该周期 bar 数)
+  mtf_lookbacks: [1, 3, 7]  # 辅周期自身的收益回看(单位=该周期 bar 数; 2h/4h/1d 共用)
   mtf_rsi_window: 14
   mtf_vol_window: 14
   mtf_include_confluence: true  # 与主周期动量方向共振特征
@@ -129,15 +132,15 @@ labeling:
   barrier_vol: atr
   # 止盈/止损相对波动率的倍数 [pt, sl] — 与 risk 下单倍数共用
   pt_sl: [1.5, 1.5]
-  # 垂直障碍(最大持有期), 单位=主时间框架的 bar 数
-  vertical_barrier_bars: 24
+  # 垂直障碍(最大持有期), 单位=主时间框架的 bar 数; 48×30m ≈ 原 24×1h(约 1 天)
+  vertical_barrier_bars: 48
   # 最小收益阈值(触发建仓的最小目标波动)
   min_ret: 0.0
   # 主模型信号来源: momentum(动量) / meanrev(均值回归)
   primary_signal: momentum
-  primary_lookback: 24
+  primary_lookback: 48         # ≈ 原 24×1h 墙钟
   min_cusum_events: 50         # CUSUM 事件少于此数则退回全量采样
-  cusum_min_periods: 50        # 因果扩展中位数阈值的最小样本数
+  cusum_min_periods: 100       # 因果扩展中位数阈值的最小样本数(≈原 50×1h)
   serve_require_cusum: true    # 实盘/最新决策须落在 CUSUM 事件上(与训练对齐; 全量回退时自动放宽)
 
 # ---------------- 验证: Purged CV / CPCV ----------------
@@ -161,7 +164,7 @@ experts:
     colsample_bytree: 0.8
     min_child_samples: 50
   deep_ts:
-    lookback: 64           # 输入序列长度
+    lookback: 128          # 输入序列长度; ≈原 64×1h 墙钟
     d_model: 64
     n_heads: 4
     n_layers: 2
@@ -177,7 +180,7 @@ experts:
     backend: chronos        # chronos / timesfm / naive(离线兜底)
     model_name: amazon/chronos-bolt-base
     context_length: 512
-    horizon: 24             # 基线预测步数(对齐持有期)
+    horizon: 48             # 基线预测步数(对齐持有期; ≈原 24×1h)
     head: logistic          # 概率头: logistic / gbdt
     covariate_cols: auto    # auto=面板中的新闻数值特征; 或显式列名列表
   llm:
@@ -237,8 +240,8 @@ backtest:
 # ---------------- 实时服务 / 播报 ----------------
 serve:
   symbols: null              # null = 复用 data.symbols
-  poll_seconds: 3600         # 轮询间隔(秒), 建议对齐主时间框架(1h=3600)
-  retrain_every_cycles: 24   # 每 N 次轮询重训一次模型(应对概念漂移)
+  poll_seconds: 1800         # 轮询间隔(秒), 对齐主周期 30m
+  retrain_every_cycles: 48   # 每 N 次轮询重训(~24h, 对齐原 24×1h)
   notify_hold: false         # 观望(HOLD)是否也推送(默认只推 LONG/SHORT)
   dedupe: true               # 同一币种相同信号不重复推送
   telegram:

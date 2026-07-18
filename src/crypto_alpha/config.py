@@ -43,6 +43,28 @@ class Config:
                 UserWarning,
                 stacklevel=2,
             )
+        # 主/辅周期合法性: 辅必须严格粗于主(方案B); 未知 timeframe fail-fast
+        from .data.fetch import supported_timeframes, timeframe_delta
+
+        data = (raw or {}).get("data") or {}
+        main_tf = str(data.get("timeframe") or "1h")
+        if main_tf not in supported_timeframes():
+            raise ValueError(
+                f"data.timeframe={main_tf!r} 不受支持; 可选 {supported_timeframes()}"
+            )
+        for aux_tf in list(data.get("aux_timeframes") or []):
+            if not aux_tf:
+                continue
+            aux_tf = str(aux_tf)
+            if aux_tf not in supported_timeframes():
+                raise ValueError(
+                    f"data.aux_timeframes 含不受支持的 {aux_tf!r}; "
+                    f"可选 {supported_timeframes()}"
+                )
+            if timeframe_delta(aux_tf) <= timeframe_delta(main_tf):
+                raise ValueError(
+                    f"辅周期 {aux_tf} 必须严格粗于主周期 {main_tf}(方案B)"
+                )
         return cls(raw=raw, root=root)
 
     def __getitem__(self, key: str) -> Any:

@@ -156,10 +156,10 @@ cryptoCurrency/
 
 **缓存约定**
 
-- 主周期：`data/raw/<SYMBOL>.parquet`（例：`BTC_USDT.parquet`）  
-- 辅周期：`data/raw/<SYMBOL>__4h.parquet`  
+- **统一** `data/raw/<SYMBOL>__{tf}.parquet`（例：主周期 `BTC_USDT__30m.parquet`，辅 `BTC_USDT__4h.parquet`）  
+- 遗留无后缀 `BTC_USDT.parquet` **仅当** `tf==1h` 时可读；**30m 绝不回退**到 1h 文件（防周期混用）  
 - `cache: true` + `incremental_update: true`：每次 `load_symbol_data` 只拉最后一根之后的新 bar  
-- 长历史推荐 Vision CDN 预填（`scripts/fetch_binance_vision.py`）；REST 全量多年易超时  
+- 长历史推荐 Vision CDN 预填（`scripts/fetch_binance_vision.py`，支持 `30m`/`1h`/`4h`/`1d`）；REST 全量多年易超时  
 
 **训练 vs 决策的 tip 语义（重要）**
 
@@ -231,7 +231,7 @@ OHLCV(+衍生品)
 
 ### 5.2 多周期 MTF（方案 B，`features/mtf.py`）
 
-**不做**「每个周期各训一套模型」。主周期（默认 `1h`）负责事件、标注、训练索引；辅周期（`4h`/`1d`）只提供**已收盘**高周期上下文。
+**不做**「每个周期各训一套模型」。主周期（默认 `30m`）负责事件、标注、训练索引；辅周期（`2h`/`4h`/`1d`）只提供**已收盘**高周期上下文。
 
 **防泄漏铁律**（K 线时间戳 = 开盘时刻）：
 
@@ -284,7 +284,7 @@ OHLCV(+衍生品)
 ### 6.3 三重障碍（`labeling/triple_barrier.py`）
 
 1. `cusum_filter`：累计偏移超**因果扩展中位数**阈值才采样（`causal_cusum_threshold`）。冷启动仅 `ffill` + **固定先验**（默认 0.5%），**禁止** `bfill` / 全样本 `nanmedian` 前视；事件过少 `< min_cusum_events` 则退回全量，并标记 `cusum_full_sampling`  
-2. 上障碍（止盈）/ 下障碍（止损）/ 垂直障碍（`vertical_barrier_bars`，默认 24 根 1h ≈ 1 天）  
+2. 上障碍（止盈）/ 下障碍（止损）/ 垂直障碍（`vertical_barrier_bars`，默认 48 根 30m ≈ 1 天）  
 3. 触碰判定用 **bar 内 high/low**（加性价格障碍，多空与 `decide` 对齐）；同 bar 平局 **悲观判止损**  
 4. 入场价 = 事件 bar(t0) 的收盘价，**触碰扫描从 t0 的下一根 bar 开始**  
 5. **无法满足垂直持有期的事件直接丢弃**（不再用最后一根 bar 截断打标）  
@@ -485,7 +485,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | 段 | 关键当前默认 | 说明 |
 |----|--------------|------|
 | `project` | seed=42 | 数据/产物目录 |
-| `data` | `use_synthetic=false`，`allow_synthetic_fallback=true`，1h+4h/1d | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations |
+| `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations |
 | `news` | `use_synthetic=false`，`as_feature=true`，`auto_build_panel=true`，`require_panel=false`，`min_coverage_warn=0.05`，`require_min_coverage=false` | 缺面板可自动 build；PIT 互证；覆盖率过低记 degradations；`require_min_coverage=true` 可 fail-fast；禁止仅 synthetic 历史混真实行情；真行情加载 corpus 时过滤 `synthetic:` 行 |
 | `features` | FFD d=0.4，`mtf_enabled=true` | MTF 方案 B |
 | `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐；`barrier_vol=rv` 时 Config.load 告警（decide 仍用 atr） |
@@ -495,7 +495,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | `calibration` | isotonic，α=0.1，`conformal_frac=0.3` | 主路径联合 CF 校准+保形；部署与 CPCV 时间切分；小样本回退记 degradations |
 | `backtest` | **`portfolio_mode=true`**，阈值 0.55 | 组合加性记账 |
 | `risk` | 半 Kelly 启发式，日熔断 5%，`execution_assumption=close_fill`（**仅此已实现**） | 未实现取值 Config.load/decide 报错 |
-| `serve` | 3600s 轮询，24 周期重训 | Telegram 默认关 |
+| `serve` | 1800s 轮询，48 周期重训（≈24h） | Telegram 默认关 |
 
 改任何超参后重跑对应脚本即可；随机性由 `project.random_seed` + `set_global_seed` 控制。合成数据/合成新闻的按币种偏移用 `hashlib`（`stable_symbol_offset`）派生，**跨进程/机器确定**——不再用带随机盐的内置 `hash()`，保证同 seed 的合成结果可复现。
 
@@ -620,6 +620,8 @@ Telegram：`serve.telegram.enabled: true`，并设置环境变量 `TELEGRAM_BOT_
 {
   "symbol": "BTC/USDT",
   "timestamp": "2026-07-18 07:00:00+00:00",
+  "timestamp_beijing": "2026-07-18 15:00:00+08:00",
+  "close": 65000.0,
   "signal": "LONG",
   "win_probability": 0.63,
   "entry_price": 65000.0,
@@ -633,7 +635,7 @@ Telegram：`serve.telegram.enabled: true`，并设置环境变量 `TELEGRAM_BOT_
 }
 ```
 
-`signal ∈ {LONG, SHORT, HOLD}`；不自信或概率低于阈值时为 HOLD。`timestamp` = 决策所用主周期 bar 的**开盘**时间；该 bar 须已收盘（见 §4.2 / §5.2 决策时刻）。
+`signal ∈ {LONG, SHORT, HOLD}`；不自信或概率低于阈值时为 HOLD。`timestamp` = 决策所用主周期 bar 的**开盘**时间（UTC）；`timestamp_beijing` 为同一根 K 线的北京时间；`close` 为该根已收盘 K 线的收盘价（见 §4.2 / §5.2 决策时刻）。
 
 ### 16.7 LLM 单独训练（可选）
 
@@ -790,7 +792,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 微观结构 | funding/OI 已分页；失败填 0；无清算/链上 | ★★★ 继续扩源 |
 | 执行 | 只决策播报，不下单 | 刻意为之 |
 
-**诚实判断**：1h 加密接近有效市场，「方向准度」空间有限。系统价值在 **无泄漏验证 + 概率校准 + 风险调整**，把小而稳的 edge 安全放大，而不是追求虚高夏普。
+**诚实判断**：30m/1h 加密接近有效市场，「方向准度」空间有限。系统价值在 **无泄漏验证 + 概率校准 + 风险调整**，把小而稳的 edge 安全放大，而不是追求虚高夏普。
+
+**主周期切换（30m）**：bar 单位窗口（标签持有期、动量回看、技术指标窗、DeepTS lookback、serve 轮询）已按墙钟近似×2 对齐原 1h 配置；MTF 辅周期为 **2h/4h/1d**（辅周期自身 bar 窗不变）。换周期后须重新 Vision 回填 `*__30m.parquet`（及辅周期）并重训，旧 1h 缓存不会被误读。
 
 ---
 

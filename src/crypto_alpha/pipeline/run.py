@@ -319,6 +319,7 @@ def hold_for_schema_mismatch(
     missing_cols: list[str],
     risk_cfg: dict,
     timestamp=None,
+    close: float | None = None,
     data_source: str | None = None,
 ) -> dict:
     """特征 schema 与训练不一致时的安全 HOLD(不推理、不吐 SL/TP)。"""
@@ -343,6 +344,8 @@ def hold_for_schema_mismatch(
     }
     if timestamp is not None:
         out["timestamp"] = str(timestamp)
+    if close is not None:
+        out["close"] = float(close)
     if data_source is not None:
         out["data_source"] = data_source
         out["data_mode_zh"] = _DATA_MODE_ZH.get(data_source, data_source)
@@ -380,21 +383,28 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
             f"[warn] {ds.symbol}: 特征列与训练 schema 不一致, 强制 HOLD; "
             f"missing={missing[:8]}{'...' if len(missing) > 8 else ''}"
         )
+        _ts = panel.index[-1] if len(panel) else None
+        _close = float(panel["close"].iloc[-1]) if len(panel) and "close" in panel.columns else None
         return hold_for_schema_mismatch(
             symbol=ds.symbol, missing_cols=missing, risk_cfg=cfg["risk"],
-            timestamp=panel.index[-1] if len(panel) else None,
+            timestamp=_ts, close=_close,
             data_source=ds.data_source,
         )
     from ..serve.notifier import attach_decision_description
 
     valid = panel[fcols].notna().all(axis=1)
     if not valid.any():
+        _ts = panel.index[-1] if len(panel) else None
+        _close = float(panel["close"].iloc[-1]) if len(panel) and "close" in panel.columns else None
         return attach_decision_description({
             "signal": "HOLD", "symbol": ds.symbol, "reason": "no_valid_feature_bar",
+            "timestamp": str(_ts) if _ts is not None else None,
+            "close": _close,
             "data_source": ds.data_source,
             "data_mode_zh": _DATA_MODE_ZH.get(ds.data_source, ds.data_source),
         })
     ts = panel.index[valid][-1]
+    bar_close = float(panel["close"].loc[ts])
 
     full_sampling = bool(
         trained.get("cusum_full_sampling", ds.cusum_full_sampling)
@@ -406,6 +416,7 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
             "signal": "HOLD",
             "symbol": ds.symbol,
             "timestamp": str(ts),
+            "close": bar_close,
             "reason": "not_cusum_event",
             "win_probability": None,
             "suggested_position_pct": 0.0,
@@ -432,7 +443,7 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
         confident = bool(conf.predict_set(np.array([prob]))["confident"][0])
 
     side = int(side_ser.loc[ts])
-    entry = float(panel["close"].loc[ts])
+    entry = bar_close
     atr = float(panel["atr_14"].loc[ts]) if "atr_14" in panel.columns else entry * 0.01
     pt_sl = (float(lc["pt_sl"][0]), float(lc["pt_sl"][1]))
     payoff = pt_sl[0] / pt_sl[1]
@@ -447,6 +458,7 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     )
     d["symbol"] = ds.symbol
     d["timestamp"] = str(ts)
+    d["close"] = bar_close
     d["data_source"] = ds.data_source
     d["data_mode_zh"] = _DATA_MODE_ZH.get(ds.data_source, ds.data_source)
     return attach_decision_description(d)

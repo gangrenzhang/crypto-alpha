@@ -103,9 +103,11 @@ class DecisionService:
                 f"[warn] {symbol}: 特征列与训练 schema 不一致, 强制 HOLD; "
                 f"missing={missing[:8]}{'...' if len(missing) > 8 else ''}"
             )
+            _ts = feat.index[-1] if len(feat) else None
+            _close = float(feat["close"].iloc[-1]) if len(feat) and "close" in feat.columns else None
             return hold_for_schema_mismatch(
                 symbol=symbol, missing_cols=missing, risk_cfg=self.cfg["risk"],
-                timestamp=feat.index[-1] if len(feat) else None,
+                timestamp=_ts, close=_close,
                 data_source=data_source,
             )
 
@@ -114,6 +116,7 @@ class DecisionService:
             print(f"[warn] {symbol}: 无有效特征行, 跳过。")
             return None
         ts = feat.index[valid][-1]  # 最新一根特征完整的 bar
+        bar_close = float(feat["close"].loc[ts])
 
         if not _is_tradable_event(self.cfg, feat, ts, bundle.cusum_full_sampling):
             from ..risk.sizing import resolve_execution_assumption
@@ -122,6 +125,7 @@ class DecisionService:
                 "signal": "HOLD",
                 "symbol": symbol,
                 "timestamp": str(ts),
+                "close": bar_close,
                 "reason": "not_cusum_event",
                 "win_probability": None,
                 "suggested_position_pct": 0.0,
@@ -148,7 +152,7 @@ class DecisionService:
             confident = bool(bundle.conformal.predict_set(np.array([prob]))["confident"][0])
 
         side = int(side_ser.loc[ts])
-        entry = float(feat["close"].loc[ts])
+        entry = bar_close
         atr = float(feat["atr_14"].loc[ts]) if "atr_14" in feat.columns else entry * 0.01
         pt_sl = (float(lc["pt_sl"][0]), float(lc["pt_sl"][1]))
         payoff = pt_sl[0] / pt_sl[1]
@@ -162,6 +166,7 @@ class DecisionService:
         )
         d["symbol"] = symbol
         d["timestamp"] = str(ts)
+        d["close"] = bar_close
         d["data_source"] = data_source
         return attach_decision_description(d)
 

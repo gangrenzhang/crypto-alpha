@@ -31,20 +31,29 @@ _TF_MS = {
     "1m": 60_000,
     "5m": 300_000,
     "15m": 900_000,
+    "30m": 1_800_000,
     "1h": 3_600_000,
+    "2h": 7_200_000,
     "4h": 14_400_000,
     "1d": 86_400_000,
 }
 
-# pandas resample 规则(与交易所开盘对齐: label/closed=left)
+# pandas resample / Grouper 规则(与交易所开盘对齐: label/closed=left)
+# 注意: 不可把 "30m" 直接交给 Grouper——pandas offset 里 m/M 表示月, 分钟须用 min
 _TF_RESAMPLE = {
     "1m": "1min",
     "5m": "5min",
     "15m": "15min",
+    "30m": "30min",
     "1h": "1h",
+    "2h": "2h",
     "4h": "4h",
     "1d": "1D",
 }
+
+
+def supported_timeframes() -> list[str]:
+    return list(_TF_MS.keys())
 
 
 def timeframe_delta(timeframe: str) -> pd.Timedelta:
@@ -54,8 +63,16 @@ def timeframe_delta(timeframe: str) -> pd.Timedelta:
     return pd.Timedelta(milliseconds=_TF_MS[timeframe])
 
 
+def timeframe_to_pandas_freq(timeframe: str) -> str:
+    """ccxt 风格周期 → pandas 安全 freq(如 30m → 30min)。"""
+    if timeframe in _TF_RESAMPLE:
+        return _TF_RESAMPLE[timeframe]
+    # 已是 pandas 写法(如 30min)则原样返回
+    return str(timeframe)
+
+
 def timeframe_to_prefix(timeframe: str) -> str:
-    """特征列前缀, 如 4h -> tf4h, 1d -> tf1d。"""
+    """特征列前缀, 如 4h -> tf4h, 1d -> tf1d, 30m -> tf30m。"""
     return f"tf{timeframe}"
 
 
@@ -341,14 +358,31 @@ def generate_synthetic_ohlcv(
 
 
 def raw_cache_path(cfg, symbol: str, timeframe: str | None = None):
-    """主周期沿用 `SYMBOL.parquet`; 辅周期为 `SYMBOL__4h.parquet` 等, 避免互相覆盖。"""
+    """统一 `SYMBOL__{tf}.parquet`(含主周期)。
+
+    旧版主周期无后缀 `SYMBOL.parquet` 仅通过 ``resolve_raw_cache_path`` 在
+    ``tf==1h`` 时兼容读取, **禁止** 30m 等周期误读 1h 文件。
+    """
     from pathlib import Path
 
-    main_tf = cfg["data"]["timeframe"]
-    tf = timeframe or main_tf
+    tf = timeframe or cfg["data"]["timeframe"]
     base = symbol.replace("/", "_")
-    name = f"{base}.parquet" if tf == main_tf else f"{base}__{tf}.parquet"
-    return Path(cfg.data_dir) / "raw" / name
+    return Path(cfg.data_dir) / "raw" / f"{base}__{tf}.parquet"
+
+
+def resolve_raw_cache_path(cfg, symbol: str, timeframe: str | None = None):
+    """解析实际可读缓存路径: 优先带周期后缀; 仅 1h 回退无后缀遗留文件。"""
+    from pathlib import Path
+
+    preferred = raw_cache_path(cfg, symbol, timeframe)
+    if preferred.exists():
+        return preferred
+    tf = timeframe or cfg["data"]["timeframe"]
+    if tf == "1h":
+        legacy = Path(cfg.data_dir) / "raw" / f"{symbol.replace('/', '_')}.parquet"
+        if legacy.exists():
+            return legacy
+    return preferred
 
 
 def resample_ohlcv(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
@@ -507,17 +541,18 @@ def load_symbol_data(
     if d.get("use_synthetic", False):
         return _tag_source(_load_synthetic(cfg, symbol, tf), "synthetic")
 
-    cache = raw_cache_path(cfg, symbol, tf)
+    cache_read = resolve_raw_cache_path(cfg, symbol, tf)
+    cache_write = raw_cache_path(cfg, symbol, tf)
     use_cache = bool(d.get("cache", True))
     do_incremental = bool(force_refresh) or bool(d.get("incremental_update", True))
-    if use_cache and cache.exists():
-        df = load_parquet(cache)
+    if use_cache and cache_read.exists():
+        df = load_parquet(cache_read)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         if do_incremental:
             try:
                 df = _incremental_update(cfg, symbol, df, tf)
-                save_parquet(df, cache)
+                save_parquet(df, cache_write)
                 src = "real" if force_refresh else "cache"
             except Exception as e:
                 if force_refresh:
@@ -530,6 +565,12 @@ def load_symbol_data(
         else:
             df = drop_incomplete_last_bar(df, tf)
             src = "cache"
+            # 冷读遗留无后缀 1h 时, 顺便迁移到带后缀路径(不改数据)
+            if cache_read != cache_write and len(df):
+                try:
+                    save_parquet(df, cache_write)
+                except Exception:
+                    pass
         return _tag_source(df, src)
 
     try:
@@ -546,7 +587,7 @@ def load_symbol_data(
             return _tag_source(_load_synthetic(cfg, symbol, tf), "synthetic_fallback")
         raise
     if use_cache and len(df):
-        save_parquet(df, cache)
+        save_parquet(df, cache_write)
     return _tag_source(df, "real")
 
 
@@ -578,9 +619,10 @@ def refresh_market_data(cfg, symbol: str) -> pd.DataFrame:
             if timeframe_delta(tf) < timeframe_delta(main_tf):
                 continue
             resampled = drop_incomplete_last_bar(resample_ohlcv(main, tf), tf)
-            cache = raw_cache_path(cfg, symbol, tf)
-            if bool(d.get("cache", True)) and cache.exists():
-                old = load_parquet(cache)
+            cache_read = resolve_raw_cache_path(cfg, symbol, tf)
+            cache_write = raw_cache_path(cfg, symbol, tf)
+            if bool(d.get("cache", True)) and cache_read.exists():
+                old = load_parquet(cache_read)
                 if old.index.tz is None:
                     old.index = old.index.tz_localize("UTC")
                 # 只把主面板 resample 的 tip 并入, 保留 Vision 辅周期历史
@@ -591,9 +633,9 @@ def refresh_market_data(cfg, symbol: str) -> pd.DataFrame:
                     merged = resampled if len(resampled) else old
                 merged = merged[~merged.index.duplicated(keep="last")].sort_index()
                 merged = drop_incomplete_last_bar(merged, tf)
-                save_parquet(merged, cache)
+                save_parquet(merged, cache_write)
             elif bool(d.get("cache", True)) and len(resampled):
-                save_parquet(resampled, cache)
+                save_parquet(resampled, cache_write)
         except Exception as e:
             print(f"[warn] {symbol} 辅周期 {tf} tip 对齐失败({e}); 跳过。")
 
