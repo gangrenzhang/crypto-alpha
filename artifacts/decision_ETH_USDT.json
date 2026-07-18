@@ -1,7 +1,8 @@
 {
   "signal": "HOLD",
   "symbol": "ETH/USDT",
-  "timestamp": "2026-07-18 07:00:00+00:00",
+  "timestamp": "2026-07-18 08:30:00+00:00",
+  "close": 1847.53,
   "reason": "not_cusum_event",
   "win_probability": null,
   "suggested_position_pct": 0.0,
@@ -11,5 +12,6 @@
   "execution_assumption": "close_fill",
   "data_source": "real",
   "data_mode_zh": "真实",
-  "description": "[观望] ETH/USDT\n概率=None  (非 CUSUM 事件 bar, 与训练开仓门控对齐)\n时间: 2026-07-18 07:00:00+00:00\n数据口径: 真实"
+  "timestamp_beijing": "2026-07-18 16:30:00+08:00",
+  "description": "[观望] ETH/USDT\n概率=None  (非 CUSUM 事件 bar, 与训练开仓门控对齐)\n时间(UTC): 2026-07-18 08:30:00+00:00\n时间(北京): 2026-07-18 16:30:00+08:00\n收盘价: 1847.53\n数据口径: 真实"
 }
