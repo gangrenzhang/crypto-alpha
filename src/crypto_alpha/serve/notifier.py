@@ -34,13 +34,17 @@ def _hold_reason_text(d: dict) -> str:
 def format_decision(d: dict) -> str:
     """把决策 JSON 格式化为可读播报文本。"""
     sig = d.get("signal", "HOLD")
+    mode = d.get("data_mode_zh") or d.get("data_source")
+    mode_line = f"\n数据口径: {mode}" if mode else ""
     if sig == "HOLD":
         head = f"[观望] {d.get('symbol')}"
         return (
             f"{head}\n概率={d.get('win_probability')}  ({_hold_reason_text(d)})\n"
             f"时间: {d.get('timestamp')}"
+            f"{mode_line}"
         )
     arrow = "做多 LONG" if sig == "LONG" else "做空 SHORT"
+    exec_a = d.get("execution_assumption") or "close_fill"
     return (
         f"[{arrow}] {d.get('symbol')}\n"
         f"盈利概率: {d.get('win_probability')}\n"
@@ -49,8 +53,18 @@ def format_decision(d: dict) -> str:
         f"止盈:     {d.get('take_profit')}\n"
         f"建议仓位: {d.get('suggested_position_pct')}\n"
         f"ATR:      {d.get('atr')}\n"
-        f"时间: {d.get('timestamp')}"
+        f"时间: {d.get('timestamp')}\n"
+        f"执行假设: {exec_a}"
+        f"{mode_line}"
     )
+
+
+def attach_decision_description(d: dict) -> dict:
+    """就地写入 ``description`` 可读文案, 与 JSON 一并返回/落盘。"""
+    if not isinstance(d, dict):
+        return d
+    d["description"] = format_decision(d)
+    return d
 
 
 class ConsoleNotifier:

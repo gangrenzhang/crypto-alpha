@@ -123,12 +123,13 @@ cryptoCurrency/
 
 **数据源接口已内置**：行情/衍生品走 `ccxt`，新闻走多源适配器（RSS/API）。**你不需要手工准备任何 CSV/数据集**——跑训练时会自动拉取、缓存、加工成建模结构、再训练。
 
-触发点在 `pipeline/run.prepare_dataset`：`load_symbol_data`（拉行情/缓存/合成）→ `build_feature_matrix`（特征；衍生品失败则衍生列填 0）→ `ensure_news_panel` + `add_news_features`（缺新闻面板且 `auto_build_panel` 时自动构建）→ `build_meta_labels`（标签）→ 组装 `Dataset`（`panel/X/y/events/t1/sample_weight` + `degradations`），`train_and_validate` 直接吃这个结构。
+触发点在 `pipeline/run.prepare_dataset`：默认 `load_symbol_data`（拉行情/缓存/合成）；**决策路径**传 `for_decide=True` 时先 `refresh_market_data`（刷到当下已收盘 tip）→ `build_feature_matrix`（特征；衍生品失败则衍生列填 0）→ `ensure_news_panel` + `add_news_features`（缺新闻面板且 `auto_build_panel` 时自动构建）→ `build_meta_labels`（标签）→ 组装 `Dataset`（`panel/X/y/events/t1/sample_weight` + `degradations`），`train_and_validate` 直接吃这个结构。
 
 | 用法 | 命令 | 说明 |
 |------|------|------|
-| **全自动（推荐）** | `python scripts/04_train_and_backtest.py` | 内部自动拉数→特征→标注→训练→回测→决策；首次拉多年历史较慢，之后走缓存+增量 |
-| 分步（想先查数据） | `01_fetch_data.py` → `08_fetch_news.py` → `02_build_features.py` → `03_label.py` → `04_…` | `01/02` 只是提前落盘方便检查，**非训练前置必需** |
+| **全自动（推荐）** | `python scripts/04_train_and_backtest.py` | 训练默认读冷缓存（可关增量）；若 `refresh_before_decide` 则**决策步**另刷 tip 再推理（不重训） |
+| **当下决策** | `python scripts/06_decide.py` | `prepare_dataset(..., for_decide=True)`：强制刷到当下已收盘最后一根再训/决策 |
+| 分步（想先查数据） | `01_fetch_data.py` → `08_fetch_news.py` → `02_build_features.py` → `03_label.py` → `04_…` | `01/02` 只是提前落盘方便检查，**非训练前置必需**；长历史可用 `scripts/fetch_binance_vision.py` 预填 |
 
 **降级与透明度（重要）**：
 
@@ -143,9 +144,13 @@ cryptoCurrency/
 | API | 作用 |
 |-----|------|
 | `fetch_ohlcv` | ccxt 分页拉取多年 K 线（单次 limit≈1000，循环至 `since`→今） |
+| `fetch_ohlcv_resilient` | 按交易所候选列表依次尝试；`for_tip=True` 时优先 `tip_exchange`/fallbacks |
 | `fetch_derivatives` | 资金费率 / OI；**分页** `_paginate_funding` / `_paginate_oi`（`max_pages=500`）；失败→NaN 列 |
 | `generate_synthetic_ohlcv` | GARCH 味 + regime 合成行情（CI / 离线） |
-| `load_symbol_data(cfg, symbol, timeframe=None)` | 统一入口：合成 / 缓存 / 增量 / 降级 |
+| `load_symbol_data(..., force_refresh=False)` | 统一入口：合成 / 缓存 / 增量 / 降级；`force_refresh` 无视 `incremental_update` 开关 |
+| `refresh_market_data` | **决策前**：主周期强制增量到当下已收盘 tip + 辅周期 tip 对齐 + 新鲜度校验 |
+| `drop_incomplete_last_bar` | 剔除尚未收盘的尾部 K 线（可连续剔除多根） |
+| `assert_fresh_enough` / `closed_bar_lag` | tip 相对「最后一根已收盘」的落后时长；超 `max_closed_bar_lag` 根则 fail-fast |
 | `load_aux_timeframes` | 加载辅周期字典 `{tf: df}`；合成主路径强制从 `main_df` 重采样 |
 | `resample_ohlcv` | 由主周期重采样辅周期（价格路径一致） |
 
@@ -153,13 +158,35 @@ cryptoCurrency/
 
 - 主周期：`data/raw/<SYMBOL>.parquet`（例：`BTC_USDT.parquet`）  
 - 辅周期：`data/raw/<SYMBOL>__4h.parquet`  
-- `cache: true` + `incremental_update: true`：只拉最后一根之后的新 bar  
+- `cache: true` + `incremental_update: true`：每次 `load_symbol_data` 只拉最后一根之后的新 bar  
+- 长历史推荐 Vision CDN 预填（`scripts/fetch_binance_vision.py`）；REST 全量多年易超时  
 
-**当前默认**
+**训练 vs 决策的 tip 语义（重要）**
 
-- `use_synthetic: false`（研究/实盘默认真实数据）  
-- 主周期失败拉数会 **warn 后降级合成**（`data_source=synthetic_fallback`）  
-- **路径一致性**：`use_synthetic=true` **或** 主面板已是 `synthetic` / `synthetic_fallback` 时，辅周期 **强制** `resample_ohlcv(main_df)`，禁止再拉真实/缓存高周期（避免「合成主 + 真实辅」混用）；辅周期失败则跳过，不拖垮主流程  
+| 路径 | 行为 |
+|------|------|
+| 训练 / `04` 的 `prepare_dataset`（默认） | 读冷缓存；`incremental_update: false` 时**不**打 REST，末根 = 缓存末根 |
+| `06_decide` / `prepare_dataset(..., for_decide=True)` | `refresh_market_data`：强制增量 → `drop_incomplete_last_bar` → 新鲜度校验 |
+| `07_serve.decide_live` | 同上（直接调 `refresh_market_data`） |
+| `04` 末尾「最新决策」 | 训练仍用冷缓存；若 `refresh_before_decide` 则**另** `for_decide=True` 组 tip 面板再 `latest_decision`（不重训） |
+
+决策用的「当前 K 线」= **墙上时钟下最后一根已收盘主周期 bar**（开盘时间戳 `t`，可用时刻 `t+Δ`；与 `close_fill` / MTF 决策时刻一致）。未收盘的形成中 bar **不得**进入特征。
+
+**增量 tip 细节**
+
+- 从缓存最后一根**开盘**时刻重拉并 `dedupe(keep=last)`，覆盖可能被修正的 tip。  
+- 交易所顺序（`for_tip`）：`tip_exchange` → `exchange_fallbacks` → 主 `exchange`（避免主所 REST 超时拖死决策）。  
+- tip 默认**不**重拉衍生品（`fetch_derivatives_on_tip: false`）；对新 tip 行 **ffill** 历史 `funding_rate`/`open_interest`。  
+- 辅周期：用已刷新主面板 `resample` 的 tip **并入**辅缓存（保留更早独立历史），避免再打多路 REST。  
+- 若 tip 实际来自备用所：记 `degradations+=ohlcv_tip_exchange_fallback`（跨所微观价差接缝风险）。  
+- `require_fresh_for_decide` + `max_closed_bar_lag`：刷完仍过旧则 **fail-fast**，禁止再用数周前冷缓存装成「当下决策」。
+
+**当前默认（研究主路径）**
+
+- `use_synthetic: false`；`allow_synthetic_fallback: false`（断网直接失败，避免伪真实）  
+- `incremental_update: false`（训练不被 REST 拖慢）  
+- `refresh_before_decide: true`；`tip_exchange: gate`；`require_fresh_for_decide: true`；`max_closed_bar_lag: 2`  
+- **路径一致性**：`use_synthetic=true` **或** 主面板已是 `synthetic` / `synthetic_fallback` 时，辅周期 **强制** `resample_ohlcv(main_df)`，禁止再拉真实/缓存高周期；辅周期失败则跳过，不拖垮主流程  
 - 冒烟测试在代码里显式打开合成，勿依赖默认值做离线演示  
 
 ### 4.3 新闻（`data/news.py`）与情绪（`data/sentiment.py`）
@@ -478,27 +505,29 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 
 ```
 Config.load()
-  → load_symbol_data / load_aux_timeframes          # data/fetch.py
-  → build_feature_matrix(..., symbol=...)         # features/build.py + mtf
+  → [决策] refresh_market_data / [训练] load_symbol_data   # data/fetch.py
+  → load_aux_timeframes                                 # 决策前辅 tip 已写入缓存
+  → build_feature_matrix(..., symbol=...)               # features/build.py + mtf
        (+ derivatives fillna(0) / degradations)
-  → ensure_news_panel → add_news_features           # 缺面板可自动 build
-  → build_meta_labels                               # labeling/*
-  → panel["side"]=primary_signal → feature_cols      # 元标签方向进 GBDT/DeepTS
-  → sample_weights                                  # labeling/sample_weights.py
-  → prepare_dataset → Dataset                       # pipeline/run.py
-  → build_experts → StackingEnsemble.fit            # experts + ensemble
+  → ensure_news_panel → add_news_features               # 缺面板可自动 build
+  → build_meta_labels                                   # labeling/*
+  → panel["side"]=primary_signal → feature_cols          # 元标签方向进 GBDT/DeepTS
+  → sample_weights                                      # labeling/sample_weights.py
+  → prepare_dataset(*, for_decide=?) → Dataset          # pipeline/run.py
+  → build_experts → StackingEnsemble.fit                # experts + ensemble
   → cross_fitted_calibrated_and_conformal + fit_deploy(cal,conf,tags)
   → backtest_events + base_report(后半窗 report_mask，若多专家剪枝路径；专家表与集成同窗)
-  → latest_decision / decide_live                   # 全量部署模型；不受 prune_eval_mask_
+  → latest_decision / decide_live                       # 全量部署模型；决策 tip 见 §4.2
 ```
 
 库级入口：
 
 | 函数 | 文件 | 作用 |
 |------|------|------|
-| `prepare_dataset` | `pipeline/run.py` | 数据→特征→标签→权重 |
-| `train_and_validate` | 同上 | 集成+校准+回测 |
-| `latest_decision` | 同上 | 最新 bar 决策 |
+| `prepare_dataset(..., for_decide=False)` | `pipeline/run.py` | 数据→特征→标签→权重；`for_decide` 控制是否刷 tip |
+| `refresh_market_data` | `data/fetch.py` | 决策前增量到当下已收盘 tip + 新鲜度校验 |
+| `train_and_validate` | `pipeline/run.py` | 集成+校准+回测 |
+| `latest_decision` | 同上 | 面板**末根**决策（末根是否「当下」取决于是否刷过 tip） |
 | `cpcv_report` | `pipeline/evaluate.py` | CPCV/DSR/PBO |
 | `run_all` / `build_dashboard` | `pipeline/report.py` | 联跑 + HTML |
 
@@ -571,12 +600,15 @@ python scripts/10_run_all.py --symbols BTC/USDT
 
 产出：`artifacts/dashboard.html`、`artifacts/run_all_summary.json`。
 
-### 16.5 实时服务
+### 16.5 实时服务与当下决策
 
 ```powershell
-python scripts/07_serve.py --once    # 训一次 + 决策一轮
+python scripts/06_decide.py          # 刷 tip → 重训 → 当下已收盘 bar 决策 JSON/文案
+python scripts/07_serve.py --once    # 训一次 + 决策一轮（decide_live 每次刷 tip）
 python scripts/07_serve.py --loop    # 常驻轮询 + 周期重训
 ```
+
+`timestamp` 应为**当前小时已收盘**主周期开盘时刻（UTC），而非冷缓存末根。若刷新失败或 tip 过旧（>`max_closed_bar_lag` 根），进程 fail-fast，不会静默用过期缓存。
 
 Telegram：`serve.telegram.enabled: true`，并设置环境变量 `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`。
 
@@ -587,7 +619,7 @@ Telegram：`serve.telegram.enabled: true`，并设置环境变量 `TELEGRAM_BOT_
 ```json
 {
   "symbol": "BTC/USDT",
-  "timestamp": "2026-07-17 12:00:00+00:00",
+  "timestamp": "2026-07-18 07:00:00+00:00",
   "signal": "LONG",
   "win_probability": 0.63,
   "entry_price": 65000.0,
@@ -595,11 +627,13 @@ Telegram：`serve.telegram.enabled: true`，并设置环境变量 `TELEGRAM_BOT_
   "stop_loss": 64100.0,
   "take_profit": 65900.0,
   "atr": 600.0,
-  "confident": true
+  "confident": true,
+  "execution_assumption": "close_fill",
+  "data_source": "real"
 }
 ```
 
-`signal ∈ {LONG, SHORT, HOLD}`；不自信或概率低于阈值时为 HOLD。
+`signal ∈ {LONG, SHORT, HOLD}`；不自信或概率低于阈值时为 HOLD。`timestamp` = 决策所用主周期 bar 的**开盘**时间；该 bar 须已收盘（见 §4.2 / §5.2 决策时刻）。
 
 ### 16.7 LLM 单独训练（可选）
 
@@ -734,6 +768,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 局限 | 现状 | 建议优先级 |
 |------|------|------------|
 | 真实数据依赖网络 | 失败可降级，但 **`data_source`/看板会标「合成(降级)」**；可关 `allow_synthetic_fallback`；缺新闻面板时 `auto_build_panel` 也可能联网 | ★★★ 预拉缓存 + 新闻历史库 |
+| 决策 tip 跨所拼接 | 历史常为 Binance Vision，tip 可能来自 Gate 等；重叠 bar `keep=last`，接缝处可有微观价差；已标 `ohlcv_tip_exchange_fallback` | ★★ 同所 tip 或接缝平滑/告警阈值 |
+| tip 衍生品 | 默认不重拉；ffill 历史 funding/OI，极端时 tip 仍可能偏旧 | ★ 可选 `fetch_derivatives_on_tip` |
+| `06_decide` 每次全量重训 | 无模型落盘；决策前还刷 tip + 重建面板，延迟高 | ★★ 持久化部署模型（serve 路径已训一次复用） |
 | TimesFM | 前向未实现 → 回退 naive 且 **`degraded=True`** 写入元数据 | ★★ 实现原生 forecast 或固定 chronos/naive |
 | TSFM 未真微调 | 冻结预测 + 浅头；logistic 已传 `sample_weight` | ★★ 监督微调或显式基线 |
 | LLM | 独立脚本 + 大显存；as-of 已与数值特征对齐；实盘每轮刷新 `set_news` | ★ 有文本 alpha 时再开 |

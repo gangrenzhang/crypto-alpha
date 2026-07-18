@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..config import Config
-from ..data import load_symbol_data
+from ..data import load_symbol_data, refresh_market_data
 from ..features.build import build_feature_matrix
 from ..features.news_features import add_news_features
 from ..labeling.meta_labeling import primary_signal
@@ -24,6 +24,7 @@ from ..pipeline.run import (
     hold_for_schema_mismatch,
 )
 from ..risk.sizing import decide
+from .notifier import attach_decision_description, format_decision
 
 
 @dataclass
@@ -71,7 +72,14 @@ class DecisionService:
         bundle = self.models[symbol]
         fcols = bundle.feature_cols
 
-        raw = load_symbol_data(self.cfg, symbol)  # 拉取最新数据(合成或真实)
+        dcfg = self.cfg["data"]
+        if (
+            bool(dcfg.get("refresh_before_decide", True))
+            and not dcfg.get("use_synthetic", False)
+        ):
+            raw = refresh_market_data(self.cfg, symbol)  # 刷到当下已收盘 tip
+        else:
+            raw = load_symbol_data(self.cfg, symbol)
         data_source = str(getattr(raw, "attrs", {}).get("data_source", bundle.data_source))
         feat = build_feature_matrix(raw, self.cfg, symbol=symbol)
         feat["close"] = raw["close"]
@@ -110,7 +118,7 @@ class DecisionService:
         if not _is_tradable_event(self.cfg, feat, ts, bundle.cusum_full_sampling):
             from ..risk.sizing import resolve_execution_assumption
 
-            return {
+            return attach_decision_description({
                 "signal": "HOLD",
                 "symbol": symbol,
                 "timestamp": str(ts),
@@ -122,7 +130,7 @@ class DecisionService:
                 "confident": False,
                 "data_source": data_source,
                 "execution_assumption": resolve_execution_assumption(self.cfg["risk"]),
-            }
+            })
 
         # 刷新需要时序面板的专家 + LLM 新闻快照
         for e in bundle.ensemble.experts:
@@ -155,7 +163,7 @@ class DecisionService:
         d["symbol"] = symbol
         d["timestamp"] = str(ts)
         d["data_source"] = data_source
-        return d
+        return attach_decision_description(d)
 
     # ---------------- 播报(含去重) ----------------
     def _should_notify(self, symbol: str, signal: str) -> bool:
@@ -167,8 +175,6 @@ class DecisionService:
         return True
 
     def run_once(self) -> list[dict]:
-        from .notifier import format_decision
-
         out = []
         for s in self._symbols:
             if s not in self.models:
@@ -178,7 +184,7 @@ class DecisionService:
                 continue
             out.append(d)
             if self._should_notify(s, d["signal"]):
-                self.notifier.send(format_decision(d))
+                self.notifier.send(d.get("description") or format_decision(d))
             self.last_signal[s] = d["signal"]
         return out
 

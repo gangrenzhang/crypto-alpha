@@ -1,9 +1,52 @@
 [
   {
+    "name": "标注oracle: 上破止盈=>bin1/ret>0",
+    "status": "PASS",
+    "detail": {
+      "bin": 1,
+      "ret": 0.01
+    },
+    "note": ""
+  },
+  {
+    "name": "标注oracle: 下破止损=>bin0/ret<0",
+    "status": "PASS",
+    "detail": {
+      "bin": 0,
+      "ret": -0.0101
+    },
+    "note": ""
+  },
+  {
+    "name": "标注oracle: 同bar平局=>悲观判损bin0",
+    "status": "PASS",
+    "detail": {
+      "bin": 0
+    },
+    "note": ""
+  },
+  {
+    "name": "标注oracle: 垂直到期缓涨(多)=>bin1",
+    "status": "PASS",
+    "detail": {
+      "bin": 1,
+      "bars_held": 9
+    },
+    "note": ""
+  },
+  {
+    "name": "标注oracle: 做空缓涨到期=>bin0(对称)",
+    "status": "PASS",
+    "detail": {
+      "bin": 0
+    },
+    "note": ""
+  },
+  {
     "name": "正对照: 真信号可学习(AUC 明显>0.5)",
     "status": "PASS",
     "detail": {
-      "auc_real": 0.8224,
+      "auc_real": 0.8218,
       "min": 0.62
     },
     "note": ""
@@ -12,7 +55,7 @@
     "name": "置换基线: 打乱标签后 AUC 塌回≈0.5(不偷看)",
     "status": "PASS",
     "detail": {
-      "auc_shuffled": 0.4866,
+      "auc_shuffled": 0.483,
       "max": 0.58
     },
     "note": ""
@@ -21,7 +64,7 @@
     "name": "信号差(auc_real - auc_shuffled 足够大)",
     "status": "PASS",
     "detail": {
-      "gap": 0.3358,
+      "gap": 0.3388,
       "min": 0.1
     },
     "note": ""
@@ -60,9 +103,9 @@
     "name": "回测权益与逐笔 pnl 对账一致",
     "status": "PASS",
     "detail": {
-      "recon_from_pnl": 9.8580364492216,
-      "end_equity": 9.8580364492216,
-      "reported_total_return_equity": 9.8580364492216,
+      "recon_from_pnl": 9.725947360348584,
+      "end_equity": 9.725947360348579,
+      "reported_total_return_equity": 9.725947360348579,
       "equity_matches_pnl": true,
       "metric_matches_equity": true
     },
@@ -81,8 +124,8 @@
     "name": "成本单调: 提高费用不增加收益",
     "status": "PASS",
     "detail": {
-      "ret_no_fee": 8.85804,
-      "ret_high_fee": 2.9842
+      "ret_no_fee": 8.72595,
+      "ret_high_fee": 2.94424
     },
     "note": ""
   },
@@ -90,7 +133,7 @@
     "name": "组合级回测不高估收益(<=独立复利口径)",
     "status": "PASS",
     "detail": {
-      "portfolio": 8.85804,
+      "portfolio": 8.72595,
       "independent": 10.09871
     },
     "note": "仅口径对照, 独立复利会系统性偏高"
@@ -99,10 +142,10 @@
     "name": "全链路空对照: 随机游走 OOF AUC≈0.5",
     "status": "PASS",
     "detail": {
-      "auc": 0.5089,
+      "auc": 0.4843,
       "max": 0.58,
-      "n_events": 1697,
-      "backtest_return": 0.06049
+      "n_events": 1679,
+      "backtest_return": -0.03393
     },
     "note": ""
   },
@@ -113,6 +156,20 @@
       "warnings": []
     },
     "note": ""
+  },
+  {
+    "name": "全链路空对照: 随机游走回测收益均值≈0(不凭空造利润)",
+    "status": "PASS",
+    "detail": {
+      "mean_return": -0.0019,
+      "max": 0.03,
+      "per_seed": [
+        0.083,
+        -0.0687,
+        -0.02
+      ]
+    },
+    "note": "纯噪声+成本下期望收益≤0; 单次幸运不计, 故取多种子均值"
   },
   {
     "name": "复现性: 同 seed 两次训练 OOF 一致",

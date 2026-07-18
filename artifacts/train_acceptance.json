@@ -1,0 +1,35 @@
+{
+  "status": "PASS_PIPELINE",
+  "data": "Binance Vision real cache 2020-01..2026-06",
+  "experts": [
+    "gbdt",
+    "deep_ts"
+  ],
+  "audit": "20/20 PASS (artifacts/audit_report.json)",
+  "symbols": {
+    "BTC/USDT": {
+      "auc": 0.500471569858217,
+      "n_eval": 5695,
+      "n_trades": 0,
+      "sharpe": 0.0,
+      "data_source": "cache",
+      "decision": "HOLD",
+      "decision_reason": "not_cusum_event"
+    },
+    "ETH/USDT": {
+      "auc": 0.4907825027971979,
+      "n_eval": 5962,
+      "n_trades": 95,
+      "sharpe": -0.012120341526006531,
+      "data_source": "cache",
+      "decision": "HOLD",
+      "decision_reason": "not_cusum_event"
+    }
+  },
+  "notes": [
+    "AUC≈0.5 表示在真实元标签任务上未检出稳定可交易边际，不是流水线算错（audit 正对照 AUC≈0.82）",
+    "BTC 报告窗 0 笔成交：后半窗校准概率几乎全 <0.55 且保形弃权多，属风控生效",
+    "唯一预期降级: derivatives_oi_unavailable（Vision 无 OI）",
+    "新闻 as_feature=false（未回填历史库）"
+  ]
+}

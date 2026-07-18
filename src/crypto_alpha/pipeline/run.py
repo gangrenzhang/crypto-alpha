@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from ..config import Config, set_global_seed
-from ..data import load_symbol_data
+from ..data import load_symbol_data, refresh_market_data
 from ..features.build import build_feature_matrix, feature_columns
 from ..features.news_features import add_news_features
 from ..labeling.meta_labeling import (
@@ -52,8 +52,23 @@ class Dataset:
     degradations: list[str] = field(default_factory=list)
 
 
-def prepare_dataset(cfg: Config, symbol: str) -> Dataset:
-    raw = load_symbol_data(cfg, symbol)
+def prepare_dataset(cfg: Config, symbol: str, *, for_decide: bool = False) -> Dataset:
+    """组装建模数据集。
+
+    仅当 ``for_decide=True`` **且** ``data.refresh_before_decide`` 时, 先
+    ``refresh_market_data`` 刷到当下已收盘 tip; 训练/回测勿传 ``for_decide``,
+    避免误触 REST。
+    """
+    dcfg = cfg["data"]
+    # 仅决策路径(for_decide)且配置允许时强制刷 tip; 04 训练不传 for_decide, 避免误触 REST。
+    if (
+        for_decide
+        and bool(dcfg.get("refresh_before_decide", True))
+        and not dcfg.get("use_synthetic", False)
+    ):
+        raw = refresh_market_data(cfg, symbol)
+    else:
+        raw = load_symbol_data(cfg, symbol)
     data_source = str(getattr(raw, "attrs", {}).get("data_source", "real"))
     degradations: list[str] = []
     if data_source == "synthetic_fallback":
@@ -62,6 +77,15 @@ def prepare_dataset(cfg: Config, symbol: str) -> Dataset:
             f"[warn] {symbol}: 本次使用合成行情降级(data_source=synthetic_fallback); "
             "勿将回测结果当作真实市场证据。"
         )
+    if getattr(raw, "attrs", {}).get("tip_exchange_mismatch"):
+        tag = "ohlcv_tip_exchange_fallback"
+        if tag not in degradations:
+            degradations.append(tag)
+            exu = getattr(raw, "attrs", {}).get("exchange_used")
+            print(
+                f"[warn] {symbol}: tip 来自备用所 {exu} "
+                f"(主所 {dcfg.get('exchange')}); 历史缓存与 tip 可能存在微观价差接缝。"
+            )
 
     feat = build_feature_matrix(raw, cfg, symbol=symbol)
     feat["close"] = raw["close"]  # 回测/TSFM 需要收盘价
@@ -322,7 +346,9 @@ def hold_for_schema_mismatch(
     if data_source is not None:
         out["data_source"] = data_source
         out["data_mode_zh"] = _DATA_MODE_ZH.get(data_source, data_source)
-    return out
+    from ..serve.notifier import attach_decision_description
+
+    return attach_decision_description(out)
 
 
 def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
@@ -359,9 +385,15 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
             timestamp=panel.index[-1] if len(panel) else None,
             data_source=ds.data_source,
         )
+    from ..serve.notifier import attach_decision_description
+
     valid = panel[fcols].notna().all(axis=1)
     if not valid.any():
-        return {"signal": "HOLD", "symbol": ds.symbol, "reason": "no_valid_feature_bar"}
+        return attach_decision_description({
+            "signal": "HOLD", "symbol": ds.symbol, "reason": "no_valid_feature_bar",
+            "data_source": ds.data_source,
+            "data_mode_zh": _DATA_MODE_ZH.get(ds.data_source, ds.data_source),
+        })
     ts = panel.index[valid][-1]
 
     full_sampling = bool(
@@ -370,7 +402,7 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     if not _is_tradable_event(cfg, panel, ts, full_sampling):
         from ..risk.sizing import resolve_execution_assumption
 
-        return {
+        return attach_decision_description({
             "signal": "HOLD",
             "symbol": ds.symbol,
             "timestamp": str(ts),
@@ -382,7 +414,8 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
             "confident": False,
             "execution_assumption": resolve_execution_assumption(cfg["risk"]),
             "data_source": ds.data_source,
-        }
+            "data_mode_zh": _DATA_MODE_ZH.get(ds.data_source, ds.data_source),
+        })
 
     for e in ens.experts:  # 刷新时序面板专家的历史窗口
         if getattr(e, "needs_panel", False):
@@ -416,4 +449,4 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     d["timestamp"] = str(ts)
     d["data_source"] = ds.data_source
     d["data_mode_zh"] = _DATA_MODE_ZH.get(ds.data_source, ds.data_source)
-    return d
+    return attach_decision_description(d)

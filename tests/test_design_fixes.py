@@ -700,6 +700,7 @@ def test_decide_live_schema_mismatch_holds(monkeypatch):
     from crypto_alpha.serve.service import DecisionService, ModelBundle
 
     cfg = Config.load()
+    cfg.raw["data"]["refresh_before_decide"] = False  # 本单测只验 schema, 不打 REST
     svc = DecisionService(cfg, notifier=type("N", (), {"send": lambda self, m: None})())
 
     class _BoomEnsemble:
@@ -1027,7 +1028,7 @@ def test_ffd_causal_no_future_shock():
 
 
 def test_notifier_hold_reason_not_always_threshold():
-    from crypto_alpha.serve.notifier import format_decision
+    from crypto_alpha.serve.notifier import format_decision, attach_decision_description
 
     text = format_decision({
         "signal": "HOLD", "symbol": "BTC/USDT",
@@ -1036,6 +1037,18 @@ def test_notifier_hold_reason_not_always_threshold():
     })
     assert "CUSUM" in text
     assert "低于阈值" not in text
+
+    d = attach_decision_description({
+        "signal": "LONG", "symbol": "ETH/USDT",
+        "win_probability": 0.62, "entry_price": 2000.0,
+        "stop_loss": 1900.0, "take_profit": 2100.0,
+        "suggested_position_pct": 0.1, "atr": 50.0,
+        "timestamp": "t", "execution_assumption": "close_fill",
+        "data_mode_zh": "真实(缓存)",
+    })
+    assert "description" in d
+    assert "做多" in d["description"]
+    assert "真实(缓存)" in d["description"]
 
 
 def test_align_news_asof_uses_decision_delta():

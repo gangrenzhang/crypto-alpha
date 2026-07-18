@@ -4,6 +4,7 @@ from .fetch import (
     generate_synthetic_ohlcv,
     load_symbol_data,
     load_aux_timeframes,
+    refresh_market_data,
     resample_ohlcv,
     timeframe_delta,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "generate_synthetic_ohlcv",
     "load_symbol_data",
     "load_aux_timeframes",
+    "refresh_market_data",
     "resample_ohlcv",
     "timeframe_delta",
     "save_parquet",

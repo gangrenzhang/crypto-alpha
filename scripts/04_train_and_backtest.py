@@ -21,8 +21,26 @@ def main():
             print(f"  - {name}: AUC={rep['auc']:.3f} Brier={rep['brier']:.3f} Acc={rep['accuracy']:.3f}")
         print("[回测指标]", json.dumps(trained["backtest"]["metrics"], ensure_ascii=False, indent=2))
 
-        decision = latest_decision(cfg, ds, trained)
+        # 训练用冷缓存; 决策若开启 refresh_before_decide 则另组「当下 tip」面板再推理
+        # (不重训; 与 06_decide / serve 的 tip 语义对齐)
+        if (
+            bool(cfg["data"].get("refresh_before_decide", True))
+            and not cfg["data"].get("use_synthetic", False)
+        ):
+            ds_dec = prepare_dataset(cfg, symbol, for_decide=True)
+            decision = latest_decision(cfg, ds_dec, trained)
+        else:
+            decision = latest_decision(cfg, ds, trained)
         print("[最新决策]", json.dumps(decision, ensure_ascii=False, indent=2))
+        if decision.get("description"):
+            print("[决策可读描述]\n" + decision["description"])
+        stem = symbol.replace("/", "_")
+        (cfg.artifacts_dir / f"decision_{stem}.json").write_text(
+            json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        (cfg.artifacts_dir / f"decision_{stem}.txt").write_text(
+            (decision.get("description") or "") + "\n", encoding="utf-8",
+        )
 
         # 保存净值曲线
         try:

@@ -1,0 +1,94 @@
+{
+  "BTC/USDT": {
+    "report": {
+      "n": 5695,
+      "auc": 0.500471569858217,
+      "brier": 0.25018654800437734,
+      "logloss": 0.6935215874424303,
+      "accuracy": 0.5013169446883231,
+      "base_rate": 0.49148375768217734
+    },
+    "backtest": {
+      "n_events": 5695,
+      "n_trades": 0,
+      "n_halted": 0,
+      "total_return": 0.0,
+      "sharpe": 0.0,
+      "sharpe_annualized": 0.0,
+      "max_drawdown": 0.0,
+      "max_drawdown_realized": 0.0,
+      "mark_to_market": true,
+      "avg_uniqueness": 1.0,
+      "n_trades_effective": 0.0,
+      "win_rate": 0.0,
+      "avg_pnl": 0.0,
+      "portfolio_mode": "portfolio",
+      "sharpe_equity": 0.0,
+      "sharpe_equity_annualized": 0.0,
+      "sharpe_equity_mtm": 0.0,
+      "sharpe_equity_mtm_annualized": 0.0,
+      "n_skipped_capacity": 0,
+      "calmar": 0.0
+    },
+    "decision": {
+      "signal": "HOLD",
+      "symbol": "BTC/USDT",
+      "timestamp": "2026-06-30 23:00:00+00:00",
+      "reason": "not_cusum_event",
+      "win_probability": null,
+      "suggested_position_pct": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "confident": false,
+      "execution_assumption": "close_fill",
+      "data_source": "cache",
+      "description": "[观望] BTC/USDT\n概率=None  (非 CUSUM 事件 bar, 与训练开仓门控对齐)\n时间: 2026-06-30 23:00:00+00:00\n数据口径: cache"
+    }
+  },
+  "ETH/USDT": {
+    "report": {
+      "n": 5962,
+      "auc": 0.4907825027971979,
+      "brier": 0.25073482076681497,
+      "logloss": 0.702339510113054,
+      "accuracy": 0.4949681314994968,
+      "base_rate": 0.49027172089902715
+    },
+    "backtest": {
+      "n_events": 5962,
+      "n_trades": 95,
+      "n_halted": 0,
+      "total_return": -0.005673087777463115,
+      "sharpe": -0.012120341526006531,
+      "sharpe_annualized": -0.05758197942731954,
+      "max_drawdown": -0.04364471376581274,
+      "max_drawdown_realized": -0.04044654772869694,
+      "mark_to_market": true,
+      "avg_uniqueness": 0.9124517584811702,
+      "n_trades_effective": 86.68291705571117,
+      "win_rate": 0.5368421052631579,
+      "avg_pnl": -5.0060171432624856e-05,
+      "portfolio_mode": "portfolio",
+      "sharpe_equity": -0.017266763768294034,
+      "sharpe_equity_annualized": -0.09089164168424897,
+      "sharpe_equity_mtm": -0.001329248524874073,
+      "sharpe_equity_mtm_annualized": -0.06170991615140592,
+      "n_skipped_capacity": 0,
+      "calmar": -0.1299833853400937
+    },
+    "decision": {
+      "signal": "HOLD",
+      "symbol": "ETH/USDT",
+      "timestamp": "2026-06-30 23:00:00+00:00",
+      "reason": "not_cusum_event",
+      "win_probability": null,
+      "suggested_position_pct": 0.0,
+      "stop_loss": null,
+      "take_profit": null,
+      "confident": false,
+      "execution_assumption": "close_fill",
+      "data_source": "cache",
+      "description": "[观望] ETH/USDT\n概率=None  (非 CUSUM 事件 bar, 与训练开仓门控对齐)\n时间: 2026-06-30 23:00:00+00:00\n数据口径: cache"
+    }
+  }
+}

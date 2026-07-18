@@ -11,7 +11,12 @@ project:
 
 # ---------------- 数据 ----------------
 data:
+  # 历史长区间用 scripts/fetch_binance_vision.py 预填; 决策时 REST 增量刷到当下 tip。
   exchange: binance
+  # 决策增量 tip 优先走可达 REST(本机 Binance 常超时); 历史仍用 Vision 缓存
+  tip_exchange: gate
+  exchange_fallbacks: ["gate", "bitget", "mexc"]
+  rest_timeout_ms: 8000
   symbols: ["BTC/USDT", "ETH/USDT"]
   # 主时间框架用于建模/标注/训练索引; 辅周期只作高周期上下文特征(方案B, 不分别训练)
   timeframe: "1h"
@@ -22,12 +27,21 @@ data:
   use_synthetic: false
   synthetic_bars: 20000
   # 真实拉取失败时是否允许降级合成(会写入 data_source=synthetic_fallback; 看板不再谎报「真实」)
-  allow_synthetic_fallback: true
+  # 主干正式训练：禁止降级，避免断网时静默用合成数据污染结论
+  allow_synthetic_fallback: false
   # 真实数据缓存: 主周期 data/raw/<SYMBOL>.parquet; 辅周期 data/raw/<SYMBOL>__4h.parquet
   cache: true
-  incremental_update: true        # 每次运行只增量拉取缓存之后的新 bar
+  # 训练/特征构建默认不增量(避免每次 load 被 REST 拖慢); 决策路径见 refresh_before_decide
+  incremental_update: false
+  # 06_decide / serve.decide_live: 强制增量到「当下已收盘」最后一根 K 线
+  refresh_before_decide: true
+  # 刷新后若已收盘 tip 落后超过 N 根主周期 → fail-fast(避免再用 6 月底冷缓存决策)
+  require_fresh_for_decide: true
+  max_closed_bar_lag: 2
   # 衍生品数据(资金费率/持仓量): 分页回填覆盖 since→今, 失败则优雅降级 NaN
   fetch_derivatives: true
+  # 决策 tip 增量默认不重拉衍生品(慢); 新 tip 行 ffill 历史 funding/OI
+  fetch_derivatives_on_tip: false
 
 # ---------------- 新闻(喂给 LLM 专家) ----------------
 news:
@@ -55,7 +69,8 @@ news:
   auto_build_panel: true       # 缺面板时 prepare_dataset 自动 build_news_panel 并落盘
   require_panel: false         # true=缺面板且构建为空时 fail-fast(默认 warn+空特征)
   # 把新闻数值特征并入所有专家(GBDT/深度时序), 而不止喂 LLM
-  as_feature: true
+  # 尚未回填 use_history 时关闭，避免多年空新闻被误读为「新闻无 alpha」
+  as_feature: false
   feature_ttl_hours: 24        # 新闻超过此时长视为过期, 数值归零
   feature_halflife_hours: 6    # 新闻影响的指数衰减半衰期
   feature_ema_span: 12         # 新闻情绪 EMA 平滑跨度(bar)
