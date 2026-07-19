@@ -91,11 +91,13 @@ def _apply_deploy_cal_conformal(
     alpha: float,
     conformal_frac: float,
     min_oof: int = 20,
-) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    min_margin: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, list[str], object | None]:
     """用训练折 OOF 按部署口径时间切分拟合校准+保形, 变换测试折概率。
 
-    返回 (校准后测试概率, confident 掩码, degradations 标签)。
-    OOF 不足或单类时: 概率原样返回, confident 全 True, 并写入 skipped 标签。
+    返回 (校准后测试概率, confident 掩码, degradations 标签, 校准器或 None)。
+    OOF 不足或单类时: 概率原样返回, confident 全 True, calibrator=None, 并写入 skipped 标签。
+    调用方须用 ``cal.transform(train_oof)`` 估计 thr(与测试折同尺度), 禁止用原始 OOF。
     """
     tags: list[str] = []
     p_test = np.asarray(p_test, dtype=float)
@@ -104,18 +106,19 @@ def _apply_deploy_cal_conformal(
     yy = np.asarray(y)
     if m.sum() < min_oof or len(np.unique(yy[m])) < 2:
         tags.append(f"cpcv_cal_conformal_skipped(n_oof={int(m.sum())})")
-        return p_test, conf_mask, tags
+        return p_test, conf_mask, tags, None
     try:
         cal, conf, dep_tags = fit_deploy_calibrator_and_conformal(
             oof, yy, method=method, alpha=alpha, conformal_frac=conformal_frac,
+            min_margin=min_margin,
         )
         tags.extend(dep_tags)
         p_cal = cal.transform(p_test)
         conf_mask = np.asarray(conf.predict_set(p_cal)["confident"], dtype=bool)
-        return p_cal, conf_mask, tags
+        return p_cal, conf_mask, tags, cal
     except Exception as ex:
         tags.append(f"cpcv_cal_conformal_error:{type(ex).__name__}")
-        return p_test, conf_mask, tags
+        return p_test, conf_mask, tags, None
 
 
 def cpcv_report(cfg, ds, build_experts_fn) -> dict:
@@ -124,11 +127,36 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     同时构建 (n_configs, n_splits) 绩效矩阵用于 PBO: 配置 = 各专家 + Stacking 集成。
     """
     from ..ensemble import StackingEnsemble
+    from ..diagnostics.gates import freeze_threshold_on_reference
 
     vcfg = cfg["validation"]
     ccfg = cfg["calibration"]
     method = ccfg.get("method", "isotonic")
     conformal_frac = float(ccfg.get("conformal_frac", 0.3))
+    conf_margin = float(ccfg.get("conformal_min_margin", 0.0) or 0.0)
+    inflate_max = float(ccfg.get("pass_rate_inflate_max", 1.5) or 0.0)
+
+    def _thr_from_train_oof(oof_tr, cal, tags_out: list[str]) -> float:
+        """部署同形阈值: cal.transform(train OOF); 无校准器时用原始 OOF。"""
+        oof_arr = np.asarray(oof_tr, dtype=float)
+        m = np.isfinite(oof_arr)
+        raw_ref = oof_arr[m]
+        if cal is not None and len(raw_ref):
+            ref = np.asarray(cal.transform(raw_ref), dtype=float)
+            prefix = "deploy_"
+        else:
+            ref = raw_ref
+            prefix = "deploy_"
+            if cal is None and "cpcv_thr_reference_raw_oof(no_calibrator)" not in tags_out:
+                tags_out.append("cpcv_thr_reference_raw_oof(no_calibrator)")
+        thr, thr_tags = freeze_threshold_on_reference(
+            cfg["backtest"], raw_ref, ref,
+            pass_rate_inflate_max=inflate_max, tag_prefix=prefix,
+        )
+        for t in thr_tags:
+            if t not in tags_out:
+                tags_out.append(t)
+        return float(thr)
     cv = CombinatorialPurgedCV(
         n_splits=int(vcfg["n_splits"]),
         n_test_groups=int(vcfg["n_test_groups"]),
@@ -166,15 +194,19 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
                 e, Xtr, ytr, t1tr, wtr, inner_splits, embargo,
             )
             p_raw = fitted.predict_proba(Xte)
-            p, conf_mask, cal_tags = _apply_deploy_cal_conformal(
+            p, conf_mask, cal_tags, cal_e = _apply_deploy_cal_conformal(
                 oof_tr, ytr, p_raw,
                 method=method, alpha=conf_alpha, conformal_frac=conformal_frac,
+                min_margin=conf_margin,
             )
             for t in cal_tags:
                 if t not in cal_degradations:
                     cal_degradations.append(t)
+            thr_e = _thr_from_train_oof(oof_tr, cal_e, cal_degradations)
+            bt_cfg_e = dict(cfg["backtest"])
+            bt_cfg_e["prob_threshold"] = float(thr_e)
             bt = backtest_events(
-                ds.events.iloc[te], p, cfg["backtest"], cfg["risk"], payoff, prices,
+                ds.events.iloc[te], p, bt_cfg_e, cfg["risk"], payoff, prices,
                 confident=conf_mask,
             )
             col_perf[e.name] = bt["metrics"]["sharpe"]
@@ -183,15 +215,19 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         ens.fit(Xtr, ytr, t1tr, sample_weight=wtr, n_splits=inner_splits, embargo_pct=embargo)
         pe_raw = ens.predict_proba(Xte)
         oof_e = ens.oof_proba()
-        pe, conf_e, cal_tags_e = _apply_deploy_cal_conformal(
+        pe, conf_e, cal_tags_e, cal_ens = _apply_deploy_cal_conformal(
             oof_e, ytr, pe_raw,
             method=method, alpha=conf_alpha, conformal_frac=conformal_frac,
+            min_margin=conf_margin,
         )
         for t in cal_tags_e:
             if t not in cal_degradations:
                 cal_degradations.append(t)
+        thr_ens = _thr_from_train_oof(oof_e, cal_ens, cal_degradations)
+        bt_cfg_ens = dict(cfg["backtest"])
+        bt_cfg_ens["prob_threshold"] = float(thr_ens)
         bte = backtest_events(
-            ds.events.iloc[te], pe, cfg["backtest"], cfg["risk"], payoff, prices,
+            ds.events.iloc[te], pe, bt_cfg_ens, cfg["risk"], payoff, prices,
             confident=conf_e,
         )
         col_perf["ensemble"] = bte["metrics"]["sharpe"]

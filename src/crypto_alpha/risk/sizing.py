@@ -112,16 +112,24 @@ def decide(
     elif prob < prob_threshold:
         reason = "prob_below_threshold"
     else:
-        signal = "LONG" if side > 0 else "SHORT"
-        size = position_size(
-            prob, payoff, float(risk_cfg.get("kelly_fraction", 0.5)),
-            float(risk_cfg.get("max_position_pct", 0.3)),
-            cost=rt_cost,
-        )
-        if size <= 0.0:
+        # 可选: 扣成本后 Kelly 边缘过低则 HOLD(默认 min_kelly_edge=0 → 旧行为)
+        min_edge = float(risk_cfg.get("min_kelly_edge", 0.0) or 0.0)
+        f_star = kelly_fraction(prob, payoff, cost=rt_cost)
+        if min_edge > 0.0 and f_star < min_edge:
+            reason = "kelly_edge_below_min"
             signal = "HOLD"
-            reason = "kelly_non_positive_after_cost"
             size = 0.0
+        else:
+            signal = "LONG" if side > 0 else "SHORT"
+            size = position_size(
+                prob, payoff, float(risk_cfg.get("kelly_fraction", 0.5)),
+                float(risk_cfg.get("max_position_pct", 0.3)),
+                cost=rt_cost,
+            )
+            if size <= 0.0:
+                signal = "HOLD"
+                reason = "kelly_non_positive_after_cost"
+                size = 0.0
 
     out = {
         "signal": signal,

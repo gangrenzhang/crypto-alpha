@@ -226,13 +226,29 @@ calibration:
   conformal_alpha: 0.1     # 保形预测显著性(1-覆盖率)
   calib_splits: 5          # 交叉拟合校准/保形的折数(评估用无泄漏)
   conformal_frac: 0.3      # 部署: 较晚该比例 OOF 专供保形拟合(与校准器时间切分独立)
+  # 保形额外间隔: confident 还须 |p-0.5|>=margin; 0=旧行为。弱模型建议 0.05
+  conformal_min_margin: 0.05
+  # 校准后过线率 / 原始过线率 > 此值 → degradations 告警; <=0 关闭
+  pass_rate_inflate_max: 1.5
+  # 校准后唯一概率档位数过低告警; <=0 关闭
+  min_unique_levels: 20
 
 # ---------------- 回测 ----------------
 backtest:
   fee_bps: 5.0             # 单边手续费(基点)
   slippage_bps: 2.0        # 滑点(基点)
   funding_bps_per_bar: 0.0 # 资金费率近似(基点/bar), 简化
-  prob_threshold: 0.55     # 低于此概率则观望
+  prob_threshold: 0.55     # 固定下限(fixed)或 max_of 的地板
+  # fixed=仅用上值; quantile=参考分分位; max_of=max(固定, 分位) — 推荐部署
+  # 分位仅在参考窗估计(禁评估窗)。双冻结:
+  #   prob_threshold_research = CF oof_cal[ref]
+  #   prob_threshold_effective = deploy_cal.transform(raw_oof[ref]) → decide/serve
+  prob_threshold_mode: max_of
+  prob_quantile: 0.98
+  target_trade_rate: null  # 可选: 如 0.01≈只开参考分 top 1%(与分位取更严)
+  # 参考窗上校准灌过线时, 用更严分位抬 thr 后冻结(报告窗仅告警不改 thr)
+  raise_thr_on_inflate: true
+  inflate_raise_quantile: 0.99  # null=max(prob_quantile, 0.99)
   # true=组合级资金占用(并发仓位共享权益, 推荐); false=旧版事件独立复利(会高估)
   portfolio_mode: true
   min_position_pct: 0.01   # 可用资金不足时跳过开仓的最小仓位
@@ -256,6 +272,8 @@ risk:
   max_gross_exposure: 1.0  # 并发持仓合计上限(组合回测锁定仓位用)
   atr_stop_mult: 1.5       # 仅当未传 pt_sl 时的回退; 正常与 labeling.pt_sl 对齐
   daily_max_drawdown: 0.05 # 日内熔断: 当日回撤触及此比例后, 当日剩余事件停止开仓(回测已实现); 设 0 关闭
+  # 扣成本后 Kelly f* 低于此值则 HOLD; 0=关闭(旧行为)
+  min_kelly_edge: 0.0
   # 往返成本分数(相对仓位名义); null 则 resolve_roundtrip_cost → 2*(fee+slip), 回测与 decide 共用
   roundtrip_cost_frac: null
   # 执行假设: 当前**仅实现** close_fill(当根收盘特征+收盘成交)。

@@ -26,7 +26,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ..risk.sizing import position_size, resolve_roundtrip_cost
+from ..risk.sizing import kelly_fraction, position_size, resolve_roundtrip_cost
 
 
 def backtest_events(
@@ -104,6 +104,12 @@ def _backtest_independent(
             sizes.append(0.0)
             rets.append(0.0)
             halted_flags.append(bool(halted_today))
+            continue
+        min_edge = float(risk_cfg.get("min_kelly_edge", 0.0) or 0.0)
+        if min_edge > 0.0 and kelly_fraction(float(r["prob"]), payoff, cost=rt_cost) < min_edge:
+            sizes.append(0.0)
+            rets.append(0.0)
+            halted_flags.append(False)
             continue
         size = position_size(r["prob"], payoff, kf, maxp, cost=rt_cost)
         bars = float(r["bars_held"]) if has_bars else 1.0
@@ -258,6 +264,11 @@ def _backtest_portfolio(
         conf_ok = bool(row["confident"]) if has_conf else True
         if halted_today or (not conf_ok) or float(row["prob"]) < thr:
             halted_flags[i] = bool(halted_today)
+            continue
+        min_edge = float(risk_cfg.get("min_kelly_edge", 0.0) or 0.0)
+        if min_edge > 0.0 and kelly_fraction(
+            float(row["prob"]), payoff, cost=rt_cost,
+        ) < min_edge:
             continue
         want = position_size(float(row["prob"]), payoff, kf, maxp, cost=rt_cost)
         avail = max(0.0, max_gross - locked)

@@ -19,6 +19,14 @@ from .integrity import (
     run_full_pipeline_with_prices,
     audit_pipeline,
 )
+from .gates import (
+    assess_calibration_pass_health,
+    build_threshold_reference_mask,
+    freeze_threshold_on_reference,
+    gate_diagnostics,
+    raise_threshold_if_inflated,
+    resolve_prob_threshold,
+)
 
 __all__ = [
     "CheckResult",
@@ -34,4 +42,10 @@ __all__ = [
     "sanity_check_dataset",
     "run_full_pipeline_with_prices",
     "audit_pipeline",
+    "assess_calibration_pass_health",
+    "build_threshold_reference_mask",
+    "freeze_threshold_on_reference",
+    "gate_diagnostics",
+    "raise_threshold_if_inflated",
+    "resolve_prob_threshold",
 ]

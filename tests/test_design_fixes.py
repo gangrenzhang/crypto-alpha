@@ -570,12 +570,13 @@ def test_expert_oof_calibrator_conformal_uses_oof_not_insample():
     assert oof.shape == (n,)
     assert np.isfinite(oof).sum() >= 40
     p_raw = fitted.predict_proba(X.iloc[-10:])
-    p_cal, flags, _tags = _apply_deploy_cal_conformal(
+    p_cal, flags, _tags, cal_ret = _apply_deploy_cal_conformal(
         oof, y, p_raw, method="sigmoid", alpha=0.2, conformal_frac=0.3,
     )
     assert p_cal.shape == (10,)
     assert flags.shape == (10,)
     assert flags.dtype == bool
+    assert cal_ret is not None
     # 兼容包装仍返回三元组
     fitted2, cal, oof2 = _expert_oof_calibrator(
         expert, X, y, t1, None, method="sigmoid", n_splits=4, embargo_pct=0.0,
@@ -644,9 +645,10 @@ def test_cpcv_cal_conformal_time_split_differs_from_same_batch():
     y = (rng.uniform(size=n) < oof).astype(int)
     p_te = np.clip(rng.uniform(0.2, 0.8, size=15), 0.01, 0.99)
 
-    p_split, flags_split, _tags = _apply_deploy_cal_conformal(
+    p_split, flags_split, _tags, cal_apply = _apply_deploy_cal_conformal(
         oof, y, p_te, method="isotonic", alpha=0.15, conformal_frac=0.3,
     )
+    assert cal_apply is not None
     cal_all = ProbabilityCalibrator("isotonic").fit(oof, y)
     conf_all = ConformalBinary(alpha=0.15).fit(cal_all.transform(oof), y)
     p_same = cal_all.transform(p_te)
@@ -1102,6 +1104,12 @@ def test_dashboard_renders_degradations():
                     "sharpe": 0.0, "total_return": 0.0, "max_drawdown": 0.0,
                     "calmar": 0.0, "win_rate": 0.5, "n_trades": 0,
                 },
+                "backtest_deploy": {
+                    "sharpe": 0.0, "total_return": 0.0, "max_drawdown": 0.0,
+                    "calmar": 0.0, "win_rate": 0.5, "n_trades": 12,
+                },
+                "prob_threshold_effective": 0.61,
+                "prob_threshold_research": 0.58,
                 "decision": {"signal": "HOLD", "win_probability": None},
                 "equity_curve": [], "equity_b64": None,
                 "degradations": ["derivatives_funding_unavailable", "news_features_sparse(x)"],
@@ -1111,6 +1119,12 @@ def test_dashboard_renders_degradations():
     html_out = build_dashboard(results, cfg)
     assert "Degradations" in html_out
     assert "derivatives_funding_unavailable" in html_out
+    assert "交易数(研究OOF)" in html_out
+    assert "交易数(部署路径)" in html_out
+    assert "成交数/阈值口径" in html_out
+    assert "阈值(研究CF)" in html_out
+    assert "阈值(部署/decide)" in html_out
+    assert "12" in html_out
 
 
 def test_mtf_news_feature_path_no_fake_signal_on_empty_news(monkeypatch):

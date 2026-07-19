@@ -38,10 +38,15 @@ class ProbabilityCalibrator:
 
 
 class ConformalBinary:
-    """分裂式保形预测(二分类)。nonconformity = 1 - p(真实类)。"""
+    """分裂式保形预测(二分类)。nonconformity = 1 - p(真实类)。
 
-    def __init__(self, alpha: float = 0.1):
-        self.alpha = alpha
+    ``min_margin``: 在「预测集恰含一类」之外, 要求 ``|p-0.5| >= min_margin``。
+    默认 0 保持旧行为; >0 时可避免弱模型下略过 0.55 仍全部 confident。
+    """
+
+    def __init__(self, alpha: float = 0.1, min_margin: float = 0.0):
+        self.alpha = float(alpha)
+        self.min_margin = float(max(min_margin, 0.0))
 
     def fit(self, prob: np.ndarray, y: np.ndarray):
         prob = np.asarray(prob, dtype=float)
@@ -59,6 +64,10 @@ class ConformalBinary:
         in_1 = (1 - prob) <= self.qhat_
         in_0 = prob <= self.qhat_
         confident = in_1 ^ in_0  # 恰好一个类 => 高置信
+        if self.min_margin > 0.0:
+            confident = np.asarray(confident, dtype=bool) & (
+                np.abs(prob - 0.5) >= self.min_margin
+            )
         return {"in_class1": in_1, "in_class0": in_0, "confident": confident}
 
 
@@ -96,6 +105,7 @@ def cross_fitted_calibrated(
 def cross_fitted_conformal_flags(
     prob: np.ndarray, y: np.ndarray, t1, alpha: float = 0.1,
     n_splits: int = 5, embargo_pct: float = 0.01,
+    min_margin: float = 0.0,
 ) -> np.ndarray:
     """交叉拟合保形弃权旗标: 训练折拟合 ConformalBinary, 测试折出 confident。
 
@@ -124,7 +134,9 @@ def cross_fitted_conformal_flags(
     for tr, te in pkf.split(Xdummy):
         if len(np.unique(yy[pos[tr]])) < 2 or len(tr) < 10:
             continue
-        conf = ConformalBinary(alpha=alpha).fit(prob[pos[tr]], yy[pos[tr]])
+        conf = ConformalBinary(alpha=alpha, min_margin=min_margin).fit(
+            prob[pos[tr]], yy[pos[tr]],
+        )
         out[pos[te]] = conf.predict_set(prob[pos[te]])["confident"]
     return out
 
@@ -137,6 +149,7 @@ def cross_fitted_calibrated_and_conformal(
     alpha: float = 0.1,
     n_splits: int = 5,
     embargo_pct: float = 0.01,
+    min_margin: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """同一 Purged 折内联合产出校准概率与保形旗标(主路径评估/回测用)。
 
@@ -180,7 +193,7 @@ def cross_fitted_calibrated_and_conformal(
         if len(np.unique(yy[pos[tr]])) < 2 or len(tr) < 10:
             n_conf_skip += 1
             continue
-        conf = ConformalBinary(alpha=alpha).fit(p_tr, yy[pos[tr]])
+        conf = ConformalBinary(alpha=alpha, min_margin=min_margin).fit(p_tr, yy[pos[tr]])
         conf_flags[pos[te]] = conf.predict_set(p_te)["confident"]
     if n_conf_skip > 0:
         tags.append(f"conformal_cf_fold_skipped(n_folds={n_conf_skip})")
@@ -190,6 +203,7 @@ def cross_fitted_calibrated_and_conformal(
 def fit_deploy_calibrator_and_conformal(
     prob: np.ndarray, y: np.ndarray, method: str = "isotonic",
     alpha: float = 0.1, conformal_frac: float = 0.3,
+    min_margin: float = 0.0,
 ) -> tuple[ProbabilityCalibrator, ConformalBinary, list[str]]:
     """部署用校准器 + 保形器: **时间切分**独立保形集, 保证 split conformal 覆盖率语义。
 
@@ -207,7 +221,9 @@ def fit_deploy_calibrator_and_conformal(
     if n < 40:
         tags.append(f"deploy_cal_conformal_fallback_insample(n={n})")
         cal = ProbabilityCalibrator(method=method).fit(p, yy)
-        conf = ConformalBinary(alpha=alpha).fit(cal.transform(p), yy)
+        conf = ConformalBinary(alpha=alpha, min_margin=min_margin).fit(
+            cal.transform(p), yy,
+        )
         return cal, conf, tags
 
     frac = float(np.clip(conformal_frac, 0.15, 0.5))
@@ -216,7 +232,9 @@ def fit_deploy_calibrator_and_conformal(
     # 假定 prob 与事件时间顺序一致(OOF 按 X.index 排列)
     cal = ProbabilityCalibrator(method=method).fit(p[:n_cal], yy[:n_cal])
     conf_p = cal.transform(p[n_cal:])
-    conf = ConformalBinary(alpha=alpha).fit(conf_p, yy[n_cal:])
+    conf = ConformalBinary(alpha=alpha, min_margin=min_margin).fit(
+        conf_p, yy[n_cal:],
+    )
     return cal, conf, tags
 
 

@@ -105,7 +105,7 @@ cryptoCurrency/
 │   ├── calibration/   calibrate.py
 │   ├── backtest/      engine.py
 │   ├── risk/          sizing.py
-│   ├── diagnostics/   integrity.py    # 闭环完整性诊断
+│   ├── diagnostics/   integrity.py / gates.py  # 闭环完整性 + 开仓门控诊断
 │   ├── serve/         service.py / notifier.py
 │   └── pipeline/      run.py / evaluate.py / report.py
 ├── tests/             smoke / leakage / design_fixes / mtf / pipeline_integrity
@@ -313,9 +313,10 @@ OHLCV(+衍生品)
 
 - `CombinatorialPurgedCV(N=6, k=2)` → **C(N,k) 个测试组合**各自训练/回测（`evaluation_unit=combo`）  
 - **不是**拼接后的 φ 条完整路径；模块 docstring 与评估层一致：`n_paths_theoretical=φ` 仅供参考，`n_combos` / 兼容字段 `n_paths` 等于组合数  
-- 组合内：训练折 OOF 上按**部署同口径时间切分**拟合校准器 + 保形（复用 `fit_deploy_calibrator_and_conformal`：较早 OOF→校准，较晚 `conformal_frac`→保形；单专家与集成分支一致）。**禁止**同一批 OOF 既 fit 校准又 fit 保形；亦禁用训练集内概率拟合保形  
-- 有效 OOF &lt; 40 时与部署相同：校准/保形同批回退，并写入 `degradations` / `caveats`（`deploy_cal_conformal_fallback_insample`）  
-- OOF &lt; 20 或单类时跳过组合内校准：概率原样、`confident` 全 True，记 `cpcv_cal_conformal_skipped(...)`  
+- 组合内：训练折 OOF 上按**部署同口径时间切分**拟合校准器 + 保形（复用 `fit_deploy_calibrator_and_conformal`：较早 OOF→校准，较晚 `conformal_frac`→保形；单专家与集成分支一致）。**禁止**同一批 OOF 既 fit 校准又 fit 保形；亦禁用训练集内概率拟合保形
+- 组合内有效阈值：用**同一校准器**变换后的训练折 OOF（`cal.transform(oof_tr)`）作参考分，与测试折校准概率同尺度；**禁止**用原始 OOF 估 thr 再对校准后 `p` 开门控（尺度错配）。无校准器时才回退原始 OOF 并记 `cpcv_thr_reference_raw_oof(no_calibrator)`
+- 有效 OOF &lt; 40 时与部署相同：校准/保形同批回退，并写入 `degradations` / `caveats`（`deploy_cal_conformal_fallback_insample`）
+- OOF &lt; 20 或单类时跳过组合内校准：概率原样、`confident` 全 True，记 `cpcv_cal_conformal_skipped(...)`
 - 输出：组合夏普分布、**DSR**、**PBO**、`caveats`、`degradations`；摘要含 `conformal_time_split: true`  
 - DSR 用**经验偏度/峰度**（字段 `dsr_skew` / `dsr_kurt`）  
 - 默认不随 `10_run_all` 开启，需 `--cpcv`  
@@ -390,6 +391,8 @@ OHLCV(+衍生品)
 
 **解释边界**：Purged K-Fold / CPCV 的 OOF **不是** walk-forward 实盘滚动再训练曲线；净化防标签重叠，不保证「只用过去训未来」。上线前应另做滚动评估，勿把单次 OOF 夏普直接当可部署证明。多专家时主面板夏普/AUC（含专家表）为**后半窗**口径，与更早「专家全窗、集成半窗」或「全窗报告」数字不可直接纵向对比。
 
+**研究 vs 部署成交数**：`train_and_validate` 同时产出 `backtest`（OOF 研究 + `prob_threshold_research`）与 `backtest_deploy`（predict+fit_deploy + `prob_threshold_effective`）。出分与阈值均不同，**成交笔数不可直接对比**；实盘频率以 walk-forward / 滚动再训练为准。
+
 ---
 
 ## 10. 校准层（`calibration/calibrate.py`）
@@ -400,17 +403,61 @@ OHLCV(+衍生品)
 | `cross_fitted_calibrated_and_conformal` | **主路径评估/回测**：同一 Purged 折内联合产出校准概率 + 保形旗标（先 `fit(cal\|train)` → 再 `fit(conf\|cal(train))` → 变换 test）。消除「先 CF 校准、再对结果 CF 保形」的二阶依赖 |
 | `cross_fitted_calibrated` / `cross_fitted_conformal_flags` | 单层 API（兼容/诊断）；**勿**串联用于主路径回测 |
 | `fit_deploy_calibrator_and_conformal` | 部署：**时间切分**，较早 OOF 拟合校准器、较晚 `conformal_frac` 拟合保形器（同基且独立分割）。返回 `(cal, conf, tags)`；**CPCV 组合内**亦复用。`n&lt;40` 同批回退时 tags 含 `deploy_cal_conformal_fallback_insample` |
-| `ConformalBinary` | 预测集恰好一类才 `confident`；否则强制 HOLD |
+| `ConformalBinary` | 预测集恰好一类才 `confident`；可选 `min_margin`：另要求 `|p-0.5|≥margin`（默认配置 0.05；缺省/0=旧行为） |
 
-**校准基 + 独立保形集**：实盘 `decide` 用部署 `cal`；保形在 `cal` 变换后的**持出** OOF 上拟合。主路径回测用**联合交叉拟合**的 `oof_cal` + `confident` 掩码；CPCV 组合内用训练折 OOF 的时间切分校准/保形（非交叉拟合、亦非同批双重拟合），与实盘 HOLD 语义对齐。
+**校准基 + 独立保形集**：实盘 `decide` 用部署 `cal`；保形在 `cal` 变换后的**持出** OOF 上拟合。主路径**研究回测**用**联合交叉拟合**的 `oof_cal` + `confident`；另输出**部署口径回测**（`predict→cal.transform→conf`，与 `decide` 同形）。CPCV 组合内用训练折 OOF 的时间切分校准/保形。
 
-联合交叉拟合样本过少、退回同批 OOF 校准+保形时，**warn + 写入 `degradations`**（`calib_cross_fit_fallback_insample`）；某折因单类/过少跳过保形时记 `conformal_cf_fold_skipped`（该折 `confident` 保持 True，由概率阈值把关）。部署同批回退与 CPCV 跳过校准同一透明度纪律。
+**双口径纪律（重要）**：
 
-配置：`method: isotonic`，`conformal_alpha: 0.1`，`calib_splits: 5`，`conformal_frac: 0.3`。
+| 字段 | 出分路径 | 阈值 | 用途 |
+|------|----------|------|------|
+| `backtest` / `gate_diagnostics_research` | OOF + 交叉拟合校准/保形 | `prob_threshold_research` | 研究面板默认 KPI |
+| `backtest_deploy` / `gate_diagnostics_deploy` | 全量拟合后的 `predict` + `fit_deploy` | `prob_threshold_effective` | 与实盘门控对齐；报告窗内仍可能偏乐观 |
+| walk-forward（`scripts/btc_walkforward_summary.py`） | 仅过去窗 fit → 未来窗 predict | `prob_threshold_effective` 同形 | **真外推**成交预期 |
+
+**勿**用 research OOF 成交数直接当 live 开仓频率；**勿**把研究 thr 用于 decide。
+
+联合交叉拟合样本过少、退回同批 OOF 校准+保形时，**warn + 写入 `degradations`**（`calib_cross_fit_fallback_insample`）；某折因单类/过少跳过保形时记 `conformal_cf_fold_skipped`。校准健康：`assess_calibration_pass_health`（过线率灌水、唯一台阶过少）写入 `degradations`。
+
+**双阈值冻结（方案 B）**：研究与部署校准器尺度不同，**禁止共用一把 thr**。
+
+| 字段 | 参考分（仅参考窗） | 用于 |
+|------|-------------------|------|
+| `prob_threshold_research` | 交叉拟合 `oof_cal[ref]` | 研究回测 / `gate_diagnostics_research` |
+| `prob_threshold_effective` | `deploy_cal.transform(raw_oof[ref])` | `backtest_deploy` / `decide` / `serve` / walk-forward |
+
+参考窗灌过线时各自 `raise_threshold_if_inflated` 后冻结；**报告/测试窗只告警、不改 thr**。禁止对已 CF 校准分再 `deploy_cal.transform`（二次校准）。
+
+配置：`method: isotonic`，`conformal_alpha: 0.1`，`calib_splits: 5`，`conformal_frac: 0.3`，`conformal_min_margin: 0.05`，`pass_rate_inflate_max: 1.5`，`min_unique_levels: 20`；回测侧 `raise_thr_on_inflate: true`，`inflate_raise_quantile: 0.99`。
 
 ---
 
 ## 11. 回测层（`backtest/engine.py`）
+
+### 11.0 开仓门控与有效阈值（`diagnostics/gates.py`）
+
+开仓顺序（路径内一致；研究与部署各用本路径冻结 thr）：
+
+1. `confident`（保形，含 `min_margin`）  
+2. `prob >=` 本路径阈值（研究→`prob_threshold_research`；部署/`decide`/WF→`prob_threshold_effective`）  
+3. 可选 `min_kelly_edge`（扣成本后 Kelly）  
+4. `position_size` / 组合资金占用  
+
+**阈值解析** `resolve_prob_threshold` / `freeze_threshold_on_reference`：
+
+| `prob_threshold_mode` | 行为 |
+|------------------------|------|
+| `fixed` | 仅用 `prob_threshold` |
+| `quantile` | 参考分的 `prob_quantile` 分位 |
+| `max_of`（默认） | `max(fixed, quantile)` |
+
+**参考窗**（`build_threshold_reference_mask`）：
+
+1. 优先 `eval_mask & ~report_mask`（多专家前半选型窗）  
+2. 若不足 20 点（单专家时常 `report≡eval`）：**禁止**回退全 `eval_mask`，改用时间序 eval 事件的**前半段**，记 `prob_threshold_ref_fallback_time_half`  
+3. 仍不足 → `resolve_prob_threshold` 回退 `fixed`
+
+参考分须与开门控概率同尺度（见上表双阈值）。禁止在评估/报告窗刷阈值。看板并列研究/部署成交数与两套阈值。
 
 ### 11.1 组合级（默认，`portfolio_mode: true`）
 
@@ -453,6 +500,8 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 - Kelly：`f* = (p(b+1)-1-cost)/b`，再乘 `kelly_fraction`（默认半 Kelly 0.5），封顶 `max_position_pct`  
   - **成本解析**（`resolve_roundtrip_cost`，回测与 `decide` 共用）：`risk.roundtrip_cost_frac` 为 **null/缺失** 时回退 `2*(fee+slip)`；显式数值则用之。YAML `null` 会使键存在，**不能**靠 `dict.setdefault` 覆盖。  
   - ⚠️ **口径说明**：把 `f*` 当作**名义仓位比例**的**置信度→仓位启发式**（`sizing_note=confidence_to_position_heuristic`），不是 growth-optimal 连续 Kelly。  
+  - `min_kelly_edge`（默认 0）：扣成本后 `f*` 低于该值则 HOLD（回测与 `decide` 共用）；关闭时保持旧行为。  
+  - `prob_threshold` 使用训练阶段冻结的 **`prob_threshold_effective`**（deploy 校准尺度；`latest_decision` / `DecisionService` 与 `train_and_validate` / walk-forward 对齐）。缺省时回退配置地板，**不用** CF `oof_calibrated` 重估。  
 - **执行假设**（`resolve_execution_assumption`）：当前**仅实现** `close_fill`（当根收盘特征 + 按该收盘成交）。`Config.load` 与 `decide` / HOLD 路径均校验；写 `next_open` 等未实现值会 **ValueError**，防止配置名实不符导致研究结论偏乐观。落地 `next_open` 前须先改特征时点与成交路径。  
 - `pt_sl` 与 `labeling.pt_sl` 对齐（多空加性障碍同一公式）；决策 JSON 的 `execution_assumption` 来自校验后的取值  
 - HOLD 时 **不输出** 止损止盈字段  
@@ -492,9 +541,9 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | `validation` | N=6,k=2，embargo=1%，`dsr_n_trials=50` | 禁运从 `max(t1)` 起算；CPCV 组合评估 |
 | `experts` | **enabled=[gbdt, deep_ts]** | tsfm/llm 可选 |
 | `ensemble` | logistic，`min_expert_auc=0.5`，`exclude_pseudo_oof_from_meta=true` | 前半选型 / 后半报告回测；伪 OOF 不进 meta |
-| `calibration` | isotonic，α=0.1，`conformal_frac=0.3` | 主路径联合 CF 校准+保形；部署与 CPCV 时间切分；小样本回退记 degradations |
-| `backtest` | **`portfolio_mode=true`**，阈值 0.55 | 组合加性记账 |
-| `risk` | 半 Kelly 启发式，日熔断 5%，`execution_assumption=close_fill`（**仅此已实现**） | 未实现取值 Config.load/decide 报错 |
+| `calibration` | isotonic，α=0.1，`conformal_frac=0.3`，`conformal_min_margin=0.05` | 主路径联合 CF；部署时间切分；过线灌水/台阶告警 |
+| `backtest` | **`portfolio_mode=true`**，`prob_threshold_mode=max_of`，地板 0.55，`prob_quantile=0.98`，`raise_thr_on_inflate=true`，`inflate_raise_quantile=0.99` | 组合加性记账；双阈值见 `prob_threshold_research` / `prob_threshold_effective` |
+| `risk` | 半 Kelly，`min_kelly_edge=0`，日熔断 5%，`execution_assumption=close_fill` | 未实现取值 Config.load/decide 报错 |
 | `serve` | 1800s 轮询，48 周期重训（≈24h） | Telegram 默认关 |
 
 改任何超参后重跑对应脚本即可；随机性由 `project.random_seed` + `set_global_seed` 控制。合成数据/合成新闻的按币种偏移用 `hashlib`（`stable_symbol_offset`）派生，**跨进程/机器确定**——不再用带随机盐的内置 `hash()`，保证同 seed 的合成结果可复现。
@@ -516,9 +565,15 @@ Config.load()
   → prepare_dataset(*, for_decide=?) → Dataset          # pipeline/run.py
   → build_experts → StackingEnsemble.fit                # experts + ensemble
   → cross_fitted_calibrated_and_conformal + fit_deploy(cal,conf,tags)
-  → backtest_events + base_report(后半窗 report_mask，若多专家剪枝路径；专家表与集成同窗)
-  → latest_decision / decide_live                       # 全量部署模型；决策 tip 见 §4.2
+  → build_threshold_reference_mask
+       → thr_research = freeze(CF oof_cal[ref])
+       → thr_eff = freeze(deploy_cal.transform(raw_oof[ref]))
+  → backtest(研究, thr_research) + backtest_deploy(predict, thr_eff) + gate_diagnostics_*
+  → base_report(后半窗 report_mask；专家表与集成同窗)
+  → latest_decision / decide_live                       # 部署 cal/conf + thr_eff；决策 tip 见 §4.2
 ```
+
+真外推评估：`python scripts/btc_walkforward_summary.py`（训练窗 fit → 测试窗 deploy 门控回测）。
 
 库级入口：
 
@@ -671,6 +726,8 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `10_run_all.py` | 全专家联跑 + HTML | `--experts` `--symbols` `--cpcv` `--open` |
 | `11_make_canvas.py` | Cursor Canvas | `--out` |
 | `12_audit.py` | 闭环完整性在线体检（CPU，无显卡） | `--json` `--bars` `--seed` |
+| `btc_walkforward_summary.py` | BTC 时间外推 + 部署门控诊断 | — |
+| `btc_kline_panel.py` | 回测开平仓 K 线 HTML 面板 | `--open` |
 | `train_llm_qlora.py` | LLM QLoRA SFT | `--dry-run` |
 
 全部脚本通过 `_bootstrap` 将 `src/` 加入路径。
@@ -690,6 +747,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | `test_smoke.py` | 合成 + 仅 GBDT 全链路 |
 | `test_leakage.py` | 新闻 as-of（决策时刻）、Purged 无重叠、合成新闻守卫（未来收益面板 / 仅 synthetic 历史 / **corpus 过滤 synthetic 行**）、盘中止损 |
 | `test_design_fixes.py` | pt_sl/ATR/加性空头、**空头 ret↔expm1**、**空头盯市=简单收益(非几何)**、组合敞口、CUSUM 无前视、null 成本、DSR clamp、**权益夏普增量字段**、小样本 stacking、execution_assumption、新闻覆盖率、**require_min_coverage fail-fast**、看板 disclaimer、**联合 CF 校准+保形**、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations / 盯市曲线**、**MTF+空新闻路径**、**base_report 与集成同 report_mask**、**synthetic_fallback 辅周期重采样**、**DeepTS 早停 cutoff** |
+| `test_gate_diagnostics.py` | 有效阈值 fixed/max_of/分位回退、**参考窗时间半回退（禁全 eval）**、**双阈值 freeze（CF vs deploy 尺度）**、**禁止二次校准参考分**、**参考窗灌过线抬 thr**、**CPCV thr 用校准尺度**、**conformal_min_margin 收紧 confident**、校准灌过线/低唯一台阶告警、gate_diagnostics 结构 |
 | `test_mtf.py` | 辅周期无前视（对齐层须为 NaN）、拒绝更细周期、特征含 MTF |
 | `test_pipeline_integrity.py` | 闭环完整性闸门（见 18.1；空对照默认关 MTF/新闻，见局限） |
 
@@ -724,6 +782,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - [x] 新闻：桶末 + buffer + **决策时刻 as-of**（数值特征与 LLM 同口径）；TTL 含 raw；合成守卫（未来收益面板 / 仅 synthetic 历史 / **corpus 过滤 `synthetic:`**）；**互证 PIT**  
 - [x] Purged + Embargo（从 **`max(t1)` 之后**起算 + 近末折 clamp）；二层 nested OOF  
 - [x] 主路径**联合**交叉拟合校准+保形（同折，无二阶叠层）；部署校准/保形时间切分；**CPCV 组合内亦时间切分**（复用 `fit_deploy`）  
+- [x] **研究/部署双回测 + 双阈值冻结**（`prob_threshold_research`=CF；`prob_threshold_effective`=deploy cal×raw OOF ref，与 decide/WF 同形）；参考窗时间半段回退；灌过线可抬 thr；CPCV thr 用 `cal.transform(train OOF)`；看板并列双成交/双阈值；`conformal_min_margin`；校准灌过线/低唯一台阶 degradations  
 - [x] 三重障碍 high/low、**下一根扫描**（t0 当根极值不触发）；**多空**加性障碍与 `decide` 对齐；`ret=log1p(仓位简单收益)` 与回测 `expm1` 互逆；CUSUM 因果阈值  
 - [x] 建模特征尺度无关；训练/实盘 CUSUM 事件对齐  
 - [x] 实盘特征 schema：缺训练列 → 补 0 + **强制 HOLD**（不推理开仓）  
@@ -819,6 +878,10 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 组合级回测 | 并发仓位共享权益、锁定敞口 |
 | PIT 互证 | 新闻互证/权威按报道时刻快照，不含未来跟进源 |
 | prune_eval_mask_ | 弱专家前半选型后，主路径集成报告 / 专家 base_report / 回测共用的后半事件掩码 |
+| prob_threshold_research | 参考窗 CF `oof_cal` 上冻结的研究开仓阈值（仅研究回测） |
+| prob_threshold_effective | 参考窗 `deploy_cal.transform(raw_oof)` 上冻结的部署阈值（decide/serve/部署回测/WF） |
+| gate_diagnostics_* | 测试/报告窗：过线率、保形、交集、校准台阶与开仓数（各用本路径 thr） |
+| backtest_deploy | 与 decide 同出分+同 `thr_eff` 的回测（train_and_validate 内仍可能偏乐观；看板 KPI 并列展示） |
 
 ---
 

@@ -27,6 +27,12 @@ from ..calibration import (
     fit_deploy_calibrator_and_conformal,
 )
 from ..backtest import backtest_events
+from ..diagnostics.gates import (
+    assess_calibration_pass_health,
+    build_threshold_reference_mask,
+    freeze_threshold_on_reference,
+    gate_diagnostics,
+)
 
 
 _DATA_MODE_ZH = {
@@ -181,13 +187,14 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
     ccfg = cfg["calibration"]
     vcfg = cfg["validation"]
     conf_alpha = float(ccfg["conformal_alpha"])
+    conf_margin = float(ccfg.get("conformal_min_margin", 0.0) or 0.0)
     n_cal_splits = int(ccfg.get("calib_splits", 5))
     embargo = float(vcfg["embargo_pct"])
     # 评估/回测: 同一 Purged 折内联合校准+保形, 避免「先 CF 校准再 CF 保形」二阶依赖。
     # 部署仍用下方时间切分 fit_deploy(与 CPCV 组合内同口径); 此处只服务 OOF 报告/回测。
     oof_cal, conf_flags, joint_tags = cross_fitted_calibrated_and_conformal(
         oof, ds.y, ds.t1, method=ccfg["method"], alpha=conf_alpha,
-        n_splits=n_cal_splits, embargo_pct=embargo,
+        n_splits=n_cal_splits, embargo_pct=embargo, min_margin=conf_margin,
     )
     for t in joint_tags:
         if t not in degradations:
@@ -207,16 +214,19 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
         oof_cal[mask] = cal_tmp.transform(oof[mask])
         eval_mask = ~np.isnan(oof_cal)
         # 与部署 n<40 同形: 同批校准后再拟合保形(已标记乐观)
-        conf_tmp = ConformalBinary(alpha=conf_alpha).fit(oof_cal[mask], ds.y[mask])
+        conf_tmp = ConformalBinary(alpha=conf_alpha, min_margin=conf_margin).fit(
+            oof_cal[mask], ds.y[mask],
+        )
         conf_flags = np.asarray(
             conf_tmp.predict_set(oof_cal)["confident"], dtype=bool,
         )
 
-    # 部署用: 时间切分独立保形集(校准器与保形器同基且分割) — 不改评估路径
+    # 部署用: 时间切分独立保形集(校准器与保形器同基且分割) — 不改评估路径出分
     cal, conf, deploy_tags = fit_deploy_calibrator_and_conformal(
         oof, ds.y, method=ccfg["method"],
         alpha=conf_alpha,
         conformal_frac=float(ccfg.get("conformal_frac", 0.3)),
+        min_margin=conf_margin,
     )
     for t in deploy_tags:
         if t not in degradations:
@@ -232,13 +242,107 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
     else:
         report_mask = eval_mask
 
+    # 双阈值(方案B): 研究/部署各用与出分同尺度的参考窗冻结 thr, 禁止混用。
+    # - thr_research: CF oof_cal[ref] → 仅研究回测
+    # - thr_eff (prob_threshold_effective): deploy_cal.transform(raw oof[ref])
+    #   → backtest_deploy / decide / serve / 与 walk-forward 同形
+    # 禁止 cal.transform(oof_cal)(二次校准); 禁止用评估窗刷分位。
+    ref_mask, ref_tags = build_threshold_reference_mask(eval_mask, report_mask, min_ref=20)
+    for t in ref_tags:
+        if t not in degradations:
+            degradations.append(t)
+            print(f"[threshold] {t}")
+    inflate_max = float(ccfg.get("pass_rate_inflate_max", 1.5) or 0.0)
+    raw_ref = np.asarray(oof[ref_mask], dtype=float)
+    # 研究: 交叉拟合校准尺度
+    thr_research, research_thr_tags = freeze_threshold_on_reference(
+        cfg["backtest"], raw_ref, np.asarray(oof_cal[ref_mask], dtype=float),
+        pass_rate_inflate_max=inflate_max, tag_prefix="research_",
+    )
+    for t in research_thr_tags:
+        if t not in degradations:
+            degradations.append(t)
+    # 部署: 同一参考窗上的原始 OOF → deploy 校准器(与 decide 同 cal)
+    ref_finite = np.isfinite(raw_ref)
+    if int(ref_finite.sum()) >= 1:
+        deploy_cal_ref = np.asarray(cal.transform(raw_ref[ref_finite]), dtype=float)
+        raw_ref_dep = raw_ref[ref_finite]
+    else:
+        deploy_cal_ref = np.asarray([], dtype=float)
+        raw_ref_dep = raw_ref
+    thr_eff, deploy_thr_tags = freeze_threshold_on_reference(
+        cfg["backtest"], raw_ref_dep, deploy_cal_ref,
+        pass_rate_inflate_max=inflate_max, tag_prefix="deploy_",
+    )
+    for t in deploy_thr_tags:
+        if t not in degradations:
+            degradations.append(t)
+            print(f"[threshold] {t}")
+    print(
+        f"[threshold] research={thr_research:.4f} deploy/effective={thr_eff:.4f}",
+        flush=True,
+    )
+
+    bt_cfg_research = dict(cfg["backtest"])
+    bt_cfg_research["prob_threshold"] = float(thr_research)
+    bt_cfg_deploy = dict(cfg["backtest"])
+    bt_cfg_deploy["prob_threshold"] = float(thr_eff)
+
+    # 研究口径: 报告窗校准健康(只 degradations, 不改 thr)
+    for t in assess_calibration_pass_health(
+        oof[report_mask], oof_cal[report_mask], thr_research,
+        pass_rate_inflate_max=inflate_max,
+        min_unique_levels=int(ccfg.get("min_unique_levels", 20) or 0),
+    ):
+        if t not in degradations:
+            degradations.append(t)
+            print(f"[calibration] WARN: {t}")
+
     report = classification_report_probs(oof_cal[report_mask], ds.y[report_mask])
 
     payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
     prices = ds.panel["close"] if "close" in ds.panel.columns else None
+    events_rep = ds.events.loc[report_mask]
     bt = backtest_events(
-        ds.events.loc[report_mask], oof_cal[report_mask], cfg["backtest"], cfg["risk"],
+        events_rep, oof_cal[report_mask], bt_cfg_research, cfg["risk"],
         payoff=payoff, prices=prices, confident=conf_flags[report_mask],
+    )
+    gate_research = gate_diagnostics(
+        events_rep.index, oof[report_mask], oof_cal[report_mask],
+        conf_flags[report_mask], bt.get("detail"), thr_research, conf_obj=None,
+    )
+    gate_research["path"] = "research_oof_cross_fit"
+    gate_research["prob_threshold_source"] = "cross_fitted_oof_cal_ref"
+
+    # 部署口径回测(与 latest_decision / serve 同出分+同 thr_eff; 模型见过全样本 → 标注乐观,
+    # 真外推请用 walk-forward 脚本)
+    X_rep = ds.X.loc[events_rep.index]
+    raw_dep = np.asarray(ens.predict_proba(X_rep), dtype=float)
+    prob_dep = np.asarray(cal.transform(raw_dep), dtype=float)
+    conf_dep = np.asarray(conf.predict_set(prob_dep)["confident"], dtype=bool)
+    for t in assess_calibration_pass_health(
+        raw_dep, prob_dep, thr_eff,
+        pass_rate_inflate_max=inflate_max,
+        min_unique_levels=int(ccfg.get("min_unique_levels", 20) or 0),
+    ):
+        tag = f"deploy_{t}" if not t.startswith("deploy_") else t
+        if tag not in degradations:
+            degradations.append(tag)
+            print(f"[calibration] WARN: {tag}")
+    bt_deploy = backtest_events(
+        events_rep, prob_dep, bt_cfg_deploy, cfg["risk"],
+        payoff=payoff, prices=prices, confident=conf_dep,
+    )
+    gate_deploy = gate_diagnostics(
+        events_rep.index, raw_dep, prob_dep, conf_dep,
+        bt_deploy.get("detail"), thr_eff, conf_obj=conf,
+    )
+    gate_deploy["path"] = "deploy_predict_fit_deploy"
+    gate_deploy["prob_threshold_source"] = "deploy_cal_transform_raw_oof_ref"
+    gate_deploy["note_optimism"] = (
+        "deploy 路径在 train_and_validate 内对报告窗用全量拟合模型推理, "
+        "成交数/胜率偏乐观; 实盘预期以 walk-forward / 滚动再训练为准。"
+        "门控阈值=prob_threshold_effective(与 decide 同形)。"
     )
 
     # 收集降级信息(含被剪枝专家; build_oof 已写入 ens.degradations)
@@ -270,6 +374,12 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
     return {
         "ensemble": ens, "calibrator": cal, "conformal": conf,
         "oof_calibrated": oof_cal, "report": report, "backtest": bt,
+        "backtest_deploy": bt_deploy,
+        "gate_diagnostics_research": gate_research,
+        "gate_diagnostics_deploy": gate_deploy,
+        # 部署/decide/serve 冻结阈值(deploy 校准尺度); 研究回测用 research
+        "prob_threshold_effective": float(thr_eff),
+        "prob_threshold_research": float(thr_research),
         "base_report": base_report,
         "dropped_experts": ens.dropped_experts,
         "data_source": ds.data_source,
@@ -451,11 +561,17 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     fee = float(cfg["backtest"].get("fee_bps", 5.0)) / 1e4
     slip = float(cfg["backtest"].get("slippage_bps", 2.0)) / 1e4
     risk_cfg = dict(cfg["risk"])
+    # 与 train_and_validate 冻结的部署阈值对齐; 缺省禁止用 CF oof_cal 估 thr
+    # (尺度错配)。无冻结值时回退配置地板 fixed。
+    thr_eff = trained.get("prob_threshold_effective")
+    if thr_eff is None:
+        thr_eff = float(cfg["backtest"].get("prob_threshold", 0.55))
     d = decide(
         prob, side, entry, atr, risk_cfg,
-        prob_threshold=float(cfg["backtest"]["prob_threshold"]), payoff=payoff,
+        prob_threshold=float(thr_eff), payoff=payoff,
         confident=confident, pt_sl=pt_sl, fee=fee, slip=slip,
     )
+    d["prob_threshold_effective"] = float(thr_eff)
     d["symbol"] = ds.symbol
     d["timestamp"] = str(ts)
     d["close"] = bar_close

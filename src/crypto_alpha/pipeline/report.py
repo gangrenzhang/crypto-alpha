@@ -93,8 +93,16 @@ def run_all(cfg: Config, symbols: list[str], experts: list[str],
 # 研究口径说明(看板 / summary 共用, 防止 OOF 夏普被当成可部署证明)
 # --------------------------------------------------------------------------
 RESEARCH_DISCLAIMERS: list[str] = [
-    "主面板指标基于 Purged nested OOF，不是 walk-forward 实盘滚动再训练曲线；"
-    "上线前须另做滚动评估。",
+    "主面板默认「研究回测」基于 Purged nested OOF + 交叉拟合校准/保形，"
+    "不是 walk-forward 实盘滚动再训练；上线前须另做滚动/外推评估。",
+    "摘要中的 backtest_deploy / gate_diagnostics_deploy 为部署出分路径"
+    "（predict→fit_deploy 校准/保形），与 decide/serve 同形；"
+    "在 train_and_validate 内对报告窗仍可能偏乐观，成交数勿与 research OOF 直接对比。"
+    "面板 KPI 同时展示「交易数(研究OOF)」与「交易数(部署路径)」。",
+    "开仓阈值双冻结：prob_threshold_research=交叉拟合参考窗尺度（仅研究回测）；"
+    "prob_threshold_effective=deploy 校准器变换参考窗原始 OOF（decide/serve/部署回测/"
+    "与 walk-forward 同形）。参考窗为空时用时间半段回退（禁止全评估窗刷 thr）。"
+    "保形另有 conformal_min_margin（|p-0.5|）。",
     "CPCV（若开启）评估单元是相关组合(combo)，不是拼接后的完整路径；"
     "请阅读 caveats；DSR/PBO 在配置数少或 dsr_n_trials 低估时偏乐观。",
     "execution_assumption 当前仅实现 close_fill；未实现取值会在加载配置时报错。",
@@ -149,6 +157,7 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
         )
         eq_plot = eq_mtm if use_mtm else eq_realized
         curve_kind = "mtm" if use_mtm else "realized"
+        bt_dep = trained.get("backtest_deploy") or {}
         entry = {
             "n_events": int(len(ds.y)),
             "pos_rate": float(np.mean(ds.y)),
@@ -158,6 +167,11 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
             "ensemble_report": trained["report"],
             "expert_reports": trained["base_report"],
             "backtest": bt_pack["metrics"],
+            "backtest_deploy": bt_dep.get("metrics"),
+            "prob_threshold_effective": trained.get("prob_threshold_effective"),
+            "prob_threshold_research": trained.get("prob_threshold_research"),
+            "gate_diagnostics_research": trained.get("gate_diagnostics_research"),
+            "gate_diagnostics_deploy": trained.get("gate_diagnostics_deploy"),
             "decision": decision,
             "equity_curve": _downsample_equity(eq_plot, n=180),
             "equity_curve_kind": curve_kind,
@@ -167,8 +181,12 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
             ),
             "degradations": trained.get("degradations", []),
         }
+        n_dep = (bt_dep.get("metrics") or {}).get("n_trades", "?")
         print(f"  集成 AUC={trained['report'].get('auc', float('nan')):.3f} "
-              f"Sharpe={trained['backtest']['metrics']['sharpe']:.3f} "
+              f"研究Sharpe={trained['backtest']['metrics']['sharpe']:.3f} "
+              f"部署成交={n_dep} "
+              f"thr_r={trained.get('prob_threshold_research')} "
+              f"thr_d={trained.get('prob_threshold_effective')} "
               f"信号={decision['signal']} "
               f"P={_fmt_prob(decision.get('win_probability'))}")
 
@@ -372,8 +390,25 @@ def _render_symbol(d: dict) -> str:
     p.append(_kpi("最大回撤", _fmt(bt["max_drawdown"], pct=True), cls="neg"))
     p.append(_kpi("Calmar", _fmt(bt["calmar"])))
     p.append(_kpi("胜率", _fmt(bt["win_rate"], pct=True)))
-    p.append(_kpi("交易数", str(bt["n_trades"])))
+    p.append(_kpi("交易数(研究OOF)", str(bt["n_trades"])))
+    bt_dep = d.get("backtest_deploy") or {}
+    if bt_dep:
+        p.append(_kpi("交易数(部署路径)", str(bt_dep.get("n_trades", "?"))))
+    thr_r = d.get("prob_threshold_research")
+    thr_eff = d.get("prob_threshold_effective")
+    if thr_r is not None:
+        p.append(_kpi("阈值(研究CF)", _fmt(thr_r)))
+    if thr_eff is not None:
+        p.append(_kpi("阈值(部署/decide)", _fmt(thr_eff)))
     p.append("</div></div>")
+    p.append(
+        "<div class='card caveat'><b>成交数/阈值口径</b>："
+        "「研究OOF」用交叉拟合概率 + 阈值(研究CF)；"
+        "「部署路径」与 decide/serve 同出分 + 阈值(部署/decide)；"
+        "二者不可直接对比成交数。"
+        "train_and_validate 报告窗部署回测仍可能偏乐观，真外推看 walk-forward。"
+        "</div>"
+    )
 
     # 降级 / degradations(透明度纪律)
     deg = list(d.get("degradations") or [])

@@ -35,6 +35,7 @@ class ModelBundle:
     conformal: object = None
     cusum_full_sampling: bool = False
     data_source: str = "real"
+    prob_threshold_effective: float | None = None
 
 
 class DecisionService:
@@ -56,11 +57,20 @@ class DecisionService:
             conformal=trained.get("conformal"),
             cusum_full_sampling=bool(trained.get("cusum_full_sampling", ds.cusum_full_sampling)),
             data_source=ds.data_source,
+            prob_threshold_effective=(
+                float(trained["prob_threshold_effective"])
+                if trained.get("prob_threshold_effective") is not None
+                else None
+            ),
         )
         m = trained["backtest"]["metrics"]
+        md = (trained.get("backtest_deploy") or {}).get("metrics") or {}
         print(
-            f"[train] {symbol}: 事件={m['n_events']} 夏普={m['sharpe']:.3f} "
-            f"胜率={m['win_rate']:.3f} 数据={trained.get('data_mode_zh', ds.data_source)}"
+            f"[train] {symbol}: 研究夏普={m['sharpe']:.3f} 胜率={m['win_rate']:.3f} "
+            f"部署成交={md.get('n_trades', '?')} "
+            f"thr_r={trained.get('prob_threshold_research')} "
+            f"thr_d={trained.get('prob_threshold_effective', self.cfg['backtest'].get('prob_threshold'))} "
+            f"数据={trained.get('data_mode_zh', ds.data_source)}"
         )
 
     def train_all(self) -> None:
@@ -159,11 +169,15 @@ class DecisionService:
         fee = float(self.cfg["backtest"].get("fee_bps", 5.0)) / 1e4
         slip = float(self.cfg["backtest"].get("slippage_bps", 2.0)) / 1e4
         risk_cfg = dict(self.cfg["risk"])
+        thr_eff = bundle.prob_threshold_effective
+        if thr_eff is None:
+            thr_eff = float(self.cfg["backtest"]["prob_threshold"])
         d = decide(
             prob, side, entry, atr, risk_cfg,
-            prob_threshold=float(self.cfg["backtest"]["prob_threshold"]), payoff=payoff,
+            prob_threshold=float(thr_eff), payoff=payoff,
             confident=confident, pt_sl=pt_sl, fee=fee, slip=slip,
         )
+        d["prob_threshold_effective"] = float(thr_eff)
         d["symbol"] = symbol
         d["timestamp"] = str(ts)
         d["close"] = bar_close
