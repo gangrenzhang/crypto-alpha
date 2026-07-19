@@ -1,0 +1,77 @@
+{
+  "symbol": "BTC/USDT",
+  "mode": "walk_forward_train_then_test",
+  "data_source": "cache",
+  "panel_bars": 155237,
+  "panel_start": "2017-08-17 04:00:00+00:00",
+  "panel_end": "2026-06-30 23:30:00+00:00",
+  "train_start": "2017-08-17 04:00:00+00:00",
+  "train_end_exclusive": "2022-09-14 00:00:00+00:00",
+  "backtest_start": "2022-09-14 00:00:00+00:00",
+  "backtest_end": "2026-07-18 08:00:00+00:00",
+  "note": "训练: 事件 t0 与 t1 均 < 回测起点; 回测窗与上次开仓覆盖对齐 (2022-09-14→2026-07-18)。Binance 现货 Vision 通常无 2015–2017 中前段, 实际训练起点以 panel_start 为准。",
+  "n_train_events": 18633,
+  "n_test_events": 10845,
+  "n_opened_trades": 859,
+  "n_wins": 466,
+  "n_losses": 393,
+  "win_rate": 0.5424912689173458,
+  "total_return": -0.05928098875659149,
+  "max_drawdown": -0.10568322920459565,
+  "initial_capital": 10000.0,
+  "final_capital": 9407.190112434086,
+  "train_oof_report": {
+    "n": 18633,
+    "auc": 0.544482352402792,
+    "brier": 0.24885901915342948,
+    "logloss": 0.690890960970223,
+    "accuracy": 0.5313690763698814,
+    "base_rate": 0.5021198948102829
+  },
+  "test_report": {
+    "n": 10845,
+    "auc": 0.5121894555694618,
+    "brier": 0.2503445811897442,
+    "logloss": 0.6938518879420196,
+    "accuracy": 0.5059474412171507,
+    "base_rate": 0.5016136468418626
+  },
+  "backtest_metrics": {
+    "n_events": 10845,
+    "n_trades": 859,
+    "n_halted": 0,
+    "total_return": -0.05928098875659149,
+    "sharpe": -0.051133130126715984,
+    "sharpe_annualized": -0.6728000434287208,
+    "max_drawdown": -0.10568322920459565,
+    "max_drawdown_realized": -0.10374841776019257,
+    "mark_to_market": true,
+    "avg_uniqueness": 0.7640629004001416,
+    "n_trades_effective": 656.3300314437216,
+    "win_rate": 0.5424912689173458,
+    "avg_pnl": -6.895113350152728e-05,
+    "portfolio_mode": "portfolio",
+    "sharpe_equity": -0.04369907454930714,
+    "sharpe_equity_annualized": -0.6126338037403888,
+    "sharpe_equity_mtm": -0.007241790594071284,
+    "sharpe_equity_mtm_annualized": -0.4601129910824791,
+    "n_skipped_capacity": 3,
+    "calmar": -0.5609308935942577
+  },
+  "dropped_experts": [
+    [
+      "deep_ts",
+      0.4984780206039191
+    ]
+  ],
+  "degradations": [
+    "derivatives_oi_unavailable",
+    "deep_ts:dropped_low_auc(0.498)"
+  ],
+  "trades_csv": "D:\\desktop\\cryptoCurrency\\artifacts\\btc_walkforward_trades.csv",
+  "compare_to_previous_oof_half_window": {
+    "previous_win_rate": 0.64,
+    "previous_n_trades": 50,
+    "previous_final_capital": 10186.62
+  }
+}

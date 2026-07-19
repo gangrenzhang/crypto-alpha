@@ -129,6 +129,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="2020-01")
     ap.add_argument("--end", default=None, help="YYYY-MM; 默认到当前月")
+    ap.add_argument(
+        "--symbols", nargs="*", default=None,
+        help="可选: 只回填指定币种, 如 BTC/USDT; 默认用 config.data.symbols",
+    )
     args = ap.parse_args()
     end = args.end or datetime.utcnow().strftime("%Y-%m")
     months = _month_range(args.start, end)
@@ -138,7 +142,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # config symbols: BTC/USDT -> BTCUSDT
-    for symbol in cfg["data"]["symbols"]:
+    symbols = args.symbols or cfg["data"]["symbols"]
+    for symbol in symbols:
         sym_id = symbol.replace("/", "")
         main_tf = cfg["data"]["timeframe"]
         if main_tf not in TF_MAP:
