@@ -10,25 +10,89 @@ import numpy as np
 import pandas as pd
 
 
+def _bar_ns(index: pd.DatetimeIndex) -> np.ndarray:
+    """UTC ns 整数时间戳, 供 searchsorted(与 label 闭区间语义对齐)。"""
+    idx = pd.DatetimeIndex(index)
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    else:
+        idx = idx.tz_convert("UTC")
+    return idx.asi8.astype(np.int64, copy=False)
+
+
 def num_concurrent_events(bar_index: pd.DatetimeIndex, t1: pd.Series) -> pd.Series:
-    """计算每根 bar 上并发的(未平仓)事件数量。"""
+    """计算每根 bar 上并发的(未平仓)事件数量。
+
+    语义: 对每个事件闭区间 ``[t0, t1]``(label, 含端点)上的 bar +1。
+    实现用差分数组 + ``searchsorted``, 与逐事件 ``count.loc[t0:t1] += 1`` 等价,
+    但避免 O(事件×持有期) 的 pandas 切片写回。
+    """
     t1 = t1.dropna()
-    idx = bar_index
-    count = pd.Series(0, index=idx, dtype=float)
-    for t0, t1_ in t1.items():
-        count.loc[t0:t1_] += 1.0
-    return count
+    idx = pd.DatetimeIndex(bar_index)
+    n = len(idx)
+    if n == 0:
+        return pd.Series(dtype=float)
+    if len(t1) == 0:
+        return pd.Series(0.0, index=idx, dtype=float)
+
+    bars = _bar_ns(idx)
+    starts = _bar_ns(pd.DatetimeIndex(t1.index))
+    ends = _bar_ns(pd.DatetimeIndex(pd.to_datetime(t1.values, utc=True)))
+
+    # [t0, t1] label 闭区间 ↔ bars 上 first>=t0 .. first>t1 的半开区间
+    left = np.searchsorted(bars, starts, side="left")
+    right = np.searchsorted(bars, ends, side="right")
+    # t1 < t0 等畸形输入: pandas loc[t0:t1] 为空; 必须跳过, 否则差分会污染全程计数
+    valid = right > left
+    if not np.any(valid):
+        return pd.Series(0.0, index=idx, dtype=float)
+    left = left[valid]
+    right = right[valid]
+
+    diff = np.zeros(n + 1, dtype=float)
+    np.add.at(diff, left, 1.0)
+    np.add.at(diff, right, -1.0)
+    count = np.cumsum(diff[:-1])
+    return pd.Series(count, index=idx, dtype=float)
 
 
 def average_uniqueness(bar_index: pd.DatetimeIndex, t1: pd.Series) -> pd.Series:
-    """每个事件的平均唯一性 = 其持有期内 (1/并发数) 的均值。"""
-    conc = num_concurrent_events(bar_index, t1)
-    conc = conc.replace(0, np.nan)
-    out = {}
-    for t0, t1_ in t1.dropna().items():
-        seg = 1.0 / conc.loc[t0:t1_]
-        out[t0] = float(seg.mean())
-    return pd.Series(out).reindex(t1.index)
+    """每个事件的平均唯一性 = 其持有期内 (1/并发数) 的均值。
+
+    与旧实现一致: 并发为 0 的 bar 视为 NaN 后对段内做 nanmean
+    (正常路径上事件覆盖的 bar 并发 ≥ 1)。
+    """
+    if len(t1) == 0:
+        return pd.Series(dtype=float)
+
+    t1_valid = t1.dropna()
+    if len(t1_valid) == 0:
+        return pd.Series(np.nan, index=t1.index, dtype=float)
+
+    conc = num_concurrent_events(bar_index, t1_valid)
+    idx = pd.DatetimeIndex(bar_index)
+    bars = _bar_ns(idx)
+    conc_v = conc.to_numpy(dtype=float)
+    inv = np.divide(
+        1.0, conc_v,
+        out=np.full_like(conc_v, np.nan, dtype=float),
+        where=conc_v > 0,
+    )
+
+    starts = _bar_ns(pd.DatetimeIndex(t1_valid.index))
+    ends = _bar_ns(pd.DatetimeIndex(pd.to_datetime(t1_valid.values, utc=True)))
+    left = np.searchsorted(bars, starts, side="left")
+    right = np.searchsorted(bars, ends, side="right")
+
+    out = np.full(len(t1_valid), np.nan, dtype=float)
+    for i in range(len(t1_valid)):
+        lo, hi = int(left[i]), int(right[i])
+        if hi <= lo:
+            out[i] = np.nan
+            continue
+        out[i] = float(np.nanmean(inv[lo:hi]))
+
+    return pd.Series(out, index=t1_valid.index, dtype=float).reindex(t1.index)
 
 
 def sample_weights_by_return(events: pd.DataFrame, bar_index: pd.DatetimeIndex) -> pd.Series:

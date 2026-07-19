@@ -244,6 +244,9 @@ backtest:
   #   prob_threshold_research = CF oof_cal[ref]
   #   prob_threshold_effective = deploy_cal.transform(raw_oof[ref]) → decide/serve
   prob_threshold_mode: max_of
+  # 0.98 ≈ 参考窗校准分仅约 top 2% 过线(再与地板 0.55 取 max)。偏保守、成交偏稀是预期行为;
+  # 若 gate_diagnostics 显示几乎不开仓, 可下调至 0.90~0.95, 或设 target_trade_rate。
+  # 勿为「多看几笔」盲目放宽: 弱 edge 下提高频率通常更差。以 walk-forward 为准。
   prob_quantile: 0.98
   target_trade_rate: null  # 可选: 如 0.01≈只开参考分 top 1%(与分位取更严)
   # 参考窗上校准灌过线时, 用更严分位抬 thr 后冻结(报告窗仅告警不改 thr)

@@ -145,7 +145,7 @@ cryptoCurrency/
 |-----|------|
 | `fetch_ohlcv` | ccxt 分页拉取多年 K 线（单次 limit≈1000，循环至 `since`→今） |
 | `fetch_ohlcv_resilient` | 按交易所候选列表依次尝试；`for_tip=True` 时优先 `tip_exchange`/fallbacks |
-| `fetch_derivatives` | 资金费率 / OI；**分页** `_paginate_funding` / `_paginate_oi`（`max_pages=500`）；失败→NaN 列 |
+| `fetch_derivatives` | 资金费率 / OI；**分页** `_paginate_funding` / `_paginate_oi`（`max_pages=500`）；共用一个 exchange 实例，funding/OI **各自** try（一路失败不拖另一路）；失败→NaN 列 |
 | `generate_synthetic_ohlcv` | GARCH 味 + regime 合成行情（CI / 离线） |
 | `load_symbol_data(..., force_refresh=False)` | 统一入口：合成 / 缓存 / 增量 / 降级；`force_refresh` 无视 `incremental_update` 开关 |
 | `refresh_market_data` | **决策前**：主周期强制增量到当下已收盘 tip + 辅周期 tip 对齐 + 新鲜度校验 |
@@ -289,12 +289,15 @@ OHLCV(+衍生品)
 4. 入场价 = 事件 bar(t0) 的收盘价，**触碰扫描从 t0 的下一根 bar 开始**  
 5. **无法满足垂直持有期的事件直接丢弃**（不再用最后一根 bar 截断打标）  
 6. `get_bins` → `ret`, `bin`, `side`, `t1`, `bars_held`  
-7. **训练↔实盘对齐**：`serve_require_cusum: true`（默认）时，`latest_decision` / `decide_live` 仅在 CUSUM 事件 bar 上开仓，否则 HOLD；全量回退时自动放宽
+7. **训练↔实盘对齐**：`serve_require_cusum: true`（默认）时，`latest_decision` / `decide_live` 仅在 CUSUM 事件 bar 上开仓，否则 HOLD；全量回退时自动放宽  
+
+**实现性能（语义不变）**：`apply_pt_sl_on_t1` 将 high/low 对齐到 `close` 索引后用**整数下标**扫描（等价于 `high.loc[t0:t1].iloc[1:]`）；若某事件 t0/t1 不在索引上则回退 label 切片。触碰止盈/止损的持仓幅度由 `_barrier_log_returns(pt, sl, trgt)` 给出（**不接收 side**：多空幅度对称，方向只影响哪条价先触碰）。回归见 `tests/test_labeling_perf_parity.py`（与 pandas 慢路径对拍）。
 
 ### 6.4 样本权重（`labeling/sample_weights.py`）
 
 - 平均唯一性（重叠标签降权）× `|ret|` × 时间衰减  
 - `prepare_dataset` 中归一化到均值 1，传入专家与元学习器  
+- **实现**：`num_concurrent_events` 对闭区间 `[t0, t1]` 用差分数组 + `searchsorted`（与逐事件 `count.loc[t0:t1] += 1` 等价）；`average_uniqueness` 在同一套下标上对 `1/并发` 做段内 nanmean。畸形 `t1 < t0` 跳过（空区间，避免差分污染）。对拍测试同上。  
 
 ---
 
@@ -451,6 +454,8 @@ OHLCV(+衍生品)
 | `quantile` | 参考分的 `prob_quantile` 分位 |
 | `max_of`（默认） | `max(fixed, quantile)` |
 
+**`prob_quantile` 操作提示（默认 0.98）**：约等于参考窗校准分仅 **top ≈2%** 过线，再与地板 `prob_threshold`（默认 0.55）取 max，故**成交偏稀是预期**，不是门控坏了。调参前先看 `gate_diagnostics_*`（`frac_prob_ge_threshold` / `n_opened_size_gt_0`）；若需略增频率可试 0.90–0.95 或 `target_trade_rate`，并以 **walk-forward** 而非研究 OOF 成交数决策。弱 edge 下盲目放宽通常更差。
+
 **参考窗**（`build_threshold_reference_mask`）：
 
 1. 优先 `eval_mask & ~report_mask`（多专家前半选型窗）  
@@ -542,7 +547,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | `experts` | **enabled=[gbdt, deep_ts]** | tsfm/llm 可选 |
 | `ensemble` | logistic，`min_expert_auc=0.5`，`exclude_pseudo_oof_from_meta=true` | 前半选型 / 后半报告回测；伪 OOF 不进 meta |
 | `calibration` | isotonic，α=0.1，`conformal_frac=0.3`，`conformal_min_margin=0.05` | 主路径联合 CF；部署时间切分；过线灌水/台阶告警 |
-| `backtest` | **`portfolio_mode=true`**，`prob_threshold_mode=max_of`，地板 0.55，`prob_quantile=0.98`，`raise_thr_on_inflate=true`，`inflate_raise_quantile=0.99` | 组合加性记账；双阈值见 `prob_threshold_research` / `prob_threshold_effective` |
+| `backtest` | **`portfolio_mode=true`**，`prob_threshold_mode=max_of`，地板 0.55，`prob_quantile=0.98`（≈参考窗 top 2%，成交偏稀为预期；见 §11.0），`raise_thr_on_inflate=true`，`inflate_raise_quantile=0.99` | 组合加性记账；双阈值见 `prob_threshold_research` / `prob_threshold_effective` |
 | `risk` | 半 Kelly，`min_kelly_edge=0`，日熔断 5%，`execution_assumption=close_fill` | 未实现取值 Config.load/decide 报错 |
 | `serve` | 1800s 轮询，48 周期重训（≈24h） | Telegram 默认关 |
 
@@ -748,6 +753,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | `test_leakage.py` | 新闻 as-of（决策时刻）、Purged 无重叠、合成新闻守卫（未来收益面板 / 仅 synthetic 历史 / **corpus 过滤 synthetic 行**）、盘中止损 |
 | `test_design_fixes.py` | pt_sl/ATR/加性空头、**空头 ret↔expm1**、**空头盯市=简单收益(非几何)**、组合敞口、CUSUM 无前视、null 成本、DSR clamp、**权益夏普增量字段**、小样本 stacking、execution_assumption、新闻覆盖率、**require_min_coverage fail-fast**、看板 disclaimer、**联合 CF 校准+保形**、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations / 盯市曲线**、**MTF+空新闻路径**、**base_report 与集成同 report_mask**、**synthetic_fallback 辅周期重采样**、**DeepTS 早停 cutoff** |
 | `test_gate_diagnostics.py` | 有效阈值 fixed/max_of/分位回退、**参考窗时间半回退（禁全 eval）**、**双阈值 freeze（CF vs deploy 尺度）**、**禁止二次校准参考分**、**参考窗灌过线抬 thr**、**CPCV thr 用校准尺度**、**conformal_min_margin 收紧 confident**、校准灌过线/低唯一台阶告警、gate_diagnostics 结构 |
+| `test_labeling_perf_parity.py` | `apply_pt_sl_on_t1` / `num_concurrent_events` / `average_uniqueness` 与 pandas 慢路径**逐事件对拍**；`_barrier_log_returns` 无 side 幅度对称；触碰加速后 `get_bins` 一致 |
 | `test_mtf.py` | 辅周期无前视（对齐层须为 NaN）、拒绝更细周期、特征含 MTF |
 | `test_pipeline_integrity.py` | 闭环完整性闸门（见 18.1；空对照默认关 MTF/新闻，见局限） |
 

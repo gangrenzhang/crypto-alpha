@@ -259,6 +259,7 @@ def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd
     """尝试拉取资金费率与持仓量, 对齐到给定索引。任何失败都优雅降级为 NaN 列。
 
     对多年回测做分页拉取(不再单次 limit=1000 截断)。
+    共用一个 exchange 实例; funding / OI **各自** try/except, 一路失败不阻断另一路。
     """
     out = pd.DataFrame(index=index)
     out["funding_rate"] = np.nan
@@ -272,6 +273,10 @@ def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd
         import ccxt
 
         ex = getattr(ccxt, exchange)({"enableRateLimit": True})
+    except Exception:
+        return out  # 无 ccxt / 无法建所 → 双列保持 NaN
+
+    try:
         if ex.has.get("fetchFundingRateHistory"):
             fr = _paginate_funding(ex, symbol, start_ms, end_ms)
             if fr:
@@ -283,9 +288,6 @@ def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd
         pass  # 衍生品缺失不阻断主流程
 
     try:
-        import ccxt
-
-        ex = getattr(ccxt, exchange)({"enableRateLimit": True})
         if ex.has.get("fetchOpenInterestHistory"):
             oi = _paginate_oi(ex, symbol, start_ms, end_ms)
             if oi:

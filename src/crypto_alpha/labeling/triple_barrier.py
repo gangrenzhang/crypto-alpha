@@ -97,40 +97,97 @@ def apply_pt_sl_on_t1(
     空头: TP=entry(1-pt·trgt), SL=entry(1+sl·trgt)。
     不再对空头使用对数空间对称翻转(那会得到几何价 entry/(1±x), 与挂单不一致)。
 
+    实现: 将 high/low 对齐到 ``close`` 索引后用**整数下标**扫描(语义等同于
+    ``high.loc[t0:t1].iloc[1:]`` 的 label 切片), 避免逐事件 pandas 切片开销。
+    若某事件 t0/t1 不在 ``close`` 索引上, 回退到 label 切片以保持边界语义。
+
     events 需含列: t1(垂直障碍), trgt(目标波动), side(方向 +1/-1)。
     返回列: t1(垂直), pt(止盈触碰时间), sl(止损触碰时间)。
     """
-    pt_mult, sl_mult = pt_sl
-    idx = events.index
-    t1_list, pt_list, sl_list = [], [], []
-    for t0 in idx:
-        t1 = events.at[t0, "t1"]
+    pt_mult, sl_mult = float(pt_sl[0]), float(pt_sl[1])
+    ev_index = events.index
+    n = len(events)
+    if n == 0:
+        return pd.DataFrame({"t1": [], "pt": [], "sl": []}, index=ev_index)
+
+    bar_index = close.index
+    high_a = high if high.index.equals(bar_index) else high.reindex(bar_index)
+    low_a = low if low.index.equals(bar_index) else low.reindex(bar_index)
+    c = np.asarray(close.to_numpy(dtype=float), dtype=float)
+    h = np.asarray(high_a.to_numpy(dtype=float), dtype=float)
+    l = np.asarray(low_a.to_numpy(dtype=float), dtype=float)
+
+    t0_locs = bar_index.get_indexer(ev_index)
+    t1_raw = events["t1"]
+    t1_locs = bar_index.get_indexer(pd.DatetimeIndex(pd.to_datetime(t1_raw, utc=True)))
+    sides = np.asarray(events["side"].to_numpy(), dtype=float)
+    trgts = np.asarray(events["trgt"].to_numpy(), dtype=float)
+
+    t1_list: list = []
+    pt_list: list = []
+    sl_list: list = []
+
+    for i in range(n):
+        t1 = t1_raw.iloc[i]
         if pd.isna(t1):
             # 调用方应已 drop 不完整垂直障碍; 此处防御性跳过(记空触碰)
             t1_list.append(pd.NaT)
             pt_list.append(pd.NaT)
             sl_list.append(pd.NaT)
             continue
-        side = float(events.at[t0, "side"])
-        trgt = float(events.at[t0, "trgt"])
-        entry_px = float(close.loc[t0])
+
+        i0 = int(t0_locs[i])
+        i1 = int(t1_locs[i])
+        side = float(sides[i])
+        trgt = float(trgts[i])
+
+        # 罕见: 事件时间不在 close 索引 → 回退 label 切片(与历史语义一致)
+        if i0 < 0 or i1 < 0:
+            t0 = ev_index[i]
+            entry_px = float(close.loc[t0])
+            atr_abs = max(trgt, 0.0) * entry_px
+            tp_price = entry_px + side * pt_mult * atr_abs
+            sl_price = entry_px - side * sl_mult * atr_abs
+            path_high = high.loc[t0:t1].iloc[1:]
+            path_low = low.loc[t0:t1].iloc[1:]
+            if side > 0:
+                pt_touch = path_high[path_high >= tp_price].index.min()
+                sl_touch = path_low[path_low <= sl_price].index.min()
+            else:
+                pt_touch = path_low[path_low <= tp_price].index.min()
+                sl_touch = path_high[path_high >= sl_price].index.min()
+            t1_list.append(t1)
+            pt_list.append(pt_touch)
+            sl_list.append(sl_touch)
+            continue
+
+        entry_px = float(c[i0])
         atr_abs = max(trgt, 0.0) * entry_px
         tp_price = entry_px + side * pt_mult * atr_abs
         sl_price = entry_px - side * sl_mult * atr_abs
-        # 入场价 = t0 收盘; t0 盘中极值发生在入场前 → 从下一根扫描
-        path_high = high.loc[t0:t1].iloc[1:]
-        path_low = low.loc[t0:t1].iloc[1:]
+        # 入场价 = t0 收盘; t0 盘中极值发生在入场前 → 从下一根扫描到 t1(含)
+        start = i0 + 1
+        end = i1 + 1
+        t1_list.append(t1)
+        if start >= end:
+            pt_list.append(pd.NaT)
+            sl_list.append(pd.NaT)
+            continue
+
+        hh = h[start:end]
+        ll = l[start:end]
         if side > 0:
-            pt_touch = path_high[path_high >= tp_price].index.min()
-            sl_touch = path_low[path_low <= sl_price].index.min()
+            pt_hits = np.flatnonzero(hh >= tp_price)
+            sl_hits = np.flatnonzero(ll <= sl_price)
         else:
             # 空头: 价格下跌触 TP, 上涨触 SL
-            pt_touch = path_low[path_low <= tp_price].index.min()
-            sl_touch = path_high[path_high >= sl_price].index.min()
-        t1_list.append(t1)
-        pt_list.append(pt_touch)
-        sl_list.append(sl_touch)
-    return pd.DataFrame({"t1": t1_list, "pt": pt_list, "sl": sl_list}, index=idx)
+            pt_hits = np.flatnonzero(ll <= tp_price)
+            sl_hits = np.flatnonzero(hh >= sl_price)
+        # 空命中 → NaT(等同空 Index.min())
+        pt_list.append(bar_index[start + int(pt_hits[0])] if pt_hits.size else pd.NaT)
+        sl_list.append(bar_index[start + int(sl_hits[0])] if sl_hits.size else pd.NaT)
+
+    return pd.DataFrame({"t1": t1_list, "pt": pt_list, "sl": sl_list}, index=ev_index)
 
 
 def get_events(
@@ -173,7 +230,7 @@ def get_events(
 
 
 def _barrier_log_returns(
-    side: float, pt_mult: float, sl_mult: float, trgt: float,
+    pt_mult: float, sl_mult: float, trgt: float,
 ) -> tuple[float, float]:
     """触碰加性价格障碍时的持仓对数收益, 与回测 ``expm1(ret)`` 互逆。
 
@@ -181,9 +238,9 @@ def _barrier_log_returns(
       - 止盈: 简单收益 = +pt·trgt → ``log1p(+pt·trgt)``
       - 止损: 简单收益 = -sl·trgt → ``log1p(-sl·trgt)``
     多空在相同 pt/sl/trgt 下持仓简单收益对称(空头价跌为止盈、价涨为止损,
-    由 ``get_events`` 的触碰判定体现); ``side`` 不改变幅度公式。
+    由 ``apply_pt_sl_on_t1`` / ``get_events`` 的触碰判定体现); 幅度与 side 无关,
+    故本函数不接收 side。
     """
-    _ = float(side)  # 方向只影响触碰哪条价格障碍, 不改变持仓收益幅度
     pt_frac = max(pt_mult * trgt, 0.0)
     sl_frac = min(max(sl_mult * trgt, 0.0), 1.0 - 1e-6)
     return float(np.log1p(pt_frac)), float(np.log1p(-sl_frac))
@@ -221,7 +278,7 @@ def get_bins(events: pd.DataFrame, close: pd.Series, pt_sl: tuple[float, float])
         sl_t = events.at[t0, "sl_touch"]
         side = float(events.at[t0, "side"])
         trgt = float(events.at[t0, "trgt"])
-        ret_pt, ret_sl = _barrier_log_returns(side, pt_mult, sl_mult, trgt)
+        ret_pt, ret_sl = _barrier_log_returns(pt_mult, sl_mult, trgt)
 
         # 未触碰用显式分支, 避免依赖 Timestamp.max 哨兵
         has_sl = pd.notna(sl_t)
