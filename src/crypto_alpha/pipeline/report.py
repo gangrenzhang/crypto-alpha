@@ -1,14 +1,17 @@
 """一键"全专家联跑"编排 + 自包含 HTML 结果面板。
 
 - probe_experts: 探测每个专家的运行时可用性(依赖/GPU/权重), 不可用则优雅降级并说明原因。
-- run_all: 对每个币种跑"数据->特征->标注->全专家 Stacking->校准->回测->决策", 可选 CPCV。
-- build_dashboard: 把结果渲染为单文件 HTML(离线可看), 含决策卡/指标/专家对比/净值曲线/CPCV。
+- run_all: 对每个币种跑"数据->特征->标注->全专家 Stacking->校准->回测->决策",
+  可选 CPCV 与 walk-forward(single-cut 真外推基线)。
+- build_dashboard: 把结果渲染为单文件 HTML(离线可看), 含决策卡/指标/专家对比/净值/
+  CPCV/Walk-forward 基线卡。
 """
 from __future__ import annotations
 
 import base64
 import html
 import io
+import json
 from datetime import datetime, timezone
 
 import numpy as np
@@ -74,19 +77,53 @@ def _probe_llm(cfg: Config) -> str | None:
 # --------------------------------------------------------------------------
 # 编排
 # --------------------------------------------------------------------------
-def run_all(cfg: Config, symbols: list[str], experts: list[str],
-            do_cpcv: bool = False) -> dict:
-    """联跑全部(可用)专家, 汇总每币种指标/决策/净值(+可选 CPCV)。"""
+def run_all(
+    cfg: Config,
+    symbols: list[str],
+    experts: list[str],
+    do_cpcv: bool = False,
+    do_walkforward: bool | None = None,
+) -> dict:
+    """联跑全部(可用)专家, 汇总每币种指标/决策/净值(+可选 CPCV / walk-forward)。
+
+    ``do_walkforward``:
+      - ``None``: 读 ``validation.walkforward.enabled_in_run_all``
+      - ``True/False``: 显式覆盖(如 ``10_run_all.py --walkforward``)
+    若 ``validation.walkforward.require_in_run_all`` 为真且最终未跑 WF → RuntimeError。
+    """
     available, skipped = probe_experts(cfg, experts)
     if not available:
         raise RuntimeError("没有可运行的专家; 请检查依赖安装。")
+    wf_sec = ((cfg.get("validation") or {}).get("walkforward") or {})
+    if do_walkforward is None:
+        do_walkforward = bool(wf_sec.get("enabled_in_run_all", False))
+    require_wf = bool(wf_sec.get("require_in_run_all", False))
+    # 发布硬前置: 未启用 WF 时立刻失败, 避免先跑完昂贵 OOF 才报错
+    if require_wf and not do_walkforward:
+        raise RuntimeError(
+            "validation.walkforward.require_in_run_all=true 但本次未跑 walk-forward;"
+            " 请传 do_walkforward=True / --walkforward, 或关闭 require_in_run_all。"
+        )
     # 不永久污染 Config: 仅在本函数作用域内覆盖 enabled
     prev_enabled = list(cfg.raw["experts"].get("enabled") or [])
     cfg.raw["experts"]["enabled"] = available
     try:
-        return _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv)
+        results = _run_all_body(
+            cfg, symbols, experts, available, skipped, do_cpcv, do_walkforward,
+        )
     finally:
         cfg.raw["experts"]["enabled"] = prev_enabled
+    if require_wf:
+        missing = [
+            s for s, d in results["symbols"].items()
+            if not (d.get("walkforward") or {}).get("ok")
+        ]
+        if missing:
+            raise RuntimeError(
+                "walk-forward 为发布硬前置, 但以下币种未成功产出 WF 基线: "
+                + ", ".join(missing)
+            )
+    return results
 
 
 # --------------------------------------------------------------------------
@@ -95,6 +132,9 @@ def run_all(cfg: Config, symbols: list[str], experts: list[str],
 RESEARCH_DISCLAIMERS: list[str] = [
     "主面板默认「研究回测」基于 Purged nested OOF + 交叉拟合校准/保形，"
     "不是 walk-forward 实盘滚动再训练；上线前须另做滚动/外推评估。",
+    "真外推基线：启用 --walkforward / validation.walkforward 后，面板会并列 "
+    "Walk-forward KPI（仅过去窗拟合→未来窗部署门控）。成交/胜率/期望以 WF 为准，"
+    "勿用研究 OOF 或 train_and_validate.backtest_deploy 拍板上线。",
     "摘要中的 backtest_deploy / gate_diagnostics_deploy 为部署出分路径"
     "（predict→fit_deploy 校准/保形），与 decide/serve 同形；"
     "在 train_and_validate 内对报告窗仍可能偏乐观，成交数勿与 research OOF 直接对比。"
@@ -113,7 +153,9 @@ RESEARCH_DISCLAIMERS: list[str] = [
 ]
 
 
-def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
+def _run_all_body(
+    cfg, symbols, experts, available, skipped, do_cpcv, do_walkforward,
+) -> dict:
     results: dict = {
         "meta": {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -126,6 +168,7 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
             "news_mode": ("历史库" if cfg["news"].get("use_history") else
                           ("合成" if cfg["news"].get("use_synthetic", False) else "实时")),
             "do_cpcv": do_cpcv,
+            "do_walkforward": bool(do_walkforward),
             "research_disclaimers": list(RESEARCH_DISCLAIMERS),
         },
         "symbols": {},
@@ -189,6 +232,47 @@ def _run_all_body(cfg, symbols, experts, available, skipped, do_cpcv) -> dict:
               f"thr_d={trained.get('prob_threshold_effective')} "
               f"信号={decision['signal']} "
               f"P={_fmt_prob(decision.get('win_probability'))}")
+
+        if do_walkforward:
+            from .walkforward import (
+                run_walkforward,
+                slim_walkforward_for_dashboard,
+                walkforward_public_summary,
+            )
+
+            print(f"  [walk-forward] {symbol} 真外推基线 ...", flush=True)
+            try:
+                # 复用同一冷缓存 Dataset, 禁止 for_decide tip
+                wf_raw = run_walkforward(cfg, symbol, ds=ds)
+                entry["walkforward"] = {
+                    "ok": True,
+                    **slim_walkforward_for_dashboard(wf_raw),
+                }
+                # 完整 summary 写入 artifacts(每币种), 便于审计
+                stem = symbol.replace("/", "_")
+                wf_path = cfg.artifacts_dir / f"walkforward_{stem}.json"
+                wf_path.write_text(
+                    json.dumps(
+                        walkforward_public_summary(wf_raw),
+                        ensure_ascii=False, indent=2, default=float,
+                    ),
+                    encoding="utf-8",
+                )
+                entry["walkforward"]["summary_path"] = str(wf_path)
+                print(
+                    f"  [walk-forward] 开仓={entry['walkforward'].get('n_opened_trades')} "
+                    f"胜率={entry['walkforward'].get('win_rate')} "
+                    f"收益={entry['walkforward'].get('total_return')} "
+                    f"-> {wf_path}",
+                    flush=True,
+                )
+            except Exception as e:
+                entry["walkforward"] = {
+                    "ok": False,
+                    "error": str(e),
+                    "evaluation_unit": "walk_forward",
+                }
+                print(f"  [walk-forward] FAIL: {e}", flush=True)
 
         if do_cpcv:
             try:
@@ -326,7 +410,8 @@ def build_dashboard(results: dict, cfg: Config) -> str:
     parts.append("<h1>Crypto-Alpha · 全专家联跑结果面板</h1>")
     parts.append(f"<div class='sub'>生成时间(UTC): {html.escape(m['generated_at'])} · "
                  f"数据: {m['data_mode']} · 新闻: {m['news_mode']} · seed: {m['seed']} · "
-                 f"CPCV: {'开' if m['do_cpcv'] else '关'}</div>")
+                 f"CPCV: {'开' if m['do_cpcv'] else '关'} · "
+                 f"Walk-forward: {'开' if m.get('do_walkforward') else '关'}</div>")
 
     # 研究口径 disclaimer: OOF ≠ walk-forward; CPCV caveats
     disclaimers = m.get("research_disclaimers") or RESEARCH_DISCLAIMERS
@@ -348,8 +433,53 @@ def build_dashboard(results: dict, cfg: Config) -> str:
 
     parts.append("<div class='foot'>本面板由 scripts/10_run_all.py 生成 · "
                  "主指标=Purged nested OOF（≠ walk-forward）· "
+                 "真外推以 Walk-forward 卡为准 · "
                  "CPCV 为相关组合评估（见 caveats）· 仅供研究, 非投资建议</div>")
     parts.append("</div></body></html>")
+    return "".join(parts)
+
+
+def _render_walkforward_card(wf: dict) -> str:
+    """真外推基线卡: 与 OOF KPI 并列展示, 强调不可混比。"""
+    if not wf.get("ok", True) and wf.get("error"):
+        return (
+            "<div class='card caveat'><b>Walk-forward 真外推基线</b>："
+            f"<span class='neg'>失败</span> — {html.escape(str(wf.get('error')))}"
+            "</div>"
+        )
+    parts = [
+        "<div class='card'><b>Walk-forward 真外推基线</b>"
+        "<div class='caveat' style='margin:6px 0 10px'>"
+        "仅过去窗拟合 → 未来窗部署门控；成交/胜率/期望以此为准，"
+        "勿与上方研究 OOF / 部署路径成交数混比。"
+        "</div><div class='grid'>",
+    ]
+    parts.append(_kpi("WF开仓数", str(wf.get("n_opened_trades", "—"))))
+    parts.append(_kpi("WF胜率", _fmt(wf.get("win_rate"), pct=True)))
+    parts.append(
+        _kpi("WF总收益", _fmt(wf.get("total_return"), pct=True),
+             cls=_cls(wf.get("total_return") or 0))
+    )
+    parts.append(
+        _kpi("WF最大回撤", _fmt(wf.get("max_drawdown"), pct=True), cls="neg")
+    )
+    parts.append(_kpi("WF测试AUC", _fmt(wf.get("test_auc"))))
+    parts.append(_kpi("WF阈值(部署)", _fmt(wf.get("prob_threshold_effective"))))
+    parts.append(_kpi("训练事件", str(wf.get("n_train_events", "—"))))
+    parts.append(_kpi("测试事件", str(wf.get("n_test_events", "—"))))
+    parts.append("</div>")
+    if wf.get("backtest_start"):
+        end = wf.get("backtest_end") or "面板末"
+        parts.append(
+            f"<div class='caveat'>测试窗: {html.escape(str(wf['backtest_start']))}"
+            f" → {html.escape(str(end))}"
+            f" · embargo_bars={html.escape(str(wf.get('embargo_bars', 0)))}</div>"
+        )
+    if wf.get("summary_path"):
+        parts.append(
+            f"<div class='caveat'>明细: {html.escape(str(wf['summary_path']))}</div>"
+        )
+    parts.append("</div>")
     return "".join(parts)
 
 
@@ -406,9 +536,15 @@ def _render_symbol(d: dict) -> str:
         "「研究OOF」用交叉拟合概率 + 阈值(研究CF)；"
         "「部署路径」与 decide/serve 同出分 + 阈值(部署/decide)；"
         "二者不可直接对比成交数。"
-        "train_and_validate 报告窗部署回测仍可能偏乐观，真外推看 walk-forward。"
+        "train_and_validate 报告窗部署回测仍可能偏乐观，真外推看下方 Walk-forward 卡"
+        "（或 scripts/btc_walkforward_summary.py）。"
         "</div>"
     )
+
+    # Walk-forward 真外推基线(若本次联跑启用)
+    wf = d.get("walkforward")
+    if wf:
+        p.append(_render_walkforward_card(wf))
 
     # 降级 / degradations(透明度纪律)
     deg = list(d.get("degradations") or [])

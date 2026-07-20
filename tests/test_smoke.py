@@ -19,6 +19,8 @@ def _small_cfg() -> Config:
     cfg.raw["data"]["synthetic_bars"] = 4000
     cfg.raw["experts"]["enabled"] = ["gbdt"]  # 冒烟只用 GBDT
     cfg.raw["validation"]["n_splits"] = 4
+    cfg.raw["validation"]["log_experiments"] = False
+    cfg.raw["risk"]["env_degradation_hold_score"] = 0  # 合成路径勿环境 HOLD
     cfg.raw["backtest"]["portfolio_mode"] = True
     return cfg
 
@@ -42,8 +44,11 @@ def test_trunk_runs():
     assert ds.data_source == "synthetic"
     d = latest_decision(cfg, ds, trained)
     assert d["signal"] in {"LONG", "SHORT", "HOLD"}
+    assert "audit" in d and d.get("config_fingerprint")
     if d.get("reason") == "not_cusum_event":
         assert d["signal"] == "HOLD"  # 与训练 CUSUM 事件对齐
+    elif d.get("reason") == "low_confidence_environment":
+        assert d["signal"] == "HOLD"
     else:
         assert d["win_probability"] is not None
         assert 0.0 <= d["win_probability"] <= 1.0

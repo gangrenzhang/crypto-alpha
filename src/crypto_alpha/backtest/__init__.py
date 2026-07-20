@@ -5,6 +5,7 @@ from .engine import (
     max_drawdown,
     deflated_sharpe_ratio,
     probability_of_backtest_overfitting,
+    resolve_event_slippage,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "max_drawdown",
     "deflated_sharpe_ratio",
     "probability_of_backtest_overfitting",
+    "resolve_event_slippage",
 ]

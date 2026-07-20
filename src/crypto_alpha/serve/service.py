@@ -17,6 +17,9 @@ from ..features.build import build_feature_matrix
 from ..features.news_features import add_news_features
 from ..labeling.meta_labeling import primary_signal
 from ..pipeline import prepare_dataset, train_and_validate
+from ..backtest.engine import resolve_event_slippage
+from ..diagnostics.decision_audit import attach_decision_audit, build_decision_audit
+from ..diagnostics.env_guard import hold_for_environment, should_hold_for_environment
 from ..pipeline.run import (
     _attach_news_to_llm,
     _is_tradable_event,
@@ -36,6 +39,8 @@ class ModelBundle:
     cusum_full_sampling: bool = False
     data_source: str = "real"
     prob_threshold_effective: float | None = None
+    slip_ref_trgt: float | None = None
+    train_degradations: list | None = None
 
 
 class DecisionService:
@@ -50,6 +55,7 @@ class DecisionService:
     def train(self, symbol: str) -> None:
         ds = prepare_dataset(self.cfg, symbol)
         trained = train_and_validate(self.cfg, ds)
+        _srt = trained.get("slip_ref_trgt")
         self.models[symbol] = ModelBundle(
             ensemble=trained["ensemble"],
             calibrator=trained["calibrator"],
@@ -62,6 +68,8 @@ class DecisionService:
                 if trained.get("prob_threshold_effective") is not None
                 else None
             ),
+            slip_ref_trgt=float(_srt) if _srt is not None and np.isfinite(float(_srt)) else None,
+            train_degradations=list(trained.get("degradations") or ds.degradations or []),
         )
         m = trained["backtest"]["metrics"]
         md = (trained.get("backtest_deploy") or {}).get("metrics") or {}
@@ -96,6 +104,24 @@ class DecisionService:
         feat["high"] = raw["high"] if "high" in raw.columns else raw["close"]
         feat["low"] = raw["low"] if "low" in raw.columns else raw["close"]
         feat = add_news_features(feat, self.cfg, symbol)  # 与训练特征保持一致
+        # 环境 HOLD 只计「本次 tip/特征装配」标签; 训练期质量标签仅并入展示
+        live_deg: list[str] = []
+        for t in list(getattr(raw, "attrs", {}).get("degradations") or []):
+            if t not in live_deg:
+                live_deg.append(t)
+        if getattr(raw, "attrs", {}).get("tip_exchange_mismatch"):
+            tag = "ohlcv_tip_exchange_fallback"
+            if tag not in live_deg:
+                live_deg.append(tag)
+        for t in list(getattr(feat, "attrs", {}).get("degradations") or []):
+            if t not in live_deg:
+                live_deg.append(t)
+        if data_source == "synthetic_fallback" and "ohlcv_synthetic_fallback" not in live_deg:
+            live_deg.append("ohlcv_synthetic_fallback")
+        deg_all: list[str] = list(live_deg)
+        for t in list(bundle.train_degradations or []):
+            if t not in deg_all:
+                deg_all.append(t)
 
         lc = self.cfg["labeling"]
         side_ser = primary_signal(feat["close"], kind=lc["primary_signal"],
@@ -104,6 +130,20 @@ class DecisionService:
         if "side" in fcols:
             feat = feat.copy()
             feat["side"] = side_ser.astype(float)
+
+        def _audit(d: dict) -> dict:
+            trained_like = {
+                "prob_threshold_effective": bundle.prob_threshold_effective,
+                "cusum_full_sampling": bundle.cusum_full_sampling,
+                "data_source": data_source,
+                "degradations": list(d.get("degradations") or deg_all),
+                "ensemble": bundle.ensemble,
+            }
+            audit = build_decision_audit(
+                self.cfg, panel=feat, feature_cols=fcols, trained=trained_like,
+                degradations=list(d.get("degradations") or deg_all),
+            )
+            return attach_decision_audit(attach_decision_description(d), audit)
 
         # 辅周期/新闻装配失败会导致训练期 feature_cols 整列缺失 → 补 0 防 KeyError,
         # 但分布已偏移: 强制 HOLD, 绝不在坏 schema 上推理开仓。
@@ -128,10 +168,20 @@ class DecisionService:
         ts = feat.index[valid][-1]  # 最新一根特征完整的 bar
         bar_close = float(feat["close"].loc[ts])
 
+        env_thr = self.cfg["risk"].get("env_degradation_hold_score", 50)
+        # 只对 live_deg 计分(不含 train_degradations)
+        hold_env, env_score, env_tag = should_hold_for_environment(live_deg, threshold=env_thr)
+        if hold_env and env_tag:
+            return _audit(hold_for_environment(
+                symbol=symbol, score=env_score, reason_tag=env_tag,
+                risk_cfg=self.cfg["risk"], timestamp=ts, close=bar_close,
+                data_source=data_source, degradations=deg_all,
+            ))
+
         if not _is_tradable_event(self.cfg, feat, ts, bundle.cusum_full_sampling):
             from ..risk.sizing import resolve_execution_assumption
 
-            return attach_decision_description({
+            return _audit({
                 "signal": "HOLD",
                 "symbol": symbol,
                 "timestamp": str(ts),
@@ -144,6 +194,7 @@ class DecisionService:
                 "confident": False,
                 "data_source": data_source,
                 "execution_assumption": resolve_execution_assumption(self.cfg["risk"]),
+                "degradations": deg_all,
             })
 
         # 刷新需要时序面板的专家 + LLM 新闻快照
@@ -168,6 +219,9 @@ class DecisionService:
         payoff = pt_sl[0] / pt_sl[1]
         fee = float(self.cfg["backtest"].get("fee_bps", 5.0)) / 1e4
         slip = float(self.cfg["backtest"].get("slippage_bps", 2.0)) / 1e4
+        trgt_now = atr / entry if entry > 0 else None
+        ref = bundle.slip_ref_trgt if bundle.slip_ref_trgt is not None else float("nan")
+        slip = resolve_event_slippage(slip, trgt_now, float(ref), self.cfg["backtest"])
         risk_cfg = dict(self.cfg["risk"])
         thr_eff = bundle.prob_threshold_effective
         if thr_eff is None:
@@ -182,7 +236,9 @@ class DecisionService:
         d["timestamp"] = str(ts)
         d["close"] = bar_close
         d["data_source"] = data_source
-        return attach_decision_description(d)
+        d["degradations"] = deg_all
+        d["env_degradation_score"] = env_score
+        return _audit(d)
 
     # ---------------- 播报(含去重) ----------------
     def _should_notify(self, symbol: str, signal: str) -> bool:

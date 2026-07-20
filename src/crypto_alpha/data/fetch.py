@@ -546,7 +546,8 @@ def load_symbol_data(
     cache_read = resolve_raw_cache_path(cfg, symbol, tf)
     cache_write = raw_cache_path(cfg, symbol, tf)
     use_cache = bool(d.get("cache", True))
-    do_incremental = bool(force_refresh) or bool(d.get("incremental_update", True))
+    # 缺省 False: 与 config.yaml / 架构「训练读冷缓存」一致; 决策用 force_refresh
+    do_incremental = bool(force_refresh) or bool(d.get("incremental_update", False))
     if use_cache and cache_read.exists():
         df = load_parquet(cache_read)
         if df.index.tz is None:

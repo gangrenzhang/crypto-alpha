@@ -164,8 +164,9 @@ def cross_fitted_calibrated_and_conformal(
     返回 ``(oof_cal, conf_flags, tags)``:
 
     - ``oof_cal``: 与 :func:`cross_fitted_calibrated` 同语义; 不可 CF 时全 NaN
-    - ``conf_flags``: 默认 True; 仅在该折成功拟合保形器后写入测试折
-    - ``tags``: 如某折因单类/过少跳过保形 → ``conformal_cf_fold_skipped``
+    - ``conf_flags``: 默认 False; 仅在该折成功拟合保形器后写入测试折
+    - ``tags``: 如某折因单类/过少跳过保形 → ``conformal_cf_fold_skipped``;
+      样本不足以 CF → ``conformal_cf_insufficient_samples``
     """
     from ..validation.purged_kfold import PurgedKFold
     import pandas as pd
@@ -174,9 +175,12 @@ def cross_fitted_calibrated_and_conformal(
     prob = np.asarray(prob, dtype=float)
     yy = np.asarray(y, dtype=int)
     oof_cal = np.full(len(prob), np.nan)
-    conf_flags = np.ones(len(prob), dtype=bool)
+    # 默认不自信: 仅在该折成功拟合保形器后写入 True。
+    # 跳过折若保持 True 会让研究回测在无覆盖折上偏多开仓。
+    conf_flags = np.zeros(len(prob), dtype=bool)
     pos = np.where(~np.isnan(prob))[0]
     if len(pos) < n_splits * 2:
+        tags.append(f"conformal_cf_insufficient_samples(n={len(pos)})")
         return oof_cal, conf_flags, tags
 
     t1 = pd.Series(t1)
@@ -192,6 +196,7 @@ def cross_fitted_calibrated_and_conformal(
         oof_cal[pos[te]] = p_te
         if len(np.unique(yy[pos[tr]])) < 2 or len(tr) < 10:
             n_conf_skip += 1
+            # 跳过折: 保持 False(不确定则弃权)
             continue
         conf = ConformalBinary(alpha=alpha, min_margin=min_margin).fit(p_tr, yy[pos[tr]])
         conf_flags[pos[te]] = conf.predict_set(p_te)["confident"]

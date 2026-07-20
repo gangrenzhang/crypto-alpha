@@ -53,6 +53,7 @@ def _hold_reason_text(d: dict) -> str:
     joined = " ".join(str(x) for x in deg)
     mapping = {
         "feature_schema_mismatch": "特征 schema 与训练不一致, 强制观望",
+        "low_confidence_environment": "多降级叠加, 数据环境低置信, 强制观望",
         "not_cusum_event": "非 CUSUM 事件 bar, 与训练开仓门控对齐",
         "no_valid_feature_bar": "无完整特征 bar",
         "low_confidence_conformal": "保形预测弃权(不自信)",

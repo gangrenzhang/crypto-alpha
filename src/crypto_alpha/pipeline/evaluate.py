@@ -247,7 +247,16 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     sr = float(np.mean(combo_sharpes))
     n_obs = int(np.mean(combo_trades)) if combo_trades else len(ds.y)
     n_obs = max(n_obs, 2)
-    n_trials = max(int(vcfg.get("dsr_n_trials", 50)), perf_matrix.shape[0])
+    from ..diagnostics.experiments import append_experiment, resolve_dsr_n_trials
+
+    n_trials, trial_tags = resolve_dsr_n_trials(cfg, n_configs=int(perf_matrix.shape[0]))
+    if bool(vcfg.get("log_experiments", True)):
+        try:
+            append_experiment(cfg.artifacts_dir, cfg, source="cpcv_report")
+            # 写入后再解析一次, 计入本轮
+            n_trials, trial_tags = resolve_dsr_n_trials(cfg, n_configs=int(perf_matrix.shape[0]))
+        except Exception as e:
+            print(f"[experiments] WARN: CPCV 实验日志写入失败: {e}")
     skew, kurt = 0.0, 3.0
     if combo_pnls:
         pooled = np.concatenate(combo_pnls)
@@ -285,6 +294,8 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         caveats.append(
             f"dsr_n_trials({n_trials}) ≤ 配置数({n_configs}), 几乎未去偏——请上调为真实研究规模。"
         )
+    for t in trial_tags:
+        caveats.append(t)
     if pseudo_expert_names:
         caveats.append(
             f"配置含伪OOF专家 {pseudo_expert_names}: 单专家 CPCV 列非折内重训;"

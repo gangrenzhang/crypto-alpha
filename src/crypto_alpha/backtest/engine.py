@@ -57,6 +57,39 @@ def _cost(size: float, bars: float, fee: float, slip: float, funding: float) -> 
     return size * (2 * (fee + slip) + funding * bars)
 
 
+def resolve_event_slippage(
+    base_slip: float,
+    trgt: float | None,
+    ref_trgt: float,
+    bt_cfg: dict,
+) -> float:
+    """事件级滑点: 可选随相对波动(trgt=atr/close)放大, 永不低于 base。
+
+    CUSUM 偏好波动放大窗; 常数 slip 会在最常开仓时低估成本。
+    ``slippage_vol_scale: true`` 时 ``slip = base * clip(trgt/ref, 1, cap)``。
+    """
+    if not bool(bt_cfg.get("slippage_vol_scale", False)):
+        return float(base_slip)
+    cap = float(bt_cfg.get("slippage_vol_mult_cap", 3.0) or 3.0)
+    cap = max(cap, 1.0)
+    if trgt is None or not np.isfinite(trgt) or ref_trgt <= 0 or not np.isfinite(ref_trgt):
+        return float(base_slip)
+    scale = float(trgt) / float(ref_trgt)
+    scale = float(np.clip(scale, 1.0, cap))
+    return float(base_slip * scale)
+
+
+def _ref_trgt_from_events(df: pd.DataFrame) -> float:
+    """回测样本上相对波动的中位数参考(用于 vol-scale slip)。"""
+    if "trgt" not in df.columns:
+        return float("nan")
+    v = pd.to_numeric(df["trgt"], errors="coerce").to_numpy(dtype=float)
+    v = v[np.isfinite(v) & (v > 0)]
+    if len(v) == 0:
+        return float("nan")
+    return float(np.median(v))
+
+
 def _backtest_independent(
     events: pd.DataFrame,
     prob: np.ndarray,
@@ -78,9 +111,9 @@ def _backtest_independent(
     funding = float(bt_cfg.get("funding_bps_per_bar", 0.0)) / 1e4
     kf = float(risk_cfg.get("kelly_fraction", 0.5))
     maxp = float(risk_cfg.get("max_position_pct", 0.3))
-    rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip)
     daily_max_dd = float(risk_cfg.get("daily_max_drawdown", 0.0) or 0.0)
     has_conf = "confident" in df.columns
+    ref_trgt = _ref_trgt_from_events(df)
 
     has_bars = "bars_held" in df.columns
     equity_run = 1.0
@@ -105,6 +138,9 @@ def _backtest_independent(
             rets.append(0.0)
             halted_flags.append(bool(halted_today))
             continue
+        trgt_i = float(r["trgt"]) if "trgt" in r.index and pd.notna(r["trgt"]) else None
+        slip_i = resolve_event_slippage(slip, trgt_i, ref_trgt, bt_cfg)
+        rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip_i)
         min_edge = float(risk_cfg.get("min_kelly_edge", 0.0) or 0.0)
         if min_edge > 0.0 and kelly_fraction(float(r["prob"]), payoff, cost=rt_cost) < min_edge:
             sizes.append(0.0)
@@ -113,7 +149,7 @@ def _backtest_independent(
             continue
         size = position_size(r["prob"], payoff, kf, maxp, cost=rt_cost)
         bars = float(r["bars_held"]) if has_bars else 1.0
-        cost = _cost(size, bars, fee, slip, funding)
+        cost = _cost(size, bars, fee, slip_i, funding)
         pnl = size * (np.exp(r["ret"]) - 1.0) - cost
         equity_run *= (1.0 + pnl)
         sizes.append(size)
@@ -165,10 +201,10 @@ def _backtest_portfolio(
     kf = float(risk_cfg.get("kelly_fraction", 0.5))
     maxp = float(risk_cfg.get("max_position_pct", 0.3))
     max_gross = float(risk_cfg.get("max_gross_exposure", 1.0))
-    rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip)
     daily_max_dd = float(risk_cfg.get("daily_max_drawdown", 0.0) or 0.0)
     has_bars = "bars_held" in df.columns
     has_conf = "confident" in df.columns
+    ref_trgt = _ref_trgt_from_events(df)
 
     # 盯市: 需要收盘价 + 事件方向 side(用于按收盘价重估持仓浮盈亏)
     mtm_enabled = prices is not None and "side" in df.columns
@@ -249,7 +285,8 @@ def _backtest_portfolio(
             bars = pos["bars"]
             ret = pos["ret"]
             entry_eq = pos["entry_equity"]
-            cost = _cost(size, bars, fee, slip, funding)
+            slip_i = float(pos.get("slip", slip))
+            cost = _cost(size, bars, fee, slip_i, funding)
             pnl_frac = size * (np.exp(ret) - 1.0) - cost
             equity += entry_eq * pnl_frac
             locked = max(0.0, locked - size)
@@ -265,6 +302,9 @@ def _backtest_portfolio(
         if halted_today or (not conf_ok) or float(row["prob"]) < thr:
             halted_flags[i] = bool(halted_today)
             continue
+        trgt_i = float(row["trgt"]) if "trgt" in row.index and pd.notna(row["trgt"]) else None
+        slip_i = resolve_event_slippage(slip, trgt_i, ref_trgt, bt_cfg)
+        rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip_i)
         min_edge = float(risk_cfg.get("min_kelly_edge", 0.0) or 0.0)
         if min_edge > 0.0 and kelly_fraction(
             float(row["prob"]), payoff, cost=rt_cost,
@@ -282,6 +322,7 @@ def _backtest_portfolio(
         pos = {
             "size": size, "bars": bars, "ret": float(row["ret"]),
             "entry_equity": float(equity),
+            "slip": slip_i,
         }
         if mtm_enabled:
             pos["side"] = float(row["side"])
@@ -296,7 +337,8 @@ def _backtest_portfolio(
     for i, pos in list(open_pos.items()):
         size = pos["size"]
         entry_eq = pos["entry_equity"]
-        cost = _cost(size, pos["bars"], fee, slip, funding)
+        slip_i = float(pos.get("slip", slip))
+        cost = _cost(size, pos["bars"], fee, slip_i, funding)
         pnl_frac = size * (np.exp(pos["ret"]) - 1.0) - cost
         equity += entry_eq * pnl_frac
         pnls[i] = pnl_frac

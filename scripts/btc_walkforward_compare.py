@@ -1,18 +1,13 @@
 """BTC walk-forward 门控对比(只读对比 / 可选双档重跑)。
 
-不修改 src/ 与 btc_walkforward_summary.py 的逻辑; 本脚本自包含两档 WF 跑法,
-切分与部署出分口径与 btc_walkforward_summary.py 对齐。
+切分与部署出分口径走 ``crypto_alpha.pipeline.walkforward``(与 summary 脚本同源)。
 
 用法:
-  # 仅对比两份已有 summary JSON(不训练)
   python scripts/btc_walkforward_compare.py \\
       --a artifacts/btc_walkforward_summary.json \\
       --b artifacts/btc_walkforward_summary_current.json
 
-  # 同一数据上重跑 legacy 门控 vs 当前 config, 再出对比表
   python scripts/btc_walkforward_compare.py --run
-
-  # 重跑但跳过 legacy(只跑 current 并与 --a 旧文件比)
   python scripts/btc_walkforward_compare.py --run --skip-legacy --a artifacts/btc_walkforward_summary.json
 """
 from __future__ import annotations
@@ -23,27 +18,15 @@ import json
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import pandas as pd
-
 import _bootstrap  # noqa: F401
 
-from crypto_alpha.backtest import backtest_events
-from crypto_alpha.calibration.calibrate import fit_deploy_calibrator_and_conformal
-from crypto_alpha.config import Config, set_global_seed
-from crypto_alpha.diagnostics.gates import (
-    assess_calibration_pass_health,
-    freeze_threshold_on_reference,
-    gate_diagnostics,
+from crypto_alpha.config import Config
+from crypto_alpha.pipeline.walkforward import (
+    run_walkforward,
+    walkforward_public_summary,
 )
-from crypto_alpha.ensemble import StackingEnsemble
-from crypto_alpha.pipeline import prepare_dataset
-from crypto_alpha.pipeline.run import build_experts
 
 SYMBOL = "BTC/USDT"
-INITIAL_CAPITAL = 10_000.0
-BACKTEST_START = pd.Timestamp("2022-09-14 00:00:00+00:00")
-BACKTEST_END = pd.Timestamp("2026-07-18 08:00:00+00:00")
 
 # 门控优化前的「旧行为」快照(仅本脚本用于对比, 不改全局默认)
 LEGACY_GATE_OVERRIDES = {
@@ -81,7 +64,6 @@ def _deep_update(dst: dict, src: dict) -> dict:
 
 
 def _apply_overrides(cfg: Config, overrides: dict[str, Any] | None) -> Config:
-    """返回配置的浅拷贝+raw 深拷贝覆盖; 不写回磁盘、不改全局单例语义外的文件。"""
     cfg2 = copy.copy(cfg)
     cfg2.raw = copy.deepcopy(cfg.raw)
     if overrides:
@@ -106,129 +88,37 @@ def _gate_snapshot(cfg: Config) -> dict:
 
 
 def run_walkforward_once(cfg: Config, *, label: str) -> dict:
-    """与 btc_walkforward_summary 同切分/同部署出分; 结果只返回 dict, 不覆盖默认产物名。"""
+    """与 summary 同源库函数; 去掉内部大对象后返回可 JSON 落盘的 dict。"""
     print(f"\n===== WF run: {label} =====", flush=True)
     print(f"[gates] {_gate_snapshot(cfg)}", flush=True)
-
-    ds = prepare_dataset(cfg, SYMBOL)
-    panel = ds.panel
-    events = ds.events
-    t1 = pd.DatetimeIndex(pd.to_datetime(ds.t1, utc=True))
-    ev_idx = pd.DatetimeIndex(pd.to_datetime(events.index, utc=True))
-    train_mask = np.asarray((ev_idx < BACKTEST_START) & (t1 < BACKTEST_START))
-    test_mask = np.asarray((ev_idx >= BACKTEST_START) & (ev_idx <= BACKTEST_END))
-    train_index = events.index[train_mask]
-    test_index = events.index[test_mask]
-    n_train, n_test = int(len(train_index)), int(len(test_index))
-    print(f"[split] train_events={n_train} test_events={n_test}", flush=True)
-    if n_train < 200:
-        raise SystemExit(f"[{label}] 训练事件过少 ({n_train})")
-    if n_test < 50:
-        raise SystemExit(f"[{label}] 回测事件过少 ({n_test})")
-
-    X_tr, y_tr = ds.X.loc[train_index], ds.y[train_mask]
-    t1_tr = ds.t1.loc[train_index]
-    w_tr = None if ds.sample_weight is None else np.asarray(ds.sample_weight)[train_mask]
-    X_te = ds.X.loc[test_index]
-    events_te = events.loc[test_index]
-
-    set_global_seed(cfg.seed)
-    experts = build_experts(cfg, ds)
-    ens = StackingEnsemble(experts, cfg["ensemble"], seed=cfg.seed)
-    vcfg = cfg["validation"]
-    ccfg = cfg["calibration"]
-    conf_margin = float(ccfg.get("conformal_min_margin", 0.0) or 0.0)
-    ens.fit(
-        X_tr, y_tr, t1_tr, sample_weight=w_tr,
-        n_splits=int(vcfg["n_splits"]), embargo_pct=float(vcfg["embargo_pct"]),
-    )
-
-    oof = ens.oof_proba()
-    oof_mask = ~np.isnan(oof)
-    cal, conf, deploy_tags = fit_deploy_calibrator_and_conformal(
-        oof, y_tr, method=ccfg["method"],
-        alpha=float(ccfg["conformal_alpha"]),
-        conformal_frac=float(ccfg.get("conformal_frac", 0.3)),
-        min_margin=conf_margin,
-    )
-
-    oof_raw_ref = np.asarray(oof[oof_mask], dtype=float)
-    oof_cal_ref = np.asarray(cal.transform(oof_raw_ref), dtype=float)
-    inflate_max = float(ccfg.get("pass_rate_inflate_max", 1.5) or 0.0)
-    thr_eff, thr_tags = freeze_threshold_on_reference(
-        cfg["backtest"], oof_raw_ref, oof_cal_ref,
-        pass_rate_inflate_max=inflate_max, tag_prefix="deploy_",
-    )
-    print(f"[threshold] {label} thr_eff={thr_eff:.4f} tags={thr_tags}", flush=True)
-
-    bt_cfg = dict(cfg["backtest"])
-    bt_cfg["prob_threshold"] = float(thr_eff)
-    raw_te = ens.predict_proba(X_te)
-    prob_te = np.asarray(cal.transform(raw_te), dtype=float)
-    confident = np.asarray(conf.predict_set(prob_te)["confident"], dtype=bool)
-    health = assess_calibration_pass_health(
-        raw_te, prob_te, thr_eff,
-        pass_rate_inflate_max=inflate_max,
-        min_unique_levels=int(ccfg.get("min_unique_levels", 20) or 0),
-    )
-
-    payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
-    prices = panel["close"] if "close" in panel.columns else None
-    bt = backtest_events(
-        events_te, prob_te, bt_cfg, cfg["risk"],
-        payoff=payoff, prices=prices, confident=confident,
-    )
-    detail = bt["detail"]
-    equity = bt["equity"]
-    traded = detail[detail["size"] > 0].copy() if "size" in detail.columns else detail.iloc[0:0]
-    wins = int((traded["pnl"] > 0).sum()) if len(traded) else 0
-    losses = int((traded["pnl"] <= 0).sum()) if len(traded) else 0
-    win_rate = float(wins / len(traded)) if len(traded) else 0.0
-    final_mult = float(equity.iloc[-1]) if len(equity) else 1.0
-
-    gate_diag = gate_diagnostics(
-        events_te.index, raw_te, prob_te, confident, detail, thr_eff, conf_obj=conf,
-    )
-    gates = gate_diag.get("gates") or {}
-
-    return {
-        "label": label,
-        "symbol": SYMBOL,
-        "mode": "walk_forward_compare",
-        "gate_config": _gate_snapshot(cfg),
-        "data_source": ds.data_source,
-        "panel_start": str(panel.index.min()),
-        "panel_end": str(panel.index.max()),
-        "train_end_exclusive": str(BACKTEST_START),
-        "backtest_start": str(BACKTEST_START),
-        "backtest_end": str(BACKTEST_END),
-        "prob_threshold_effective": float(thr_eff),
-        "threshold_tags": list(thr_tags),
-        "n_train_events": n_train,
-        "n_test_events": n_test,
-        "n_opened_trades": int(len(traded)),
-        "n_wins": wins,
-        "n_losses": losses,
-        "win_rate": win_rate,
-        "total_return": float(bt["metrics"].get("total_return", final_mult - 1.0)),
-        "max_drawdown": float(bt["metrics"].get("max_drawdown", 0.0)),
-        "initial_capital": INITIAL_CAPITAL,
-        "final_capital": INITIAL_CAPITAL * final_mult,
-        "backtest_metrics": bt["metrics"],
-        "gate_diagnostics": {
-            "prob_threshold": gate_diag.get("prob_threshold"),
-            "n_prob_ge_threshold": gates.get("n_prob_ge_threshold"),
-            "n_confident": gates.get("n_confident"),
-            "n_prob_and_confident": gates.get("n_prob_and_confident"),
-            "n_opened_size_gt_0": gates.get("n_opened_size_gt_0"),
-            "calibrated_n_unique": (gate_diag.get("calibrated_proba") or {}).get("n_unique"),
-            "conformal_qhat": gate_diag.get("conformal_qhat"),
-            "conformal_min_margin": gate_diag.get("conformal_min_margin"),
-        },
-        "deploy_tags": list(deploy_tags or []),
-        "health_tags": list(health),
-        "dropped_experts": list(ens.dropped_experts or []),
+    cfg.raw["data"]["refresh_before_decide"] = False
+    cfg.raw["data"]["incremental_update"] = False
+    raw = run_walkforward(cfg, SYMBOL)
+    raw.pop("_traded_detail", None)
+    raw.pop("_equity", None)
+    out = walkforward_public_summary(raw)
+    out["label"] = label
+    out["mode"] = "walk_forward_compare"
+    out["gate_config"] = _gate_snapshot(cfg)
+    # 压缩 gate_diagnostics 便于对比表
+    g = out.get("gate_diagnostics") or {}
+    gates = g.get("gates") or {}
+    out["gate_diagnostics"] = {
+        "prob_threshold": g.get("prob_threshold"),
+        "n_prob_ge_threshold": gates.get("n_prob_ge_threshold"),
+        "n_confident": gates.get("n_confident"),
+        "n_prob_and_confident": gates.get("n_prob_and_confident"),
+        "n_opened_size_gt_0": gates.get("n_opened_size_gt_0"),
+        "calibrated_n_unique": (g.get("calibrated_proba") or {}).get("n_unique"),
+        "conformal_qhat": g.get("conformal_qhat"),
+        "conformal_min_margin": g.get("conformal_min_margin"),
     }
+    print(
+        f"[threshold] {label} thr_eff={out.get('prob_threshold_effective')} "
+        f"opened={out.get('n_opened_trades')}",
+        flush=True,
+    )
+    return out
 
 
 def _load_summary(path: Path) -> dict:
@@ -293,7 +183,6 @@ def compare_summaries(a: dict, b: dict, *, name_a: str, name_b: str) -> dict:
         ("calibrated_n_unique", "校准唯一档位数"),
         ("conformal_min_margin", "conformal_min_margin"),
     ]:
-        # 兼容旧 artifact: n_opened 在顶层
         va = ga.get(key, a.get(key))
         vb = gb.get(key, b.get(key))
         if key == "n_opened_size_gt_0":
@@ -311,8 +200,8 @@ def compare_summaries(a: dict, b: dict, *, name_a: str, name_b: str) -> dict:
         "name_a": name_a,
         "name_b": name_b,
         "split": {
-            "backtest_start": a.get("backtest_start") or str(BACKTEST_START),
-            "backtest_end": a.get("backtest_end") or str(BACKTEST_END),
+            "backtest_start": a.get("backtest_start"),
+            "backtest_end": a.get("backtest_end"),
             "n_train_events_a": a.get("n_train_events"),
             "n_train_events_b": b.get("n_train_events"),
             "n_test_events_a": a.get("n_test_events"),
@@ -361,7 +250,7 @@ def _print_compare(cmp: dict) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="BTC walk-forward 门控对比(不改动其他逻辑)")
+    ap = argparse.ArgumentParser(description="BTC walk-forward 门控对比")
     ap.add_argument("--a", type=Path, default=None, help="侧 A 的 summary JSON")
     ap.add_argument("--b", type=Path, default=None, help="侧 B 的 summary JSON")
     ap.add_argument(
@@ -396,13 +285,19 @@ def main() -> None:
             cfg_legacy = _apply_overrides(cfg, LEGACY_GATE_OVERRIDES)
             sum_a = run_walkforward_once(cfg_legacy, label="legacy")
             path_a = out_dir / "btc_walkforward_summary_legacy.json"
-            path_a.write_text(json.dumps(sum_a, ensure_ascii=False, indent=2), encoding="utf-8")
+            path_a.write_text(
+                json.dumps(sum_a, ensure_ascii=False, indent=2, default=float),
+                encoding="utf-8",
+            )
             print(f"[ok] {path_a}", flush=True)
 
         cfg_cur = _apply_overrides(cfg, None)
         sum_b = run_walkforward_once(cfg_cur, label="current")
         path_b = out_dir / "btc_walkforward_summary_current.json"
-        path_b.write_text(json.dumps(sum_b, ensure_ascii=False, indent=2), encoding="utf-8")
+        path_b.write_text(
+            json.dumps(sum_b, ensure_ascii=False, indent=2, default=float),
+            encoding="utf-8",
+        )
         print(f"[ok] {path_b}", flush=True)
     else:
         if args.a is None or args.b is None:
@@ -413,7 +308,9 @@ def main() -> None:
 
     cmp = compare_summaries(sum_a, sum_b, name_a=name_a, name_b=name_b)
     _print_compare(cmp)
-    out_path.write_text(json.dumps(cmp, ensure_ascii=False, indent=2), encoding="utf-8")
+    out_path.write_text(
+        json.dumps(cmp, ensure_ascii=False, indent=2, default=float), encoding="utf-8",
+    )
     print(f"\n[ok] {out_path}", flush=True)
 
 

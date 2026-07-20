@@ -29,12 +29,23 @@ def realized_volatility(close: pd.Series, window: int = 50) -> pd.Series:
     return logret.rolling(window).std()
 
 
-def add_technical_features(df: pd.DataFrame, windows: list[int], vol_window: int) -> pd.DataFrame:
-    """在原始 OHLCV(+衍生品) 上追加一组技术指标特征。"""
+def add_technical_features(
+    df: pd.DataFrame,
+    windows: list[int],
+    vol_window: int,
+    *,
+    oi_change_bars: int = 24,
+) -> pd.DataFrame:
+    """在原始 OHLCV(+衍生品) 上追加一组技术指标特征。
+
+    ``oi_change_bars``: OI 变化的回看 **bar 数**(应按墙钟≈24h 由调用方换算;
+    默认 24 兼容旧 1h 主周期; 30m 主周期应由 build 传入 48)。
+    """
     out = df.copy()
     close = out["close"]
     logret = np.log(close).diff()
     out["logret_1"] = logret
+    oi_bars = max(int(oi_change_bars), 1)
 
     for w in windows:
         out[f"ret_{w}"] = close.pct_change(w)
@@ -72,7 +83,7 @@ def add_technical_features(df: pd.DataFrame, windows: list[int], vol_window: int
         ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     if "open_interest" in out.columns:
         out["oi_change"] = (
-            out["open_interest"].pct_change(24)
+            out["open_interest"].pct_change(oi_bars)
             .replace([np.inf, -np.inf], np.nan).fillna(0.0)
         )
 

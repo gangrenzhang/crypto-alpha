@@ -228,7 +228,10 @@ def null_backtest_return_mean(cfg, symbol: str, seeds, n_bars: int = 3000) -> di
     rets: list[float] = []
     for sd in seeds:
         cfg_n = _cpu_cfg(_copy.deepcopy(cfg), n_splits=5)
-        raw = make_random_walk_ohlcv(n=n_bars, seed=int(sd))
+        raw = make_random_walk_ohlcv(
+            n=n_bars, seed=int(sd), freq=_walk_freq(cfg_n),
+        )
+        raw.attrs["data_source"] = "synthetic"
         _, tr = run_full_pipeline_with_prices(cfg_n, raw, symbol)
         rets.append(float(tr["backtest"]["metrics"]["total_return"]))
     arr = np.asarray(rets, dtype=float)
@@ -408,7 +411,14 @@ def _patched_prices(raw_df: pd.DataFrame):
     import crypto_alpha.pipeline.run as run_mod
 
     original = run_mod.load_symbol_data
-    run_mod.load_symbol_data = lambda cfg, symbol: raw_df.copy()
+
+    def _load(cfg, symbol, timeframe=None):  # noqa: ARG001
+        out = raw_df.copy()
+        if "data_source" not in getattr(out, "attrs", {}):
+            out.attrs["data_source"] = "synthetic"
+        return out
+
+    run_mod.load_symbol_data = _load
     try:
         yield
     finally:
@@ -438,8 +448,34 @@ def _cpu_cfg(cfg, n_splits: int = 5):
     cfg.raw["news"]["use_synthetic"] = True
     cfg.raw["data"]["use_synthetic"] = True
     cfg.raw["validation"]["n_splits"] = n_splits
+    cfg.raw["validation"]["log_experiments"] = False  # 诊断勿污染 DSR 实验日志
     cfg.raw["ensemble"]["min_expert_auc"] = 0.0
+    cfg.raw.setdefault("risk", {})
+    cfg.raw["risk"]["env_degradation_hold_score"] = 0  # 诊断不测环境 HOLD
     return cfg
+
+
+def _cpu_cfg_mtf(cfg, n_splits: int = 5):
+    """与 ``_cpu_cfg`` 相同, 但打开 MTF(辅周期从合成主面板重采样)。
+
+    用于覆盖生产默认 ``mtf_enabled=true`` 的空对照; 新闻仍关
+    (现行仓库默认 ``news.as_feature=false``)。
+    """
+    cfg = _cpu_cfg(cfg, n_splits=n_splits)
+    cfg.raw["features"]["mtf_enabled"] = True
+    # 保证辅周期强制 resample, 不打 REST
+    cfg.raw["data"]["use_synthetic"] = True
+    return cfg
+
+
+def _walk_freq(cfg) -> str:
+    """随机游走频率对齐主周期(pandas offset)。"""
+    try:
+        from ..data.fetch import timeframe_to_pandas_freq
+
+        return timeframe_to_pandas_freq(str(cfg["data"].get("timeframe") or "1h"))
+    except Exception:
+        return "1h"
 
 
 # --------------------------------------------------------------------------- #
@@ -535,7 +571,8 @@ def audit_pipeline(
     # 5) 全链路空对照: 随机游走喂 prepare_dataset+train, AUC 必须≈0.5
     try:
         cfg_null = _cpu_cfg(copy.deepcopy(cfg), n_splits=5)
-        raw = make_random_walk_ohlcv(n=n_bars, seed=seed)
+        raw = make_random_walk_ohlcv(n=n_bars, seed=seed, freq=_walk_freq(cfg_null))
+        raw.attrs["data_source"] = "synthetic"
         ds_null, tr_null = run_full_pipeline_with_prices(cfg_null, raw, symbol)
         auc_null = float(tr_null["report"].get("auc", float("nan")))
         ret_null = float(tr_null["backtest"]["metrics"]["total_return"])
@@ -567,6 +604,37 @@ def audit_pipeline(
     except Exception as e:
         results.append(CheckResult("全链路空对照: 收益闸门", None, {"error": repr(e)},
                                    note="跳过(可能缺依赖或数据)"))
+
+    # 5c) 生产特征面空对照: MTF 开启(新闻仍关, 对齐现行默认 as_feature=false)
+    try:
+        cfg_mtf = _cpu_cfg_mtf(copy.deepcopy(cfg), n_splits=5)
+        freq = _walk_freq(cfg_mtf)
+        raw_m = make_random_walk_ohlcv(n=max(n_bars, 6000), seed=seed + 17, freq=freq)
+        raw_m.attrs["data_source"] = "synthetic"
+        ds_m, tr_m = run_full_pipeline_with_prices(cfg_mtf, raw_m, symbol)
+        mtf_cols = [
+            c for c in ds_m.feature_cols
+            if c.startswith("tf") or c == "mtf_confluence"
+        ]
+        auc_m = float(tr_m["report"].get("auc", float("nan")))
+        ok_m = (not np.isfinite(auc_m)) or (auc_m <= null_auc_max)
+        results.append(CheckResult(
+            "全链路空对照(MTF开): 特征含多周期列",
+            len(mtf_cols) > 0,
+            {"n_mtf_cols": len(mtf_cols), "sample": mtf_cols[:8]},
+            note="生产默认 mtf_enabled=true; 辅周期由合成主面板 resample",
+        ))
+        results.append(CheckResult(
+            "全链路空对照(MTF开): 随机游走 OOF AUC≈0.5",
+            ok_m,
+            {"auc": round(auc_m, 4), "max": null_auc_max, "n_events": len(ds_m.y)},
+            note="覆盖生产 MTF 特征面; 新闻 as_feature 仍关(与现行 config 对齐)",
+        ))
+    except Exception as e:
+        results.append(CheckResult(
+            "全链路空对照(MTF开)", None, {"error": repr(e)},
+            note="跳过(可能缺依赖或数据)",
+        ))
 
     # 6) 复现性: 同 seed 两次全链路 OOF 应完全一致
     try:

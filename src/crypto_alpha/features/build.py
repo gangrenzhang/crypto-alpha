@@ -32,7 +32,16 @@ def build_feature_matrix(
     windows = fcfg["windows"]
     vol_window = int(fcfg["vol_window"])
 
-    feat = add_technical_features(df, windows, vol_window)
+    # OI 变化按 ≈24h 墙钟换算 bar 数(30m→48; 1h→24), 避免主周期切换后语义漂移
+    oi_bars = 24
+    try:
+        from ..data.fetch import timeframe_delta
+
+        oi_bars = max(1, int(round(pd.Timedelta("24h") / timeframe_delta(cfg["data"]["timeframe"]))))
+    except Exception:
+        oi_bars = int(fcfg.get("oi_change_bars", 24) or 24)
+
+    feat = add_technical_features(df, windows, vol_window, oi_change_bars=oi_bars)
 
     # 衍生品不可用时特征已填 0; 记 degradations 供看板/审计(不阻断主流程)
     degradations: list[str] = list(getattr(feat, "attrs", {}).get("degradations") or [])

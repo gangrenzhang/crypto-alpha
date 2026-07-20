@@ -27,6 +27,19 @@ from .gates import (
     raise_threshold_if_inflated,
     resolve_prob_threshold,
 )
+from .env_guard import (
+    degradation_severity,
+    filter_live_environment_tags,
+    is_live_environment_tag,
+    score_degradations,
+    should_hold_for_environment,
+)
+from .experiments import (
+    append_experiment,
+    count_experiments,
+    resolve_dsr_n_trials,
+)
+from .decision_audit import build_decision_audit, attach_decision_audit
 
 __all__ = [
     "CheckResult",
@@ -48,4 +61,14 @@ __all__ = [
     "gate_diagnostics",
     "raise_threshold_if_inflated",
     "resolve_prob_threshold",
+    "degradation_severity",
+    "filter_live_environment_tags",
+    "is_live_environment_tag",
+    "score_degradations",
+    "should_hold_for_environment",
+    "append_experiment",
+    "count_experiments",
+    "resolve_dsr_n_trials",
+    "build_decision_audit",
+    "attach_decision_audit",
 ]

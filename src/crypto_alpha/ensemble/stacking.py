@@ -116,9 +116,26 @@ class StackingEnsemble:
         mask = oof.notna().all(axis=1).values
         pos = np.where(mask)[0]
         min_auc = float(self.cfg.get("min_expert_auc", 0.5))
-        if min_auc <= 0 or len(self.experts) <= 1:
+        # 关闭剪枝(min_auc<=0): 报告窗仍用全有效 OOF
+        if min_auc <= 0:
             self.prune_eval_mask_ = mask.copy()
             return oof
+
+        # 单专家: 无选型, 但报告窗必须用时间后半, 与阈值参考窗(前半)互斥,
+        # 避免 thr 在前半冻结后回测又吃进前半(阈值 in-sample)。
+        if len(self.experts) <= 1:
+            if len(pos) < 20:
+                self.prune_eval_mask_ = mask.copy()
+                tag = f"expert_prune_full_window_selection(n={int(mask.sum())})"
+                if tag not in self.degradations:
+                    self.degradations.append(tag)
+            else:
+                n_sel = max(len(pos) // 2, 10)
+                eval_m = np.zeros(n_rows, dtype=bool)
+                eval_m[pos[n_sel:]] = True
+                self.prune_eval_mask_ = eval_m
+            return oof
+
         from sklearn.metrics import roc_auc_score
 
         # 按行序(=事件时间序): 前半选型, 后半评估
@@ -146,15 +163,31 @@ class StackingEnsemble:
             except Exception:
                 aucs[e.name] = float("nan")
 
-        keep = [e for e in self.experts if not (aucs[e.name] < min_auc)]  # NaN 视为保留
-        if not keep:  # 全员低于阈值时, 保留 AUC 最高者, 避免空集成
-            best = max(self.experts, key=lambda e: (aucs[e.name] if np.isfinite(aucs[e.name]) else -1))
+        # NaN AUC(单类/全空 OOF)视为不合格并剔除, 不再默默保留
+        keep: list = []
+        for e in self.experts:
+            a = aucs[e.name]
+            if np.isfinite(a) and a >= min_auc:
+                keep.append(e)
+            elif not np.isfinite(a):
+                tag = f"{e.name}:dropped_nan_auc"
+                if tag not in self.degradations:
+                    self.degradations.append(tag)
+        if not keep:  # 全员不合格时, 保留有限 AUC 最高者, 避免空集成
+            best = max(
+                self.experts,
+                key=lambda e: (aucs[e.name] if np.isfinite(aucs[e.name]) else -1.0),
+            )
             keep = [best]
         dropped = [e for e in self.experts if e not in keep]
         self.dropped_experts = [(e.name, aucs[e.name]) for e in dropped]
         # 被剪枝专家的 degraded 已在 build_oof 写入 degradations; 再记 AUC 原因
+        # NaN 已记 dropped_nan_auc, 不再用 nan 格式化 dropped_low_auc
         for e in dropped:
-            tag = f"{e.name}:dropped_low_auc({aucs[e.name]:.3f})"
+            a = aucs[e.name]
+            if not np.isfinite(a):
+                continue
+            tag = f"{e.name}:dropped_low_auc({a:.3f})"
             if tag not in self.degradations:
                 self.degradations.append(tag)
         if self.dropped_experts:

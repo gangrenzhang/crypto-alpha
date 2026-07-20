@@ -371,6 +371,23 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
             br["note"] = "frozen_adapter_not_cross_validated_excluded_from_meta"
             base_report[name] = br
 
+    # 波动滑点参考: 事件相对 ATR 中位数(与 backtest resolve_event_slippage 同口径)
+    slip_ref_trgt = float("nan")
+    if "trgt" in ds.events.columns and len(ds.events):
+        _tv = pd.to_numeric(ds.events["trgt"], errors="coerce").to_numpy(dtype=float)
+        _tv = _tv[np.isfinite(_tv) & (_tv > 0)]
+        if len(_tv):
+            slip_ref_trgt = float(np.median(_tv))
+
+    # 正式研究路径可写实验日志, 抬高后续 DSR n_trials 下限(诊断/冒烟应关)
+    if bool(cfg["validation"].get("log_experiments", True)):
+        try:
+            from ..diagnostics.experiments import append_experiment
+
+            append_experiment(cfg.artifacts_dir, cfg, source="train_and_validate")
+        except Exception as e:
+            print(f"[experiments] WARN: 无法写入实验日志: {e}")
+
     return {
         "ensemble": ens, "calibrator": cal, "conformal": conf,
         "oof_calibrated": oof_cal, "report": report, "backtest": bt,
@@ -380,6 +397,7 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
         # 部署/decide/serve 冻结阈值(deploy 校准尺度); 研究回测用 research
         "prob_threshold_effective": float(thr_eff),
         "prob_threshold_research": float(thr_research),
+        "slip_ref_trgt": slip_ref_trgt,
         "base_report": base_report,
         "dropped_experts": ens.dropped_experts,
         "data_source": ds.data_source,
@@ -501,20 +519,50 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
             data_source=ds.data_source,
         )
     from ..serve.notifier import attach_decision_description
+    from ..diagnostics.decision_audit import attach_decision_audit, build_decision_audit
+    from ..diagnostics.env_guard import hold_for_environment, should_hold_for_environment
+    from ..backtest.engine import resolve_event_slippage
+
+    # 展示用: 数据面 + 训练期质量标签; 环境 HOLD 只看数据面(见 env_guard)
+    deg_data = list(ds.degradations)
+    deg_train = list(trained.get("degradations") or [])
+    deg_all: list[str] = []
+    for t in deg_data + deg_train:
+        if t not in deg_all:
+            deg_all.append(t)
+
+    def _with_audit(d: dict) -> dict:
+        audit = build_decision_audit(
+            cfg, panel=panel, feature_cols=fcols, trained=trained,
+            degradations=list(d.get("degradations") or deg_all),
+        )
+        return attach_decision_audit(attach_decision_description(d), audit)
 
     valid = panel[fcols].notna().all(axis=1)
     if not valid.any():
         _ts = panel.index[-1] if len(panel) else None
         _close = float(panel["close"].iloc[-1]) if len(panel) and "close" in panel.columns else None
-        return attach_decision_description({
+        return _with_audit({
             "signal": "HOLD", "symbol": ds.symbol, "reason": "no_valid_feature_bar",
             "timestamp": str(_ts) if _ts is not None else None,
             "close": _close,
             "data_source": ds.data_source,
             "data_mode_zh": _DATA_MODE_ZH.get(ds.data_source, ds.data_source),
+            "degradations": deg_all,
         })
     ts = panel.index[valid][-1]
     bar_close = float(panel["close"].loc[ts])
+
+    # 多降级叠加: 只对本次数据集/装配环境计分(不计训练期校准/剪枝标签)
+    env_thr = cfg["risk"].get("env_degradation_hold_score", 50)
+    hold_env, env_score, env_tag = should_hold_for_environment(deg_data, threshold=env_thr)
+    if hold_env and env_tag:
+        d_env = hold_for_environment(
+            symbol=ds.symbol, score=env_score, reason_tag=env_tag,
+            risk_cfg=cfg["risk"], timestamp=ts, close=bar_close,
+            data_source=ds.data_source, degradations=deg_all,
+        )
+        return _with_audit(d_env)
 
     full_sampling = bool(
         trained.get("cusum_full_sampling", ds.cusum_full_sampling)
@@ -522,7 +570,7 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     if not _is_tradable_event(cfg, panel, ts, full_sampling):
         from ..risk.sizing import resolve_execution_assumption
 
-        return attach_decision_description({
+        return _with_audit({
             "signal": "HOLD",
             "symbol": ds.symbol,
             "timestamp": str(ts),
@@ -536,6 +584,7 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
             "execution_assumption": resolve_execution_assumption(cfg["risk"]),
             "data_source": ds.data_source,
             "data_mode_zh": _DATA_MODE_ZH.get(ds.data_source, ds.data_source),
+            "degradations": deg_all,
         })
 
     for e in ens.experts:  # 刷新时序面板专家的历史窗口
@@ -560,6 +609,14 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     # fee/slip 传入 decide: null 成本与回测统一回退 2*(fee+slip)
     fee = float(cfg["backtest"].get("fee_bps", 5.0)) / 1e4
     slip = float(cfg["backtest"].get("slippage_bps", 2.0)) / 1e4
+    # 与回测同形: 可选按相对 ATR 放大滑点(从不低于 base)
+    trgt_now = atr / entry if entry > 0 else None
+    ref_trgt = trained.get("slip_ref_trgt")
+    if ref_trgt is None or not np.isfinite(float(ref_trgt or np.nan)):
+        ref_trgt = float("nan")
+    else:
+        ref_trgt = float(ref_trgt)
+    slip = resolve_event_slippage(slip, trgt_now, ref_trgt, cfg["backtest"])
     risk_cfg = dict(cfg["risk"])
     # 与 train_and_validate 冻结的部署阈值对齐; 缺省禁止用 CF oof_cal 估 thr
     # (尺度错配)。无冻结值时回退配置地板 fixed。
@@ -577,4 +634,6 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     d["close"] = bar_close
     d["data_source"] = ds.data_source
     d["data_mode_zh"] = _DATA_MODE_ZH.get(ds.data_source, ds.data_source)
-    return attach_decision_description(d)
+    d["degradations"] = deg_all
+    d["env_degradation_score"] = env_score
+    return _with_audit(d)

@@ -151,6 +151,23 @@ validation:
   # DSR 去偏用的"研究试验总次数"估计(应≈你实际试过的策略/超参组合数, 远大于配置数,
   # 否则 DSR 无法真正去偏)。仅作近似, 请如实按研究规模调整。
   dsr_n_trials: 50
+  # true=训练/CPCV 追加 artifacts/experiment_log.jsonl, 并把条数作为 dsr_n_trials 下限
+  # (冒烟/12_audit 诊断路径会关)。发布前仍建议人工把 dsr_n_trials 调到真实研究规模。
+  log_experiments: true
+  # --- Walk-forward 真外推基线(与 OOF / backtest_deploy 不同口径) ---
+  # 训练: t0 < test_start 且 t1 < test_start - embargo_bars×主周期
+  # 阈值: 仅训练窗 OOF 上按部署同形冻结; 测试窗只告警不改 thr
+  # 联跑: scripts/10_run_all.py --walkforward 或 enabled_in_run_all: true
+  # 发布: require_in_run_all: true 时未跑 WF 直接失败(禁止只看 OOF 上线)
+  walkforward:
+    enabled_in_run_all: false
+    require_in_run_all: false
+    test_start: "2022-09-14T00:00:00Z"
+    test_end: null           # null=用该币种面板末根; 也可固定如 "2026-07-18T08:00:00Z"
+    embargo_bars: 0          # 额外标签禁运(主周期 bar); 0=仅要求 t1 < test_start
+    min_train_events: 200
+    min_test_events: 50
+    initial_capital: 10000.0
 
 # ---------------- 专家模型 ----------------
 experts:
@@ -236,7 +253,11 @@ calibration:
 # ---------------- 回测 ----------------
 backtest:
   fee_bps: 5.0             # 单边手续费(基点)
-  slippage_bps: 2.0        # 滑点(基点)
+  slippage_bps: 2.0        # 滑点(基点)地板; vol_scale 时只向上放大
+  # true=按事件相对波动 trgt(=atr/close) 相对样本中位数放大滑点(CUSUM 高波动窗更贵)
+  # slip = base * clip(trgt/median, 1, cap); 与 decide 共用
+  slippage_vol_scale: true
+  slippage_vol_mult_cap: 3.0
   funding_bps_per_bar: 0.0 # 资金费率近似(基点/bar), 简化
   prob_threshold: 0.55     # 固定下限(fixed)或 max_of 的地板
   # fixed=仅用上值; quantile=参考分分位; max_of=max(固定, 分位) — 推荐部署
@@ -282,3 +303,6 @@ risk:
   # 执行假设: 当前**仅实现** close_fill(当根收盘特征+收盘成交)。
   # 写 next_open 等未实现值会在 Config.load / decide 报错, 防止名实不符导致研究偏乐观。
   execution_assumption: close_fill
+  # 实盘/最新决策: degradations 累计严重度 ≥ 此值 → 强制 HOLD(低置信环境)。
+  # 0=关闭。研究回测不套用此门控。权重见 diagnostics/env_guard.py
+  env_degradation_hold_score: 50

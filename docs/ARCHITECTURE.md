@@ -73,7 +73,9 @@ flowchart TD
     S --> C[交叉拟合校准 + 保形]
     C --> B[组合级含成本回测]
     C --> R[Kelly + ATR 决策]
+    C --> WF[Walk-forward<br/>single-cut 基线]
     B --> V[CPCV / DSR / PBO]
+    WF --> V
     R --> D[结构化决策 JSON]
     D --> O1[HTML 面板]
     D --> O2[Canvas]
@@ -93,6 +95,7 @@ cryptoCurrency/
 ├── scripts/
 │   ├── _bootstrap.py               # 注入 src/ 到 sys.path
 │   ├── 01_fetch_data.py … 12_audit.py
+│   ├── btc_walkforward_summary.py / btc_walkforward_compare.py
 │   └── train_llm_qlora.py          # LLM 唯一独立训练入口
 ├── src/crypto_alpha/
 │   ├── config.py
@@ -105,10 +108,10 @@ cryptoCurrency/
 │   ├── calibration/   calibrate.py
 │   ├── backtest/      engine.py
 │   ├── risk/          sizing.py
-│   ├── diagnostics/   integrity.py / gates.py  # 闭环完整性 + 开仓门控诊断
+│   ├── diagnostics/   integrity.py / gates.py / env_guard.py / experiments.py / decision_audit.py
 │   ├── serve/         service.py / notifier.py
-│   └── pipeline/      run.py / evaluate.py / report.py
-├── tests/             smoke / leakage / design_fixes / mtf / pipeline_integrity
+│   └── pipeline/      run.py / evaluate.py / report.py / walkforward.py
+├── tests/             smoke / leakage / design_fixes / mtf / pipeline_integrity / walkforward
 ├── data/              运行时 raw / features / news / news_raw
 └── artifacts/         模型 / 汇总 / 面板 / adapter
 ```
@@ -185,7 +188,7 @@ cryptoCurrency/
 
 - `use_synthetic: false`；`allow_synthetic_fallback: false`（断网直接失败，避免伪真实）  
 - `incremental_update: false`（训练不被 REST 拖慢）  
-- `refresh_before_decide: true`；`tip_exchange: gate`；`require_fresh_for_decide: true`；`max_closed_bar_lag: 2`  
+- `refresh_before_decide: true`；`tip_exchange: gate`；`require_fresh_for_decide: true`；`max_closed_bar_lag: 4`（≈原 2×1h 墙钟容差）  
 - **路径一致性**：`use_synthetic=true` **或** 主面板已是 `synthetic` / `synthetic_fallback` 时，辅周期 **强制** `resample_ohlcv(main_df)`，禁止再拉真实/缓存高周期；辅周期失败则跳过，不拖垮主流程  
 - 冒烟测试在代码里显式打开合成，勿依赖默认值做离线演示  
 
@@ -228,6 +231,8 @@ OHLCV(+衍生品)
 - `atr_14` 为**绝对**价格量纲，仅供标注（`_barrier_target`）与实盘 `decide` 计算止损距离；建模改用相对版本 `atr_norm = atr_14 / close`，并把 `atr_14` 从 `feature_columns` 排除。
 
 **衍生品降级**：`funding_rate` / `open_interest` 拉取失败时源列可为全 NaN；衍生列 `funding_z` / `oi_change` **fillna(0)**，避免 `prepare_dataset` 的 `notna().all` 清空全部事件。同时写入 `degradations`：`derivatives_funding_unavailable` / `derivatives_oi_unavailable`。
+
+**`oi_change` 墙钟**：回看 bar 数按主周期换算为约 **24h**（`24h / Δ_main`，30m→48、1h→24），避免主周期切换后「固定 24 根」语义漂移。
 
 ### 5.2 多周期 MTF（方案 B，`features/mtf.py`）
 
@@ -322,7 +327,8 @@ OHLCV(+衍生品)
 - OOF &lt; 20 或单类时跳过组合内校准：概率原样、`confident` 全 True，记 `cpcv_cal_conformal_skipped(...)`
 - 输出：组合夏普分布、**DSR**、**PBO**、`caveats`、`degradations`；摘要含 `conformal_time_split: true`  
 - DSR 用**经验偏度/峰度**（字段 `dsr_skew` / `dsr_kurt`）  
-- 默认不随 `10_run_all` 开启，需 `--cpcv`  
+- `dsr_n_trials` = `max(yaml, experiment_log 条数, 本轮配置数)`（`validation.log_experiments`）；日志在 `artifacts/experiment_log.jsonl`  
+- 默认不随 `10_run_all` 开启，需 `--cpcv`；**发布前仍应强制跑**（勿仅依赖日常调参自觉）  
 - 含 `pseudo_oof` 专家时，`caveats` 会标明单专家列非折内重训；stacking 默认已排除其出 meta  
 
 **统计力告警（`cpcv_report` 输出 `caveats` 字段，务必阅读）**：
@@ -330,6 +336,34 @@ OHLCV(+衍生品)
 - 评估单元是**相关组合**而非独立完整路径 → DSR **偏乐观**，只宜作相对参考。  
 - `dsr_n_trials` 须按你真实试过的策略/超参次数**如实填写**。  
 - PBO 默认配置数 &lt; 8 时 `pbo_warning` 为真。
+
+### 7.3 Walk-forward 真外推基线（`pipeline/walkforward.py`）
+
+**目的**：补齐「OOF / `backtest_deploy` ≠ 真外推」的缺口；成交、胜率、期望以本路径为准拍板。
+
+**口径（务必读）**：
+
+| 项 | 行为 |
+|----|------|
+| `split_kind` | **`single_cut_holdout`**：一次时间切分（过去训 → 未来测），**不是**多锚点滚动再训练曲线 |
+| 训练 | `t0 < test_start` **且** `t1 < test_start − embargo_bars×Δ_main` |
+| 净化带 | `t0` 在训练侧但 `t1` 越过 deadline → **两边都不进**，记 `walkforward_purged_label_overlap` |
+| 测试 | `test_start ≤ t0`；`test_end=null` 时用到面板末根（相对旧脚本固定截止日，覆盖更新） |
+| 阈值 | 仅在**全部**训练窗有限 OOF 上 `freeze_threshold_on_reference`（deploy 同形）；测试窗只告警不改 thr |
+| 出分 | 训练窗 `fit` → `fit_deploy_calibrator_and_conformal` → 测试窗 `predict→cal→conf→backtest` |
+| 数据 | 默认冷缓存（`for_decide=False`）；CLI 关 tip REST，避免「当下 tip」污染研究基线 |
+| 不变量 | `assert_walkforward_split_invariants`：train∩test=∅、训练 t1 不得越 deadline、t1 含 NaT **fail-fast** |
+
+**接入**：
+
+- 库入口：`run_walkforward` / `walkforward_public_summary` / `slim_walkforward_for_dashboard`
+- CLI：`scripts/btc_walkforward_summary.py`（薄封装；支持 `--symbol` / `--test-start` / `--test-end`）
+- 联跑：`10_run_all.py --walkforward` 或 `validation.walkforward.enabled_in_run_all: true`
+- 训练脚本：`04_train_and_backtest.py --walkforward`
+- 发布闸：`require_in_run_all: true` 时未启用 WF **训练前**失败；某币种 WF `ok=false` 亦失败
+- 看板：并列「Walk-forward 真外推基线」卡；`meta.do_walkforward`；产物 `artifacts/walkforward_<SYMBOL>.json`
+
+**与联跑内 deploy 阈值参考的差异**：`train_and_validate` 用参考半窗冻 thr；WF 单切 holdout 用**全部训练 OOF**冻 thr（对测试窗仍无泄漏，但分位水平可与半窗口径略有数值差——属预期，勿纵向硬比 thr 数字）。
 
 ---
 
@@ -383,8 +417,8 @@ OHLCV(+衍生品)
 
 1. **一层 OOF**：可折内重训的专家在 PurgedKFold 上出干净概率；`pseudo_oof` 专家只冻结推理一次并记 degradations；折内 clone 的 `degraded` **回写**到原专家（剪枝后原因不丢失）  
 2. **伪 OOF 护栏**：默认 `exclude_pseudo_oof_from_meta: true`，将其排除出元学习器（分数保留在 `pseudo_oof_`）  
-3. **弱专家剪枝**：时间上**较早一半** OOF AUC 做选型；AUC &lt; `min_expert_auc` 剔除（至少留 1 个）。元学习器仍在**完整**保留专家 OOF 上 nested 交叉拟合（部署用）  
-4. **主路径报告/回测窗**：`>1` 个可剪枝专家时，`train_and_validate` 的**集成**分类报告、**各专家 `base_report`（含伪 OOF 诊断分）**与组合回测共用同一 **后半窗** `report_mask`（`prune_eval_mask_` ∩ 有效校准掩码），减轻 selection-on-evaluation，并保证看板「专家 vs 集成」AUC 同窗可比；实盘 `decide` / 部署模型仍基于全量训练与完整 OOF。有效 OOF &lt; 20 时退回全窗选型并记 `expert_prune_full_window_selection`  
+3. **弱专家剪枝**：时间上**较早一半** OOF AUC 做选型；AUC &lt; `min_expert_auc` 剔除（至少留 1 个）；**AUC=NaN**（单类/空 OOF）视为不合格并剔除（记 `*:dropped_nan_auc`）。元学习器仍在**完整**保留专家 OOF 上 nested 交叉拟合（部署用）  
+4. **主路径报告/回测窗**：多专家时报告/回测用 **后半窗** `report_mask`（`prune_eval_mask_` ∩ 有效校准掩码），减轻 selection-on-evaluation。**单专家**虽无选型，报告窗同样取时间后半，与阈值参考窗（前半）互斥，避免 thr 在前半冻结后回测又吃进前半。有效 OOF &lt; 20 时退回全窗并记 `expert_prune_full_window_selection`；`min_expert_auc≤0`（关闭剪枝）时报告窗仍为全有效 OOF。实盘 `decide` / 部署仍全量训练。  
 5. **二层 nested OOF**：元学习器再交叉拟合 → `meta_oof_`（供校准与全量部署；无「自训自评」）  
 6. **部署**：全量 OOF 拟合 `meta_` + 各（进入 meta 的）专家全量重训  
 
@@ -420,7 +454,7 @@ OHLCV(+衍生品)
 
 **勿**用 research OOF 成交数直接当 live 开仓频率；**勿**把研究 thr 用于 decide。
 
-联合交叉拟合样本过少、退回同批 OOF 校准+保形时，**warn + 写入 `degradations`**（`calib_cross_fit_fallback_insample`）；某折因单类/过少跳过保形时记 `conformal_cf_fold_skipped`。校准健康：`assess_calibration_pass_health`（过线率灌水、唯一台阶过少）写入 `degradations`。
+联合交叉拟合样本过少、退回同批 OOF 校准+保形时，**warn + 写入 `degradations`**（`calib_cross_fit_fallback_insample`）；某折因单类/过少跳过保形时记 `conformal_cf_fold_skipped`，且该折测试样本 **`confident=False`**（不确定则弃权，不再默认 True）。校准健康：`assess_calibration_pass_health`（过线率灌水、唯一台阶过少）写入 `degradations`。
 
 **双阈值冻结（方案 B）**：研究与部署校准器尺度不同，**禁止共用一把 thr**。
 
@@ -472,6 +506,7 @@ OHLCV(+衍生品)
 - **加性记账**：`Δequity = entry_equity × pnl_frac`，避免重叠仓乘积复利虚高；`pnl` 列为相对入场权益的分数贡献，`entry_equity` 列供对账  
 - 可选 `confident` 掩码：保形弃权与实盘 HOLD 对齐  
 - 成本：开平各一次 fee+slip；资金费 ≈ `funding_bps_per_bar × bars_held`（默认资金费为 0）  
+- **波动滑点**（`slippage_vol_scale: true`，默认开）：`slip = base × clip(trgt/median(trgt), 1, cap)`，其中 `trgt` 为事件相对 ATR。CUSUM 偏好高波动窗时抬高成本，避免常数 slip 低估；`decide` 用训练期 `slip_ref_trgt`（事件 trgt 中位数）同形缩放。  
 - **盯市（mark-to-market）**：传入 `prices` 且含 `side` 时，按入场权益计浮动盈亏，供 MDD / 日内熔断。浮动与标签/已实现**同形**：`size × side × (P_t/P_entry − 1)`（入场名义简单收益）；**禁止** `(P_t/P_entry)^side − 1`（空头几何口径会偏离）。浮动不按障碍价封顶、不含开平成本（指示性；成本仅出场扣）。  
 
 ### 11.2 独立复利（`portfolio_mode: false`）
@@ -515,6 +550,10 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 
 **特征 schema 护栏（实盘）**：`align_feature_schema` 将训练期 `feature_cols` 中缺失列补 `0.0`（防 KeyError，与 MTF 冷启动填 0 语义一致），但若存在缺失列则 **`hold_for_schema_mismatch` 强制 HOLD**——记 `degradations`（`feature_schema_mismatch(...)`），**不调用**集成/校准推理，避免辅周期偶发失败时在错误特征分布上开仓。`decide_live` 与 `latest_decision` 共用此纪律。
 
+**降级环境护栏（实盘）**：`diagnostics/env_guard.py` 仅对**本次推理数据面**标签（合成降级、tip 跨所、新闻稀疏、衍生品不可用、schema mismatch 等）累计严重度；训练期校准/剪枝/nested-OOF 等质量标签**不计分**（否则会永久 HOLD）。`risk.env_degradation_hold_score`（默认 50，≤0 关闭）达标时强制 `low_confidence_environment` HOLD。研究回测不套用。决策 JSON 仍可展示全部 degradations。
+
+**决策可复盘快照**：`latest_decision` / `decide_live` 写入 `audit`（`config_fingerprint`、`data_window_hash`、特征列哈希、冻结阈值、degradations 等），便于事后核对「那次信号用了哪段数据/哪套旋钮」，无需落盘完整权重。
+
 ---
 
 ## 13. 服务与交付层
@@ -528,7 +567,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | Cursor Canvas | `11_make_canvas` → 托管 `canvases/*.canvas.tsx` |
 | 专家探测 | `probe_experts`：缺依赖则跳过并记录原因；**不永久污染** `config.experts.enabled` |
 
-`run_all` 的 `meta.research_disclaimers` 与 HTML 面板共用同一文案；多币种 `meta.degradations` **累加**不覆盖。开启 `--cpcv` 时摘要写入 `evaluation_unit` / `caveats` / `pbo_warning` / 校准降级标签，不再把组合数标成「完整路径数」。
+`run_all` 的 `meta.research_disclaimers` 与 HTML 面板共用同一文案；多币种 `meta.degradations` **累加**不覆盖。开启 `--cpcv` 时摘要写入 `evaluation_unit` / `caveats` / `pbo_warning` / 校准降级标签，不再把组合数标成「完整路径数」。开启 `--walkforward` 时每币种写入 `walkforward` KPI，`meta.do_walkforward=true`；`require_in_run_all` 为真则未跑或失败直接报错。
 
 ---
 
@@ -539,16 +578,17 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | 段 | 关键当前默认 | 说明 |
 |----|--------------|------|
 | `project` | seed=42 | 数据/产物目录 |
-| `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations |
-| `news` | `use_synthetic=false`，`as_feature=true`，`auto_build_panel=true`，`require_panel=false`，`min_coverage_warn=0.05`，`require_min_coverage=false` | 缺面板可自动 build；PIT 互证；覆盖率过低记 degradations；`require_min_coverage=true` 可 fail-fast；禁止仅 synthetic 历史混真实行情；真行情加载 corpus 时过滤 `synthetic:` 行 |
+| `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d，`max_closed_bar_lag=4`，`tip_exchange=gate` | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations |
+| `news` | `use_synthetic=false`，**`as_feature=false`**（未回填历史前勿开），`auto_build_panel=true`，`require_panel=false`，`min_coverage_warn=0.05`，`require_min_coverage=false` | 缺面板可自动 build；PIT 互证；覆盖率过低记 degradations；`require_min_coverage=true` 可 fail-fast；禁止仅 synthetic 历史混真实行情；真行情加载 corpus 时过滤 `synthetic:` 行 |
 | `features` | FFD d=0.4，`mtf_enabled=true` | MTF 方案 B |
 | `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐；`barrier_vol=rv` 时 Config.load 告警（decide 仍用 atr） |
-| `validation` | N=6,k=2，embargo=1%，`dsr_n_trials=50` | 禁运从 `max(t1)` 起算；CPCV 组合评估 |
+| `validation` | N=6,k=2，embargo=1%，`dsr_n_trials=50`，`log_experiments=true`；**`walkforward`** 见下 | 禁运从 `max(t1)` 起算；CPCV 组合评估；WF single-cut 真外推基线 |
+| `validation.walkforward` | `enabled_in_run_all=false`，`require_in_run_all=false`，`test_start=2022-09-14`，`test_end=null`，`embargo_bars=0`，min 事件 200/50 | 联跑/发布闸；`test_end=null`=面板末；`require_in_run_all` 未跑 WF 则 fail-fast |
 | `experts` | **enabled=[gbdt, deep_ts]** | tsfm/llm 可选 |
 | `ensemble` | logistic，`min_expert_auc=0.5`，`exclude_pseudo_oof_from_meta=true` | 前半选型 / 后半报告回测；伪 OOF 不进 meta |
 | `calibration` | isotonic，α=0.1，`conformal_frac=0.3`，`conformal_min_margin=0.05` | 主路径联合 CF；部署时间切分；过线灌水/台阶告警 |
-| `backtest` | **`portfolio_mode=true`**，`prob_threshold_mode=max_of`，地板 0.55，`prob_quantile=0.98`（≈参考窗 top 2%，成交偏稀为预期；见 §11.0），`raise_thr_on_inflate=true`，`inflate_raise_quantile=0.99` | 组合加性记账；双阈值见 `prob_threshold_research` / `prob_threshold_effective` |
-| `risk` | 半 Kelly，`min_kelly_edge=0`，日熔断 5%，`execution_assumption=close_fill` | 未实现取值 Config.load/decide 报错 |
+| `backtest` | **`portfolio_mode=true`**，`prob_threshold_mode=max_of`，地板 0.55，`prob_quantile=0.98`，`slippage_vol_scale=true`，`slippage_vol_mult_cap=3`，`raise_thr_on_inflate=true` | 组合加性记账；双阈值；波动放大滑点 |
+| `risk` | 半 Kelly，`min_kelly_edge=0`，日熔断 5%，`execution_assumption=close_fill`，`env_degradation_hold_score=50` | 未实现取值报错；实盘多降级叠加可强制 HOLD |
 | `serve` | 1800s 轮询，48 周期重训（≈24h） | Telegram 默认关 |
 
 改任何超参后重跑对应脚本即可；随机性由 `project.random_seed` + `set_global_seed` 控制。合成数据/合成新闻的按币种偏移用 `hashlib`（`stable_symbol_offset`）派生，**跨进程/机器确定**——不再用带随机盐的内置 `hash()`，保证同 seed 的合成结果可复现。
@@ -578,7 +618,8 @@ Config.load()
   → latest_decision / decide_live                       # 部署 cal/conf + thr_eff；决策 tip 见 §4.2
 ```
 
-真外推评估：`python scripts/btc_walkforward_summary.py`（训练窗 fit → 测试窗 deploy 门控回测）。
+真外推评估：`python scripts/btc_walkforward_summary.py`（或 `04`/`10` 加 `--walkforward`）。  
+库函数：`pipeline.walkforward.run_walkforward`（`split_kind=single_cut_holdout`）。
 
 库级入口：
 
@@ -589,7 +630,8 @@ Config.load()
 | `train_and_validate` | `pipeline/run.py` | 集成+校准+回测 |
 | `latest_decision` | 同上 | 面板**末根**决策（末根是否「当下」取决于是否刷过 tip） |
 | `cpcv_report` | `pipeline/evaluate.py` | CPCV/DSR/PBO |
-| `run_all` / `build_dashboard` | `pipeline/report.py` | 联跑 + HTML |
+| `run_walkforward` | `pipeline/walkforward.py` | single-cut 真外推基线（部署同形门控） |
+| `run_all` / `build_dashboard` | `pipeline/report.py` | 联跑 + HTML（可选 `--cpcv` / `--walkforward`） |
 
 ---
 
@@ -640,10 +682,11 @@ python scripts/12_audit.py
 # 6. 训练 + 组合回测 + 决策
 python scripts/04_train_and_backtest.py
 
-# 7. 发布前严谨评估
+# 7. 发布前严谨评估（CPCV + 真外推基线）
 python scripts/05_cpcv_report.py
-# 或
-python scripts/10_run_all.py --cpcv --open
+python scripts/btc_walkforward_summary.py
+# 或一键：
+python scripts/10_run_all.py --cpcv --walkforward --open
 
 # 8. 交互面板
 python scripts/11_make_canvas.py
@@ -653,12 +696,12 @@ python scripts/11_make_canvas.py
 
 ```powershell
 python scripts/10_run_all.py
-python scripts/10_run_all.py --cpcv --open
+python scripts/10_run_all.py --cpcv --walkforward --open
 python scripts/10_run_all.py --experts gbdt deep_ts
 python scripts/10_run_all.py --symbols BTC/USDT
 ```
 
-产出：`artifacts/dashboard.html`、`artifacts/run_all_summary.json`。
+产出：`artifacts/dashboard.html`、`artifacts/run_all_summary.json`；开启 `--walkforward` 时另有 `artifacts/walkforward_<SYMBOL>.json`。
 
 ### 16.5 实时服务与当下决策
 
@@ -722,16 +765,17 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `01_fetch_data.py` | 拉主+辅周期并缓存 | — |
 | `02_build_features.py` | 特征（含 MTF+新闻）落盘 | — |
 | `03_label.py` | 打印标签分布 | — |
-| `04_train_and_backtest.py` | 训练+报告+回测+决策+净值图 | — |
+| `04_train_and_backtest.py` | 训练+报告+回测+决策+净值图 | `--walkforward` |
 | `05_cpcv_report.py` | CPCV / DSR / PBO | — |
 | `06_decide.py` | 单次最新决策 JSON | — |
 | `07_serve.py` | 实时服务 | `--once` / `--loop` |
 | `08_fetch_news.py` | 建新闻面板 | — |
 | `09_backfill_news.py` | 历史新闻回填 | `--start` `--end` `--providers` |
-| `10_run_all.py` | 全专家联跑 + HTML | `--experts` `--symbols` `--cpcv` `--open` |
+| `10_run_all.py` | 全专家联跑 + HTML | `--experts` `--symbols` `--cpcv` `--walkforward` `--open` |
 | `11_make_canvas.py` | Cursor Canvas | `--out` |
 | `12_audit.py` | 闭环完整性在线体检（CPU，无显卡） | `--json` `--bars` `--seed` |
-| `btc_walkforward_summary.py` | BTC 时间外推 + 部署门控诊断 | — |
+| `btc_walkforward_summary.py` | 真外推基线（库 `run_walkforward` 薄封装） | `--symbol` `--test-start` `--test-end` |
+| `btc_walkforward_compare.py` | 两档门控 WF 对比 | `--run` / `--a` `--b` |
 | `btc_kline_panel.py` | 回测开平仓 K 线 HTML 面板 | `--open` |
 | `train_llm_qlora.py` | LLM QLoRA SFT | `--dry-run` |
 
@@ -744,7 +788,7 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 ```powershell
 pytest -q
 # 或分文件
-pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py tests/test_mtf.py tests/test_pipeline_integrity.py
+pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py tests/test_mtf.py tests/test_pipeline_integrity.py tests/test_walkforward.py
 ```
 
 | 文件 | 覆盖 |
@@ -755,7 +799,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | `test_gate_diagnostics.py` | 有效阈值 fixed/max_of/分位回退、**参考窗时间半回退（禁全 eval）**、**双阈值 freeze（CF vs deploy 尺度）**、**禁止二次校准参考分**、**参考窗灌过线抬 thr**、**CPCV thr 用校准尺度**、**conformal_min_margin 收紧 confident**、校准灌过线/低唯一台阶告警、gate_diagnostics 结构 |
 | `test_labeling_perf_parity.py` | `apply_pt_sl_on_t1` / `num_concurrent_events` / `average_uniqueness` 与 pandas 慢路径**逐事件对拍**；`_barrier_log_returns` 无 side 幅度对称；触碰加速后 `get_bins` 一致 |
 | `test_mtf.py` | 辅周期无前视（对齐层须为 NaN）、拒绝更细周期、特征含 MTF |
-| `test_pipeline_integrity.py` | 闭环完整性闸门（见 18.1；空对照默认关 MTF/新闻，见局限） |
+| `test_pipeline_integrity.py` | 闭环完整性闸门（见 18.1；精简面 + **MTF 全开**空对照） |
+| `test_hardening_guards.py` | 环境 HOLD、实验日志抬 DSR、波动滑点、单专家报告后半窗、保形跳过→不自信、oi 墙钟、决策 audit |
+| `test_walkforward.py` | 切分净化/禁运/重叠 fail-fast、NaT 拒绝、配置解析、`require_in_run_all`、看板 WF 卡与 disclaimer |
 
 ### 18.1 闭环完整性诊断（`diagnostics/integrity.py`）
 
@@ -768,6 +814,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 标注 oracle | 人工构造价格 → 三重障碍唯一确定结果（止盈/止损/同 bar 平局判损/垂直到期/做空对称）；**现已纳入在线 `12_audit`**（此前仅 pytest） | 标注函数方向、平局、到期口径 |
 | CV 不变量 | PurgedKFold / CPCV 训练×测试标签区间**零重叠**、禁运有间隔 | 净化/禁运是否真生效 |
 | 空对照(AUC) | 纯随机游走喂满全链路 → OOF AUC ≈ 0.5 | 特征/标注是否制造假信号 |
+| 空对照(MTF) | 同上但 **mtf_enabled=true**（辅周期 resample；新闻仍关）→ AUC≈0.5 且含 MTF 列 | 生产默认特征面是否在无信号下造假 |
 | 空对照(收益) | **多种子**随机游走 → 回测收益**均值 ≤ 阈值**（成本下应 ≈0/为负；单次幸运不计） | 回测/决策层是否在无信号下凭空造利润 |
 | 置换基线 | 打乱标签重训 → AUC 塌回 ≈ 0.5 | 堆叠/校准/回测是否偷看测试集 |
 | 正对照 | "仅含过去信息即可预测"的构造数据 → AUC 明显 > 0.5 | 排除"永远随机"的假阴性 |
@@ -775,7 +822,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 回测对账 | 末端权益 = 逐笔 pnl 累计复利；并发敞口 ≤ 上限；成本单调；组合 ≤ 独立复利 | 回测记账/资金占用/成本口径 |
 | 复现性 | 同 seed 两次训练 OOF 完全一致 | 随机性是否被固定 |
 
-用法：正式训练前先 `python scripts/12_audit.py`，全 PASS 再跑 `04_train_and_backtest.py`（当前 **20 项** 全 PASS）。
+用法：正式训练前先 `python scripts/12_audit.py`，全 PASS 再跑 `04_train_and_backtest.py`。除精简面空对照外，另含 **MTF 开启**空对照（新闻仍关，对齐现行 `as_feature=false`）；项数随检查扩展，以脚本输出为准。
 
 ---
 
@@ -799,9 +846,10 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 
 - [~] CPCV（需 `--cpcv`）；**组合**内已校准+保形且**时间切分**（非完整路径重建）  
 - [~] DSR / PBO（见 `caveats`；PBO 默认配置少；DSR 方差项已 clamp）  
-- [x] 样本权重；弱专家**前半选型 / 后半报告回测**；保形弃权；小样本二层 OOF / 交叉拟合校准 / **部署同批**回退均记入 `degradations`  
+- [x] 样本权重；弱专家**前半选型 / 后半报告回测**（单专家亦后半报告）；NaN AUC 剔除；保形跳过折弃权；小样本二层 OOF / 交叉拟合校准 / **部署同批**回退均记入 `degradations`；实验日志抬 `dsr_n_trials`  
+- [x] 实盘降级环境累计 HOLD；决策 audit 指纹；`oi_change` 按 24h 墙钟；波动放大滑点（可选关）  
 - [x] 伪 OOF（LLM）默认排除出元学习器；元标签 `side` 进入 GBDT/DeepTS 特征  
-- [~] OOF/CPCV ≠ walk-forward（解释边界，见 §9 / §21；**看板页首 disclaimer + `meta.research_disclaimers`**）  
+- [~] OOF/CPCV ≠ walk-forward（解释边界）；**已落地** `pipeline/walkforward.py` single-cut 基线 + `--walkforward` / `require_in_run_all` + 看板 WF 卡；**仍非**滚动再训练（见 §7.3 / §21）  
 
 **回测真实性**
 
@@ -837,7 +885,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 真实数据依赖网络 | 失败可降级，但 **`data_source`/看板会标「合成(降级)」**；可关 `allow_synthetic_fallback`；缺新闻面板时 `auto_build_panel` 也可能联网 | ★★★ 预拉缓存 + 新闻历史库 |
 | 决策 tip 跨所拼接 | 历史常为 Binance Vision，tip 可能来自 Gate 等；重叠 bar `keep=last`，接缝处可有微观价差；已标 `ohlcv_tip_exchange_fallback` | ★★ 同所 tip 或接缝平滑/告警阈值 |
 | tip 衍生品 | 默认不重拉；ffill 历史 funding/OI，极端时 tip 仍可能偏旧 | ★ 可选 `fetch_derivatives_on_tip` |
-| `06_decide` 每次全量重训 | 无模型落盘；决策前还刷 tip + 重建面板，延迟高 | ★★ 持久化部署模型（serve 路径已训一次复用） |
+| `06_decide` 每次全量重训 | 决策 JSON 已含 audit 指纹；仍无模型权重落盘，延迟高 | ★★ 持久化部署模型（serve 路径已训一次复用） |
 | TimesFM | 前向未实现 → 回退 naive 且 **`degraded=True`** 写入元数据 | ★★ 实现原生 forecast 或固定 chronos/naive |
 | TSFM 未真微调 | 冻结预测 + 浅头；logistic 已传 `sample_weight` | ★★ 监督微调或显式基线 |
 | LLM | 独立脚本 + 大显存；as-of 已与数值特征对齐；实盘每轮刷新 `set_news` | ★ 有文本 alpha 时再开 |
@@ -845,8 +893,12 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | CPCV 默认关 | 有代码；评估单元为**组合**非完整路径；组合内校准/保形已与部署**时间切分**对齐；跳过/同批回退进 `degradations` | ★★★ 上线前必跑；★★ 真路径重建 |
 | Stacking 二阶泄漏 | nested OOF 一层特征仍非 full-nested（影响很小）；小样本回退已 warn+`degradations`；LLM 伪 OOF 默认不进 meta | ★ full-nested |
 | 剪枝报告窗 | 多专家时主面板 AUC/夏普与专家 `base_report` 共用**后半窗**；部署仍全量。未剪枝时仍砍半报告偏保守——若需全窗对照可另报 | ★ 可选同时输出 full + holdout |
-| OOF ≠ walk-forward | Purged/CPCV 为组合式评估，非实盘滚动再训练；**看板/summary 已强制 disclaimer** | ★★ 上线前另做 WF |
-| integrity 空对照 | `_cpu_cfg` 默认关 MTF/新闻；「20 项 PASS」不覆盖默认特征面全开路径（另有 MTF+空新闻装配测） | ★★ 开 MTF+新闻的空对照闸门 |
+| OOF ≠ walk-forward | Purged/CPCV ≠ 真外推；**已有**库级 `run_walkforward`（`split_kind=single_cut_holdout`）+ 联跑/发布闸 + 看板基线卡；**仍不是**多锚点滚动再训练 | ★★ 发布设 `require_in_run_all`；★★ 滚动多窗 WF |
+| WF `test_end` 默认 | 现默认 `null`=面板末（旧脚本曾硬编码截止日）；与历史 artifact 数字不可直接纵向对比 | ★ 对比旧结果时显式传 `--test-end` |
+| integrity 空对照 | 精简面 + **MTF 开**空对照已进 `12_audit`；新闻 `as_feature` 打开后须再加新闻面空对照 | ★ 打开新闻特征时补闸门 |
+| 实验日志 / DSR | `log_experiments` 抬 trials 下限；仍须人工把 `dsr_n_trials` 调到真实规模 | ★★ 发布前核对 |
+| 降级环境 HOLD | 实盘累计严重度门控已落地；研究回测不套用 | — |
+| 决策 audit | JSON 含 fingerprint/窗哈希；完整权重仍不落盘 | ★ 可选 joblib 持久化 |
 | 组合回测回撤 | 加性记账 + 盯市（空头浮动已与简单收益对齐）；浮动仍不按障碍封顶；盯市为事件节点稀疏采样 | ★ high/low 路径重演 |
 | 报告夏普口径 | 每笔 `sharpe*` 保留；已并行 `sharpe_equity*` / `sharpe_equity_mtm*`；看板曲线默认盯市；DSR/CPCV 仍吃每笔口径 | —（已落地；权益曲线仍为事件节点稀疏采样） |
 | 新闻空特征研究效度 | 默认 `require_min_coverage=false` 仅 warn；多年回测请 `use_history=true` 或打开 fail-fast | ★★ 严肃研究打开 `require_min_coverage` |
@@ -888,6 +940,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | prob_threshold_effective | 参考窗 `deploy_cal.transform(raw_oof)` 上冻结的部署阈值（decide/serve/部署回测/WF） |
 | gate_diagnostics_* | 测试/报告窗：过线率、保形、交集、校准台阶与开仓数（各用本路径 thr） |
 | backtest_deploy | 与 decide 同出分+同 `thr_eff` 的回测（train_and_validate 内仍可能偏乐观；看板 KPI 并列展示） |
+| walk-forward / `run_walkforward` | single-cut 真外推基线：仅过去窗拟合 → 未来窗部署门控；`split_kind=single_cut_holdout` |
+| prob_threshold_effective（WF） | 在**全部**训练窗 OOF 上冻结（与联跑内半窗参考可有数值差；对测试窗无泄漏） |
+| walkforward_purged_label_overlap | t0 在测试起点前但 t1 越过 label_deadline 的事件，训练/测试都不收录 |
 
 ---
 
