@@ -1,180 +1,185 @@
 {
   "symbol": "BTC/USDT",
   "mode": "walk_forward_train_then_test",
+  "evaluation_unit": "walk_forward",
+  "split_kind": "single_cut_holdout",
+  "note": "真外推(single-cut holdout, 非滚动再训练): 仅训练窗拟合; 测试窗 predict+deploy 门控; 阈值在全部训练 OOF 冻结, 禁止测试窗刷 thr。勿与 research OOF / train_and_validate.backtest_deploy 成交数直接对比。",
   "data_source": "cache",
-  "panel_bars": 155237,
+  "panel_bars": 156101,
   "panel_start": "2017-08-17 04:00:00+00:00",
-  "panel_end": "2026-06-30 23:30:00+00:00",
+  "panel_end": "2026-07-18 23:30:00+00:00",
   "train_end_exclusive": "2022-09-14 00:00:00+00:00",
+  "label_deadline": "2022-09-14 00:00:00+00:00",
+  "embargo_bars": 0,
+  "embargo_delta": "0 days 00:00:00",
   "backtest_start": "2022-09-14 00:00:00+00:00",
-  "backtest_end": "2026-07-18 08:00:00+00:00",
-  "prob_threshold_effective": 0.6285240464344941,
+  "backtest_end": "2026-07-18 00:00:00+00:00",
+  "prob_threshold_effective": 0.6236786469344607,
   "n_train_events": 18633,
-  "n_test_events": 10845,
-  "n_opened_trades": 278,
-  "n_wins": 156,
-  "n_losses": 122,
-  "win_rate": 0.5611510791366906,
-  "total_return": -0.005911667351100602,
-  "max_drawdown": -0.06664743900848871,
+  "n_test_events": 10975,
+  "n_opened_trades": 204,
+  "n_wins": 116,
+  "n_losses": 88,
+  "win_rate": 0.5686274509803921,
+  "total_return": -0.007506299340784395,
+  "max_drawdown": -0.04819238049836884,
   "initial_capital": 10000.0,
-  "final_capital": 9940.883326488994,
+  "final_capital": 9924.937006592156,
   "train_oof_report": {
     "n": 18633,
-    "auc": 0.544482352402792,
-    "brier": 0.24885901915342948,
-    "logloss": 0.690890960970223,
-    "accuracy": 0.5313690763698814,
+    "auc": 0.5430268986409129,
+    "brier": 0.24915578321691537,
+    "logloss": 0.6915078761506912,
+    "accuracy": 0.5333011323995063,
     "base_rate": 0.5021198948102829
   },
   "test_report": {
-    "n": 10845,
-    "auc": 0.5121894555694618,
-    "brier": 0.2503445811897442,
-    "logloss": 0.6938518879420196,
-    "accuracy": 0.5059474412171507,
-    "base_rate": 0.5016136468418626
+    "n": 10975,
+    "auc": 0.5136580075323329,
+    "brier": 0.25054009489445506,
+    "logloss": 0.6942396270282538,
+    "accuracy": 0.505876993166287,
+    "base_rate": 0.5026879271070614
   },
   "backtest_metrics": {
-    "n_events": 10845,
-    "n_trades": 278,
+    "n_events": 10975,
+    "n_trades": 204,
     "n_halted": 0,
-    "total_return": -0.005911667351100602,
-    "sharpe": -0.00854380991574418,
-    "sharpe_annualized": -0.06247155957936352,
-    "max_drawdown": -0.06664743900848871,
-    "max_drawdown_realized": -0.06383279104769801,
+    "total_return": -0.007506299340784395,
+    "sharpe": -0.016732338375097435,
+    "sharpe_annualized": -0.10253086959990235,
+    "max_drawdown": -0.04819238049836884,
+    "max_drawdown_realized": -0.0433979020185034,
     "mark_to_market": true,
-    "avg_uniqueness": 0.7290742471465347,
-    "n_trades_effective": 202.68264070673663,
-    "win_rate": 0.5611510791366906,
-    "avg_pnl": -1.704474279363239e-05,
+    "avg_uniqueness": 0.7068546000967413,
+    "n_trades_effective": 144.19833841973522,
+    "win_rate": 0.5686274509803921,
+    "avg_pnl": -3.292599686975618e-05,
     "portfolio_mode": "portfolio",
-    "sharpe_equity": -0.010254624697622854,
-    "sharpe_equity_annualized": -0.08070485469114734,
-    "sharpe_equity_mtm": -0.0006395480605175226,
-    "sharpe_equity_mtm_annualized": -0.040634200512042466,
+    "sharpe_equity": -0.01832740168060643,
+    "sharpe_equity_annualized": -0.12400341032457275,
+    "sharpe_equity_mtm": -0.001014906068087296,
+    "sharpe_equity_mtm_annualized": -0.06445265429815349,
     "n_skipped_capacity": 0,
-    "calmar": -0.088700591505805
+    "calmar": -0.1557569704464275
   },
   "gate_diagnostics": {
-    "prob_threshold": 0.6285240464344941,
-    "n_events": 10845,
+    "prob_threshold": 0.6236786469344607,
+    "n_events": 10975,
     "raw_proba": {
-      "mean": 0.5015725117929634,
-      "std": 0.026620404508897424,
-      "min": 0.3958030982090615,
-      "max": 0.6171146599653966,
-      "frac_ge_threshold": 0.0
+      "mean": 0.49893984578074196,
+      "std": 0.026464207330867556,
+      "min": 0.40242391152036994,
+      "max": 0.6243565747010325,
+      "frac_ge_threshold": 9.111617312072893e-05
     },
     "calibrated_proba": {
-      "mean": 0.49803741099822674,
-      "std": 0.03699975927148513,
-      "min": 0.45511319281811086,
-      "max": 0.6285240464344941,
-      "n_unique": 16,
+      "mean": 0.49343291829587776,
+      "std": 0.037833768636435255,
+      "min": 0.4598356914650844,
+      "max": 0.675,
+      "n_unique": 25,
       "top_levels": [
         {
-          "prob": 0.455113,
-          "n": 2661,
-          "frac": 0.2453665283540802
+          "prob": 0.459836,
+          "n": 3792,
+          "frac": 0.3455125284738041
         },
         {
-          "prob": 0.493333,
-          "n": 2437,
-          "frac": 0.22471184877823883
+          "prob": 0.505798,
+          "n": 1992,
+          "frac": 0.18150341685649202
         },
         {
-          "prob": 0.513631,
-          "n": 1405,
-          "frac": 0.12955278930382666
+          "prob": 0.469181,
+          "n": 1325,
+          "frac": 0.12072892938496584
         },
         {
-          "prob": 0.479218,
-          "n": 1049,
-          "frac": 0.096726602120793
+          "prob": 0.536671,
+          "n": 1206,
+          "frac": 0.10988610478359909
         },
         {
-          "prob": 0.506479,
-          "n": 894,
-          "frac": 0.08243430152143845
+          "prob": 0.485646,
+          "n": 884,
+          "frac": 0.08054669703872437
         },
         {
-          "prob": 0.517808,
-          "n": 757,
-          "frac": 0.06980175195942831
+          "prob": 0.550765,
+          "n": 411,
+          "frac": 0.03744874715261959
         },
         {
-          "prob": 0.565489,
-          "n": 337,
-          "frac": 0.03107422775472568
+          "prob": 0.505938,
+          "n": 359,
+          "frac": 0.03271070615034168
         },
         {
-          "prob": 0.548454,
-          "n": 327,
-          "frac": 0.030152143845089904
+          "prob": 0.498584,
+          "n": 349,
+          "frac": 0.03179954441913439
         },
         {
-          "prob": 0.628524,
-          "n": 278,
-          "frac": 0.025633932687874596
+          "prob": 0.623679,
+          "n": 203,
+          "frac": 0.018496583143507973
         },
         {
-          "prob": 0.578249,
-          "n": 247,
-          "frac": 0.022775472568003687
+          "prob": 0.594714,
+          "n": 127,
+          "frac": 0.011571753986332574
         },
         {
-          "prob": 0.521595,
-          "n": 224,
-          "frac": 0.0206546795758414
+          "prob": 0.583333,
+          "n": 91,
+          "frac": 0.008291571753986333
         },
         {
-          "prob": 0.49635,
-          "n": 143,
-          "frac": 0.013185799907791609
+          "prob": 0.578313,
+          "n": 55,
+          "frac": 0.005011389521640091
         }
       ]
     },
     "gates": {
-      "n_prob_ge_threshold": 278,
-      "frac_prob_ge_threshold": 0.025633932687874596,
-      "n_confident": 862,
-      "frac_confident": 0.07948363301060396,
-      "n_prob_and_confident": 278,
-      "frac_prob_and_confident": 0.025633932687874596,
-      "n_opened_size_gt_0": 278,
-      "frac_opened_size_gt_0": 0.025633932687874596,
+      "n_prob_ge_threshold": 204,
+      "frac_prob_ge_threshold": 0.0185876993166287,
+      "n_confident": 949,
+      "frac_confident": 0.08646924829157175,
+      "n_prob_and_confident": 204,
+      "frac_prob_and_confident": 0.0185876993166287,
+      "n_opened_size_gt_0": 204,
+      "frac_opened_size_gt_0": 0.0185876993166287,
       "n_pass_gate_but_size_0": 0
     },
-    "conformal_qhat": 0.5448868071818891,
+    "conformal_qhat": 0.5401643085349156,
     "conformal_min_margin": 0.05,
     "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
     "path": "walk_forward_deploy",
     "threshold_tags": [
-      "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.6285)",
-      "deploy_calibration_inflates_pass_rate(raw=0.0006,cal=0.0411,ratio=69.64)",
-      "deploy_prob_threshold_inflate_no_raise_room(thr=0.6285,q=0.9900,cand=0.6285)"
+      "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.6237)",
+      "deploy_calibration_inflates_pass_rate(raw=0.0027,cal=0.0377,ratio=14.06)",
+      "deploy_prob_threshold_inflate_no_raise_room(thr=0.6237,q=0.9900,cand=0.6237)"
     ],
     "health_tags": [
-      "calibration_inflates_pass_rate(raw=0.0000,cal=0.0256,ratio=inf)",
-      "calibration_low_unique_levels(n=16,min=20)"
+      "calibration_inflates_pass_rate(raw=0.0001,cal=0.0186,ratio=204.00)"
+    ],
+    "split_tags": [
+      "walkforward_purged_label_overlap(n=1)"
     ]
   },
-  "dropped_experts": [
-    [
-      "deep_ts",
-      0.4984780206039191
-    ]
-  ],
+  "dropped_experts": [],
   "degradations": [
     "derivatives_oi_unavailable",
-    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.6285)",
-    "deploy_calibration_inflates_pass_rate(raw=0.0006,cal=0.0411,ratio=69.64)",
-    "deploy_prob_threshold_inflate_no_raise_room(thr=0.6285,q=0.9900,cand=0.6285)",
-    "calibration_inflates_pass_rate(raw=0.0000,cal=0.0256,ratio=inf)",
-    "calibration_low_unique_levels(n=16,min=20)",
-    "deep_ts:dropped_low_auc(0.498)"
+    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.6237)",
+    "deploy_calibration_inflates_pass_rate(raw=0.0027,cal=0.0377,ratio=14.06)",
+    "deploy_prob_threshold_inflate_no_raise_room(thr=0.6237,q=0.9900,cand=0.6237)",
+    "calibration_inflates_pass_rate(raw=0.0001,cal=0.0186,ratio=204.00)",
+    "walkforward_purged_label_overlap(n=1)"
   ],
-  "trades_csv": "D:\\desktop\\cryptoCurrency\\artifacts\\btc_walkforward_trades.csv"
+  "split_tags": [
+    "walkforward_purged_label_overlap(n=1)"
+  ],
+  "trades_csv": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/btc_walkforward_trades.csv"
 }

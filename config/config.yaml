@@ -21,7 +21,7 @@ data:
   # 主时间框架用于建模/标注/训练索引; 辅周期只作高周期上下文特征(方案B, 不分别训练)
   timeframe: "30m"
   aux_timeframes: ["2h", "4h", "1d"]   # 必须严格粗于主周期; 由 as-of 无泄漏并入特征
-  since: "2020-01-01T00:00:00Z"   # 真实数据回填起点(多年回测)
+  since: "2015-09-14T00:00:00Z"   # 真实数据回填起点(多年回测; Binance BTCUSDT 实际约 2017-08 起)
   # 研究/实盘默认用真实数据; 无网络时 load_symbol_data 会自动降级合成。
   # CI/冒烟测试在代码里显式打开 use_synthetic, 勿依赖本默认值做演示。
   use_synthetic: false
@@ -163,7 +163,7 @@ validation:
     enabled_in_run_all: false
     require_in_run_all: false
     test_start: "2022-09-14T00:00:00Z"
-    test_end: null           # null=用该币种面板末根; 也可固定如 "2026-07-18T08:00:00Z"
+    test_end: "2026-07-18T00:00:00Z"  # null=用该币种面板末根
     embargo_bars: 0          # 额外标签禁运(主周期 bar); 0=仅要求 t1 < test_start
     min_train_events: 200
     min_test_events: 50

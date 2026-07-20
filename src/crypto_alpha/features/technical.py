@@ -4,6 +4,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .safe_rolling import rolling_mean, rolling_std
+
 
 def _rsi(close: pd.Series, window: int) -> pd.Series:
     delta = close.diff()
@@ -26,7 +28,7 @@ def atr(df: pd.DataFrame, window: int = 14) -> pd.Series:
 def realized_volatility(close: pd.Series, window: int = 50) -> pd.Series:
     """基于对数收益的滚动已实现波动率(日/bar 波动), 作为标签的目标尺度。"""
     logret = np.log(close).diff()
-    return logret.rolling(window).std()
+    return rolling_std(logret, window)
 
 
 def add_technical_features(
@@ -50,13 +52,13 @@ def add_technical_features(
     for w in windows:
         out[f"ret_{w}"] = close.pct_change(w)
         out[f"mom_{w}"] = close / close.shift(w) - 1.0
-        out[f"vol_{w}"] = logret.rolling(w).std()
+        out[f"vol_{w}"] = rolling_std(logret, w)
         out[f"rsi_{w}"] = _rsi(close, w)
-        ma = close.rolling(w).mean()
-        std = close.rolling(w).std()
+        ma = rolling_mean(close, w)
+        std = rolling_std(close, w)
         out[f"zscore_{w}"] = (close - ma) / (std + 1e-12)
         out[f"bb_pos_{w}"] = (close - ma) / (2 * std + 1e-12)  # 布林带内位置
-        out[f"vol_ratio_{w}"] = out["volume"] / (out["volume"].rolling(w).mean() + 1e-12)
+        out[f"vol_ratio_{w}"] = out["volume"] / (rolling_mean(out["volume"], w) + 1e-12)
 
     # MACD: 归一化为相对价格量纲(÷close), 避免多年价格量级漂移导致的非平稳
     # (BTC 从 ~1万 到 ~6万, 绝对 MACD 量级会翻数倍, 破坏跨 regime/实盘泛化)。
@@ -78,8 +80,8 @@ def add_technical_features(
     # 否则 prepare_dataset 的 notna().all 会清空全部建模样本(与「优雅降级」冲突)。
     if "funding_rate" in out.columns:
         out["funding_z"] = (
-            (out["funding_rate"] - out["funding_rate"].rolling(vol_window).mean())
-            / (out["funding_rate"].rolling(vol_window).std() + 1e-12)
+            (out["funding_rate"] - rolling_mean(out["funding_rate"], vol_window))
+            / (rolling_std(out["funding_rate"], vol_window) + 1e-12)
         ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     if "open_interest" in out.columns:
         out["oi_change"] = (

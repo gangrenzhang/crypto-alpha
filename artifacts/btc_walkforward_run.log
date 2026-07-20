@@ -1,0 +1,110 @@
+===== BTC/USDT walk-forward =====
+/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/features/technical.py:88: FutureWarning: The default fill_method='pad' in Series.pct_change is deprecated and will be removed in a future version. Either fill in any non-leading NA values prior to calling pct_change or specify 'fill_method=None' to not fill NA values.
+  out["open_interest"].pct_change(oi_bars)
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+
+========== 结果 ==========
+实际数据起点:     2017-08-17 04:00:00+00:00
+训练/回测事件:    18633 / 10975
+实际开仓笔数:     204
+胜 / 负:          116 / 88
+开仓胜率:         56.86%
+累计收益:         -0.75%
+1万→终值:         9,924.94
+
+========== 开仓门控诊断(测试窗) ==========
+有效阈值 thr:          0.6236786469344607
+测试事件 n:            10975
+prob≥thr:              204 (0.0185876993166287)
+confident:             949 (0.08646924829157175)
+prob≥thr 且 confident: 204 (0.0185876993166287)
+实际开仓 size>0:       204 (0.0185876993166287)
+过门但 size=0:         0
+保形 qhat/margin:      0.5401643085349156 / 0.05
+校准后概率: mean=0.49343291829587776 n_unique=25 max=0.675
+[ok] /Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/btc_walkforward_summary.json
+[ok] /Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/btc_walkforward_gate_diagnostics.json
+[ok] /Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/btc_walkforward_trades.csv

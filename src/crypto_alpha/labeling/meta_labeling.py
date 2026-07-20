@@ -14,6 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..features.safe_rolling import rolling_mean, rolling_std
 from .triple_barrier import (
     causal_cusum_threshold,
     cusum_filter,
@@ -32,7 +33,7 @@ def primary_signal(close: pd.Series, kind: str = "momentum", lookback: int = 24)
         mom = close.pct_change(lookback)
         side = np.sign(mom).replace(0, 1)
     elif kind == "meanrev":
-        ma = close.rolling(lookback).mean()
+        ma = rolling_mean(close, lookback)
         side = -np.sign(close - ma).replace(0, 1)
     else:
         raise ValueError(f"未知主信号类型: {kind}")
@@ -50,7 +51,7 @@ def _barrier_target(df: pd.DataFrame, close: pd.Series, lc: dict, vol_window: in
         if "rv" in df.columns:
             trgt = df["rv"]
         else:
-            trgt = np.log(close).diff().rolling(vol_window).std()
+            trgt = rolling_std(np.log(close).diff(), vol_window)
     else:  # atr (default)
         if "atr_14" in df.columns:
             atr_abs = df["atr_14"]

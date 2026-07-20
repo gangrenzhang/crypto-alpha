@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from ..data.fetch import timeframe_delta, timeframe_to_prefix
+from .safe_rolling import rolling_mean, rolling_std
 from .technical import _rsi, atr
 
 
@@ -59,9 +60,9 @@ def build_higher_tf_features(aux_df: pd.DataFrame, timeframe: str, cfg) -> pd.Da
     rw = mcfg["rsi_window"]
     vw = mcfg["vol_window"]
     out[f"{prefix}_rsi_{rw}"] = _rsi(close, rw)
-    out[f"{prefix}_vol_{vw}"] = logret.rolling(vw).std()
-    ma = close.rolling(vw).mean()
-    std = close.rolling(vw).std()
+    out[f"{prefix}_vol_{vw}"] = rolling_std(logret, vw)
+    ma = rolling_mean(close, vw)
+    std = rolling_std(close, vw)
     out[f"{prefix}_zscore_{vw}"] = (close - ma) / (std + 1e-12)
 
     ema12 = close.ewm(span=12, adjust=False).mean()
