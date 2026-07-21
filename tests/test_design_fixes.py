@@ -940,7 +940,7 @@ def test_dedup_corroborate_point_in_time():
 
 
 def test_derivatives_nan_does_not_wipe_samples():
-    """衍生品全 NaN 时 funding_z/oi_change 填 0, 且记 degradations。"""
+    """衍生品全 NaN 时 funding_z/oi_change/清算衍生列填 0, 且记 degradations。"""
     from crypto_alpha.config import Config
     from crypto_alpha.features.build import build_feature_matrix, feature_columns
 
@@ -954,13 +954,16 @@ def test_derivatives_nan_does_not_wipe_samples():
         "open": close, "high": close * 1.01, "low": close * 0.99,
         "close": close, "volume": rng.uniform(1, 10, n),
         "funding_rate": np.nan, "open_interest": np.nan,
+        "liq_long": np.nan, "liq_short": np.nan,
     }, index=idx)
     feat = build_feature_matrix(df, cfg, symbol=None)
     assert (feat["funding_z"] == 0.0).all()
     assert (feat["oi_change"] == 0.0).all()
+    assert (feat["liq_imbalance"] == 0.0).all()
     deg = feat.attrs.get("degradations") or []
     assert "derivatives_funding_unavailable" in deg
     assert "derivatives_oi_unavailable" in deg
+    assert "derivatives_liquidations_unavailable" in deg
     fcols = feature_columns(feat)
     # 冷启动后应有非空建模行(衍生品填 0 不再拖垮 notna().all)
     assert feat[fcols].notna().all(axis=1).sum() > 50

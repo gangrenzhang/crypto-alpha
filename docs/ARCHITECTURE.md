@@ -138,7 +138,7 @@ cryptoCurrency/
 
 - 真实拉取需装 `ccxt` 且有网络；主周期拉取失败时，若 `data.allow_synthetic_fallback: true`（默认）会 **warn 后降级合成**，并在 `DataFrame.attrs["data_source"]=synthetic_fallback` / `Dataset.data_source` / 看板 `data_mode` 中显式标记为「合成(降级)」——**不再只看配置就标「真实」**。
 - 设 `allow_synthetic_fallback: false` 可在断网时直接失败，避免误用模拟盘写研究报告。
-- 衍生品缺 API key 或断网时**不阻断主流程**：源列可为 NaN，但 `funding_z`/`oi_change` 填 0 并记 `derivatives_*_unavailable`，避免清空建模样本。
+- 衍生品缺 API key 或断网时**不阻断主流程**：源列可为 NaN，但 `funding_z`/`oi_change`/`liq_imbalance*` 填 0 并记 `derivatives_*_unavailable`（清算另有 `derivatives_liquidations_sparse`），避免清空建模样本。
 - 部分新闻源失败时跳过；缺面板可 `auto_build_panel`，仍空则中性特征 + 覆盖率 degradations。
 - TSFM 回退 naive、专家探测跳过、部署/CPCV 小样本校准回退等会写入 `degradations` 元数据，避免名实不符。
 
@@ -148,8 +148,9 @@ cryptoCurrency/
 |-----|------|
 | `fetch_ohlcv` | ccxt 分页拉取多年 K 线（单次 limit≈1000，循环至 `since`→今） |
 | `fetch_ohlcv_resilient` | 按交易所候选列表依次尝试；`for_tip=True` 时优先 `tip_exchange`/fallbacks |
-| `fetch_derivatives` | 资金费率 / OI；**分页** `_paginate_funding` / `_paginate_oi`（`max_pages=500`）；共用一个 exchange 实例，funding/OI **各自** try（一路失败不拖另一路）；失败→NaN 列 |
-| `generate_synthetic_ohlcv` | GARCH 味 + regime 合成行情（CI / 离线） |
+| `fetch_derivatives` | 资金费率 / OI / **可选清算**；分页 `_paginate_funding` / `_paginate_oi` / `_paginate_liquidations`；共用一个 exchange 实例，三路 **各自** try（一路失败不拖另一路）；清算主所空时可另试 `binance→binanceusdm` 映射所；失败→NaN 列 |
+| `ensure_liquidation_columns` | 旧缓存缺 `liq_long`/`liq_short` 时补 NaN 列（不改已有值） |
+| `generate_synthetic_ohlcv` | GARCH 味 + regime 合成行情（CI / 离线）；含合成 funding/OI/**清算**列 |
 | `load_symbol_data(..., force_refresh=False)` | 统一入口：合成 / 缓存 / 增量 / 降级；`force_refresh` 无视 `incremental_update` 开关 |
 | `refresh_market_data` | **决策前**：主周期强制增量到当下已收盘 tip + 辅周期 tip 对齐 + 新鲜度校验 |
 | `drop_incomplete_last_bar` | 剔除尚未收盘的尾部 K 线（可连续剔除多根） |
@@ -179,10 +180,20 @@ cryptoCurrency/
 
 - 从缓存最后一根**开盘**时刻重拉并 `dedupe(keep=last)`，覆盖可能被修正的 tip。  
 - 交易所顺序（`for_tip`）：`tip_exchange` → `exchange_fallbacks` → 主 `exchange`（避免主所 REST 超时拖死决策）。  
-- tip 默认**不**重拉衍生品（`fetch_derivatives_on_tip: false`）；对新 tip 行 **ffill** 历史 `funding_rate`/`open_interest`。  
+- tip 默认**不**重拉衍生品（`fetch_derivatives_on_tip: false`）；对新 tip 行：**ffill** 历史 `funding_rate`/`open_interest`（状态量）；**禁止 ffill** `liq_long`/`liq_short`（流量/当根名义额，ffill 会把上根爆仓复制成假信号；新 tip 保持 NaN，特征层填 0）。  
 - 辅周期：用已刷新主面板 `resample` 的 tip **并入**辅缓存（保留更早独立历史），避免再打多路 REST。  
 - 若 tip 实际来自备用所：记 `degradations+=ohlcv_tip_exchange_fallback`（跨所微观价差接缝风险）。  
 - `require_fresh_for_decide` + `max_closed_bar_lag`：刷完仍过旧则 **fail-fast**，禁止再用数周前冷缓存装成「当下决策」。
+
+**清算信息源（`fetch_liquidations`，默认 true）**
+
+| 项 | 说明 |
+|----|------|
+| 源列 | `liq_long`（多头被强平名义，订单 side=SELL）、`liq_short`（空头被强平，side=BUY） |
+| 桶对齐 | 事件时刻 τ → 开盘 t 满足 `t ≤ τ < t+Δ` 的主周期 bar（与 volume 同属当根收盘信息；决策时刻 `t+Δ` 可用 → **无前视**） |
+| 缺史 | REST 常仅近端：首笔活动 bar **之前**置 **NaN**（未知），禁止整段填 0 假装「零清算」；首笔之后无事件 bar 记 0 |
+| 开关 | `data.fetch_liquidations`；`false` 时仍写出全 NaN 列便于特征层统一降级 |
+| 降级标签 | 全 NaN → `derivatives_liquidations_unavailable`；有限覆盖率 &lt; 0.5 → `derivatives_liquidations_sparse(coverage=…)` |
 
 **当前默认（研究主路径）**
 
@@ -217,20 +228,26 @@ cryptoCurrency/
 ### 5.1 装配（`features/build.py`）
 
 ```
-OHLCV(+衍生品)
-  → add_technical_features   # RSI/MACD/ATR/rv/布林/资金费率衍生等
+OHLCV(+衍生品: funding/OI/清算)
+  → add_technical_features   # RSI/MACD/ATR/rv/布林/资金费率/清算衍生等
   → frac_diff_ffd(log price) # 分数阶差分，平稳且保留记忆
   → add_mtf_features         # 若 mtf_enabled
   → (pipeline 内) add_news_features
+  → (pipeline 内) side + 可选 liq_align=side×liq_imbalance
 ```
 
-`feature_columns` 排除**非平稳绝对量**：`open/high/low/close/volume/open_interest/funding_rate` 及 `atr_14`。
+`feature_columns` 排除**非平稳绝对量**：`open/high/low/close/volume/open_interest/funding_rate`/`liq_long`/`liq_short` 及 `atr_14`。
 
 **平稳性纪律（重要）**：所有进模型的特征都保持尺度无关。
 - `macd/macd_signal/macd_hist`（主面板与各辅周期 `tf*_macd_hist`）均**除以 close 归一化**，避免多年价格量级漂移（如 BTC 1万→6万）导致的分布漂移与跨 regime 泛化退化。
 - `atr_14` 为**绝对**价格量纲，仅供标注（`_barrier_target`）与实盘 `decide` 计算止损距离；建模改用相对版本 `atr_norm = atr_14 / close`，并把 `atr_14` 从 `feature_columns` 排除。
 
-**衍生品降级**：`funding_rate` / `open_interest` 拉取失败时源列可为全 NaN；衍生列 `funding_z` / `oi_change` **fillna(0)**，避免 `prepare_dataset` 的 `notna().all` 清空全部事件。同时写入 `degradations`：`derivatives_funding_unavailable` / `derivatives_oi_unavailable`。
+**衍生品降级**：`funding_rate` / `open_interest` / `liq_*` 拉取失败时源列可为全 NaN；衍生列 `funding_z` / `oi_change` / `liq_imbalance` / `liq_imbalance_z` / `liq_total_z` **fillna(0)**，避免 `prepare_dataset` 的 `notna().all` 清空全部事件。同时写入 `degradations`：`derivatives_funding_unavailable` / `derivatives_oi_unavailable` / `derivatives_liquidations_unavailable`（及可选 `derivatives_liquidations_sparse`）。
+
+**清算衍生特征**（`features/technical.py`，源列存在时）：
+- `liq_imbalance = (liq_short − liq_long) / (sum + ε)`：空头爆仓为正（偏多推力）
+- `liq_imbalance_z` / `liq_total_z`：相对 `vol_window` 的 z-score（总量用 `log1p`）
+- `liq_align`（`pipeline/run.prepare_dataset` 在写入 `side` 后）：`side × liq_imbalance`；`latest_decision` / `decide_live` 若训练 schema 含该列则同公式重算（防 schema mismatch）
 
 **`oi_change` 墙钟**：回看 bar 数按主周期换算为约 **24h**（`24h / Δ_main`，30m→48、1h→24），避免主周期切换后「固定 24 根」语义漂移。
 
@@ -550,7 +567,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 
 **特征 schema 护栏（实盘）**：`align_feature_schema` 将训练期 `feature_cols` 中缺失列补 `0.0`（防 KeyError，与 MTF 冷启动填 0 语义一致），但若存在缺失列则 **`hold_for_schema_mismatch` 强制 HOLD**——记 `degradations`（`feature_schema_mismatch(...)`），**不调用**集成/校准推理，避免辅周期偶发失败时在错误特征分布上开仓。`decide_live` 与 `latest_decision` 共用此纪律。
 
-**降级环境护栏（实盘）**：`diagnostics/env_guard.py` 仅对**本次推理数据面**标签（合成降级、tip 跨所、新闻稀疏、衍生品不可用、schema mismatch 等）累计严重度；训练期校准/剪枝/nested-OOF 等质量标签**不计分**（否则会永久 HOLD）。`risk.env_degradation_hold_score`（默认 50，≤0 关闭）达标时强制 `low_confidence_environment` HOLD。研究回测不套用。决策 JSON 仍可展示全部 degradations。
+**降级环境护栏（实盘）**：`diagnostics/env_guard.py` 仅对**本次推理数据面**标签（合成降级、tip 跨所、新闻稀疏、衍生品/清算不可用或 sparse、schema mismatch 等）累计严重度；训练期校准/剪枝/nested-OOF 等质量标签**不计分**（否则会永久 HOLD）。`risk.env_degradation_hold_score`（默认 50，≤0 关闭）达标时强制 `low_confidence_environment` HOLD。研究回测不套用。决策 JSON 仍可展示全部 degradations。
 
 **决策可复盘快照**：`latest_decision` / `decide_live` 写入 `audit`（`config_fingerprint`、`data_window_hash`、特征列哈希、冻结阈值、degradations 等），便于事后核对「那次信号用了哪段数据/哪套旋钮」，无需落盘完整权重。
 
@@ -578,7 +595,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | 段 | 关键当前默认 | 说明 |
 |----|--------------|------|
 | `project` | seed=42 | 数据/产物目录 |
-| `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d，`max_closed_bar_lag=4`，`tip_exchange=gate` | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations |
+| `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d，`max_closed_bar_lag=4`，`tip_exchange=gate`，`fetch_liquidations=true` | 真实优先；降级可追踪；衍生品/清算失败 → 特征填 0 + degradations |
 | `news` | `use_synthetic=false`，**`as_feature=false`**（未回填历史前勿开），`auto_build_panel=true`，`require_panel=false`，`min_coverage_warn=0.05`，`require_min_coverage=false` | 缺面板可自动 build；PIT 互证；覆盖率过低记 degradations；`require_min_coverage=true` 可 fail-fast；禁止仅 synthetic 历史混真实行情；真行情加载 corpus 时过滤 `synthetic:` 行 |
 | `features` | FFD d=0.4，`mtf_enabled=true` | MTF 方案 B |
 | `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐；`barrier_vol=rv` 时 Config.load 告警（decide 仍用 atr） |
@@ -795,7 +812,8 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 |------|------|
 | `test_smoke.py` | 合成 + 仅 GBDT 全链路 |
 | `test_leakage.py` | 新闻 as-of（决策时刻）、Purged 无重叠、合成新闻守卫（未来收益面板 / 仅 synthetic 历史 / **corpus 过滤 synthetic 行**）、盘中止损 |
-| `test_design_fixes.py` | pt_sl/ATR/加性空头、**空头 ret↔expm1**、**空头盯市=简单收益(非几何)**、组合敞口、CUSUM 无前视、null 成本、DSR clamp、**权益夏普增量字段**、小样本 stacking、execution_assumption、新闻覆盖率、**require_min_coverage fail-fast**、看板 disclaimer、**联合 CF 校准+保形**、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations / 盯市曲线**、**MTF+空新闻路径**、**base_report 与集成同 report_mask**、**synthetic_fallback 辅周期重采样**、**DeepTS 早停 cutoff** |
+| `test_design_fixes.py` | pt_sl/ATR/加性空头、**空头 ret↔expm1**、**空头盯市=简单收益(非几何)**、组合敞口、CUSUM 无前视、null 成本、DSR clamp、**权益夏普增量字段**、小样本 stacking、execution_assumption、新闻覆盖率、**require_min_coverage fail-fast**、看板 disclaimer、**联合 CF 校准+保形**、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品/清算 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations / 盯市曲线**、**MTF+空新闻路径**、**base_report 与集成同 report_mask**、**synthetic_fallback 辅周期重采样**、**DeepTS 早停 cutoff** |
+| `test_liquidations.py` | 清算 side 分桶、名义额、**桶对齐无前视**、**首笔前 NaN**、清算失败不影响 funding/OI、衍生特征/degradations、sparse 覆盖率告警、ensure 列幂等 |
 | `test_gate_diagnostics.py` | 有效阈值 fixed/max_of/分位回退、**参考窗时间半回退（禁全 eval）**、**双阈值 freeze（CF vs deploy 尺度）**、**禁止二次校准参考分**、**参考窗灌过线抬 thr**、**CPCV thr 用校准尺度**、**conformal_min_margin 收紧 confident**、校准灌过线/低唯一台阶告警、gate_diagnostics 结构 |
 | `test_labeling_perf_parity.py` | `apply_pt_sl_on_t1` / `num_concurrent_events` / `average_uniqueness` 与 pandas 慢路径**逐事件对拍**；`_barrier_log_returns` 无 side 幅度对称；触碰加速后 `get_bins` 一致 |
 | `test_mtf.py` | 辅周期无前视（对齐层须为 NaN）、拒绝更细周期、特征含 MTF |
@@ -859,7 +877,8 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - [x] 盯市 MDD/日内熔断（浮动=`size×side×(P_t/P_entry−1)`，与标签/已实现同形）；每笔年化夏普按唯一性折算；**并行**权益/盯市权益夏普  
 - [x] `data_source` / 看板 `data_mode` 反映真实或降级合成；**Degradations** 上板  
 - [x] `execution_assumption` **仅允许已实现值**（当前 `close_fill`）；未实现配置 fail-fast  
-- [x] 新闻特征覆盖率过低 → `news_features_sparse`；可选 `require_min_coverage` fail-fast；衍生品不可用 → `derivatives_*_unavailable`  
+- [x] 新闻特征覆盖率过低 → `news_features_sparse`；可选 `require_min_coverage` fail-fast；衍生品不可用 → `derivatives_*_unavailable`；清算缺史/稀疏 → `derivatives_liquidations_*`  
+- [x] 清算桶对齐无前视；tip **不** ffill 清算流量；训练/实盘 `liq_align` 同公式  
 - [x] 实盘缺特征列 → `feature_schema_mismatch` HOLD（非静默填 0 开仓）  
 - [x] 报告并行输出权益曲线夏普（`sharpe_equity*` / `sharpe_equity_mtm*`）；旧 `sharpe` 每笔口径与 CPCV/DSR 不变；**看板净值默认盯市 `equity_mtm`**，与 `max_drawdown` KPI 对齐  
 - [~] 资金费默认 0；跨币种仍分账户；盯市仍为事件节点稀疏采样  
@@ -874,6 +893,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - **改标注**：调 `labeling.pt_sl` / `vertical_barrier_bars` / `primary_signal` / `barrier_vol`。  
 - **关 MTF**：`features.mtf_enabled: false`。  
 - **关新闻自动建盘**：`news.auto_build_panel: false`；强制有面板则 `news.require_panel: true`。  
+- **关清算**：`data.fetch_liquidations: false`（仍写 NaN 列 + unavailable 降级）。  
 - **TSFM 协变量**：`experts.tsfm.covariate_cols`（`auto` = 新闻数值列）。  
 
 ---
@@ -884,7 +904,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 |------|------|------------|
 | 真实数据依赖网络 | 失败可降级，但 **`data_source`/看板会标「合成(降级)」**；可关 `allow_synthetic_fallback`；缺新闻面板时 `auto_build_panel` 也可能联网 | ★★★ 预拉缓存 + 新闻历史库 |
 | 决策 tip 跨所拼接 | 历史常为 Binance Vision，tip 可能来自 Gate 等；重叠 bar `keep=last`，接缝处可有微观价差；已标 `ohlcv_tip_exchange_fallback` | ★★ 同所 tip 或接缝平滑/告警阈值 |
-| tip 衍生品 | 默认不重拉；ffill 历史 funding/OI，极端时 tip 仍可能偏旧 | ★ 可选 `fetch_derivatives_on_tip` |
+| tip 衍生品 | 默认不重拉；**状态量** funding/OI ffill；**流量**清算不 ffill（新 tip NaN→特征 0） | ★ 可选 `fetch_derivatives_on_tip` |
+| 清算历史覆盖 | 公开 REST 常仅近端；首笔前 NaN + sparse 标签；多年研究仍缺完整历史库 | ★★★ 清算历史回填/付费源 |
+| 微观结构 | funding/OI/清算已分页接入；失败填 0；无 CVD/链上 | ★★ CVD / 链上 |
 | `06_decide` 每次全量重训 | 决策 JSON 已含 audit 指纹；仍无模型权重落盘，延迟高 | ★★ 持久化部署模型（serve 路径已训一次复用） |
 | TimesFM | 前向未实现 → 回退 naive 且 **`degraded=True`** 写入元数据 | ★★ 实现原生 forecast 或固定 chronos/naive |
 | TSFM 未真微调 | 冻结预测 + 浅头；logistic 已传 `sample_weight` | ★★ 监督微调或显式基线 |
@@ -906,7 +928,6 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 障碍缺口 | 触达按理论挂单价记账，跳空时相对可交易 PnL 偏乐观 | ★ 按实际穿越价记账（可选） |
 | 实盘特征 schema | 缺列已强制 HOLD + `degradations`；不在坏分布上推理 | —（已落地） |
 | 仓位 / 执行 | Kelly 启发式；`null` 成本已与回测统一；**仅 `close_fill` 已实现**（未实现取值报错） | ★ 实现后再开放 `next_open` |
-| 微观结构 | funding/OI 已分页；失败填 0；无清算/链上 | ★★★ 继续扩源 |
 | 执行 | 只决策播报，不下单 | 刻意为之 |
 
 **诚实判断**：30m/1h 加密接近有效市场，「方向准度」空间有限。系统价值在 **无泄漏验证 + 概率校准 + 风险调整**，把小而稳的 edge 安全放大，而不是追求虚高夏普。
@@ -936,6 +957,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 组合级回测 | 并发仓位共享权益、锁定敞口 |
 | PIT 互证 | 新闻互证/权威按报道时刻快照，不含未来跟进源 |
 | prune_eval_mask_ | 弱专家前半选型后，主路径集成报告 / 专家 base_report / 回测共用的后半事件掩码 |
+| `liq_long` / `liq_short` | 当根多头/空头强平名义额（流量；SELL→long，BUY→short） |
+| `liq_imbalance` / `liq_align` | `(short−long)/sum`；与 `side` 乘积交互特征 |
+| `derivatives_liquidations_sparse` | 清算有限覆盖率告警（近端-only REST 常见） |
 | prob_threshold_research | 参考窗 CF `oof_cal` 上冻结的研究开仓阈值（仅研究回测） |
 | prob_threshold_effective | 参考窗 `deploy_cal.transform(raw_oof)` 上冻结的部署阈值（decide/serve/部署回测/WF） |
 | gate_diagnostics_* | 测试/报告窗：过线率、保形、交集、校准台阶与开仓数（各用本路径 thr） |

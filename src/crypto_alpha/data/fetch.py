@@ -1,10 +1,10 @@
-"""数据采集: 交易所 OHLCV + 衍生品(资金费率/持仓量), 并提供合成数据兜底。
+"""数据采集: 交易所 OHLCV + 衍生品(资金费率/持仓量/清算), 并提供合成数据兜底。
 
 设计目的:
 - 用 ccxt 统一接口拉真实数据; 但为了让整条流水线在无网络/无 API key
   的情况下也能一键跑通(便于开发与冒烟测试), 提供高保真的合成数据生成器。
 - 所有输出统一为带 UTC DatetimeIndex 的 DataFrame, 列: open/high/low/close/volume,
-  衍生品列(若有): funding_rate, open_interest。
+  衍生品列(若有): funding_rate, open_interest, liq_long, liq_short。
 """
 from __future__ import annotations
 
@@ -255,15 +255,206 @@ def _paginate_oi(ex, symbol: str, start_ms: int, end_ms: int, max_pages: int = 5
     return rows
 
 
-def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd.DataFrame:
-    """尝试拉取资金费率与持仓量, 对齐到给定索引。任何失败都优雅降级为 NaN 列。
+def _swap_symbol_candidates(symbol: str) -> list[str]:
+    """现货风格 BTC/USDT → 另试永续 BTC/USDT:USDT(清算接口常用统一合约符)。"""
+    s = str(symbol or "").strip()
+    out = [s] if s else []
+    if s and ":" not in s and "/" in s:
+        base, quote = s.split("/", 1)
+        alt = f"{base}/{quote}:{quote}"
+        if alt not in out:
+            out.append(alt)
+    return out
 
+
+def _liq_notional(row: dict) -> float:
+    """清算名义额(优先 quoteValue)。失败返回 nan。"""
+    for k in ("quoteValue", "cost", "notional"):
+        v = row.get(k)
+        if v is not None:
+            try:
+                x = float(v)
+                if np.isfinite(x):
+                    return x
+            except (TypeError, ValueError):
+                pass
+    price, amount = row.get("price"), row.get("amount")
+    if amount is None:
+        amount = row.get("contracts")
+    try:
+        if price is not None and amount is not None:
+            x = float(price) * float(amount)
+            if np.isfinite(x):
+                return abs(x)
+    except (TypeError, ValueError):
+        pass
+    return float("nan")
+
+
+def _liq_bucket(side) -> str | None:
+    """清算订单 side → 仓位桶。
+
+    约定与 Binance forceOrder 一致(订单方向):
+    - SELL = 多头被强平(被动卖出) → liq_long
+    - BUY  = 空头被强平(被动买入) → liq_short
+    缺 side / 歧义值时返回 None(丢弃该笔, 避免污染不平衡)。
+    """
+    s = str(side or "").strip().lower()
+    if s in ("sell", "seller"):
+        return "long"
+    if s in ("buy", "buyer"):
+        return "short"
+    return None
+
+
+def _parse_liq_ts(ts_raw) -> pd.Timestamp | None:
+    """清算事件时间戳 → UTC Timestamp; 无法解析返回 None。"""
+    try:
+        if isinstance(ts_raw, pd.Timestamp):
+            ts = ts_raw
+        elif isinstance(ts_raw, (int, float, np.integer, np.floating)):
+            v = float(ts_raw)
+            # ccxt 一般为 ms; 若数值像秒级则用 s(防误把秒当 ms 甩到 1970)
+            unit = "ms" if v >= 1e11 else "s"
+            ts = pd.Timestamp(v, unit=unit, tz="UTC")
+        else:
+            ts = pd.to_datetime(ts_raw, utc=True)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        return ts
+    except Exception:
+        return None
+
+
+def _liq_exchange_fallbacks(primary: str) -> list[str]:
+    """清算常需 U 本位合约所; 在主所无数据时另试映射所(不影响 funding/OI 所用实例)。"""
+    p = str(primary or "").strip()
+    mapped = {
+        "binance": "binanceusdm",
+        "binancecoinm": "binanceusdm",
+    }
+    out = [p] if p else []
+    alt = mapped.get(p.lower())
+    if alt and alt not in out:
+        out.append(alt)
+    return out
+
+
+def _paginate_liquidations(
+    ex, symbol: str, start_ms: int, end_ms: int, max_pages: int = 200,
+) -> list:
+    """分页拉取公开清算; 不支持/失败返回空列表(由上层降级 NaN)。
+
+    注意: 多数所 REST 仅覆盖**近端**清算, 多年全历史常不完整 → 聚合后会把
+    「首笔之前」置 NaN, 并由特征层记 ``derivatives_liquidations_sparse`` /
+    ``derivatives_liquidations_unavailable``。
+    """
+    if not (getattr(ex, "has", None) or {}).get("fetchLiquidations"):
+        return []
+    fetch_fn = getattr(ex, "fetch_liquidations", None) or getattr(ex, "fetchLiquidations", None)
+    if fetch_fn is None:
+        return []
+
+    for sym in _swap_symbol_candidates(symbol):
+        rows: list = []
+        since, pages = int(start_ms), 0
+        try:
+            while pages < max_pages and since <= end_ms:
+                batch = fetch_fn(sym, since=since, limit=1000)
+                pages += 1
+                if not batch:
+                    break
+                rows.extend(batch)
+                ts_list = [int(r["timestamp"]) for r in batch if r.get("timestamp") is not None]
+                if not ts_list:
+                    break
+                last_ts = max(ts_list)
+                if last_ts >= end_ms or len(batch) < 1000:
+                    break
+                nxt = last_ts + 1
+                if nxt <= since:
+                    break
+                since = nxt
+            if rows:
+                return rows
+        except Exception:
+            continue
+    return []
+
+
+def _aggregate_liquidations(
+    rows: list, index: pd.DatetimeIndex, bar_delta: pd.Timedelta,
+) -> tuple[pd.Series, pd.Series]:
+    """事件 → 主周期 bar 桶内名义额合计(开盘时刻索引)。
+
+    事件时刻 τ 归入开盘 t 满足 t ≤ τ < t+Δ 的 bar(与 OHLCV volume 同属当根已收盘信息)。
+    决策时刻为 t+Δ 时可用该根合计 → 无前视。
+
+    有事件时: 首笔活动 bar **之前**置 NaN(未知历史, 禁止把缺史当成「零清算」);
+    首笔至末笔之间无事件的 bar 记 0(真安静); 无任何成功事件时由调用方保持全 NaN。
+    """
+    long_a = np.zeros(len(index), dtype=float)
+    short_a = np.zeros(len(index), dtype=float)
+    if len(index) == 0:
+        return (
+            pd.Series(long_a, index=index, dtype=float),
+            pd.Series(short_a, index=index, dtype=float),
+        )
+    idx = pd.DatetimeIndex(pd.to_datetime(index, utc=True))
+    delta = pd.Timedelta(bar_delta)
+    for r in rows:
+        ts = _parse_liq_ts(r.get("timestamp"))
+        if ts is None:
+            continue
+        pos = int(idx.searchsorted(ts, side="right") - 1)
+        if pos < 0:
+            continue
+        # 超出该 bar 收盘 → 不属于已收盘面板(防把未完成 bar 或未来事件计入)
+        if ts >= idx[pos] + delta:
+            continue
+        bucket = _liq_bucket(r.get("side"))
+        notion = _liq_notional(r)
+        if bucket is None or not np.isfinite(notion) or notion <= 0:
+            continue
+        if bucket == "long":
+            long_a[pos] += notion
+        else:
+            short_a[pos] += notion
+    active = (long_a > 0) | (short_a > 0)
+    if active.any():
+        first_i = int(np.flatnonzero(active)[0])
+        if first_i > 0:
+            long_a[:first_i] = np.nan
+            short_a[:first_i] = np.nan
+    return (
+        pd.Series(long_a, index=index, dtype=float),
+        pd.Series(short_a, index=index, dtype=float),
+    )
+
+
+def fetch_derivatives(
+    exchange: str,
+    symbol: str,
+    index: pd.DatetimeIndex,
+    *,
+    include_liquidations: bool = True,
+    bar_delta: pd.Timedelta | None = None,
+) -> pd.DataFrame:
+    """尝试拉取资金费率、持仓量与(可选)清算, 对齐到给定索引。
+
+    任何一路失败都优雅降级为 NaN 列, **互不影响**(funding / OI / liquidations 各自 try)。
     对多年回测做分页拉取(不再单次 limit=1000 截断)。
-    共用一个 exchange 实例; funding / OI **各自** try/except, 一路失败不阻断另一路。
+
+    ``include_liquidations=False`` 时仍写出 ``liq_long``/``liq_short`` 全 NaN,
+    便于特征层统一降级, 且不改变旧调用方对 funding/OI 的行为。
     """
     out = pd.DataFrame(index=index)
     out["funding_rate"] = np.nan
     out["open_interest"] = np.nan
+    out["liq_long"] = np.nan
+    out["liq_short"] = np.nan
     if len(index) == 0:
         return out
     start_ms = int(pd.Timestamp(index[0]).timestamp() * 1000)
@@ -274,7 +465,7 @@ def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd
 
         ex = getattr(ccxt, exchange)({"enableRateLimit": True})
     except Exception:
-        return out  # 无 ccxt / 无法建所 → 双列保持 NaN
+        return out  # 无 ccxt / 无法建所 → 列保持 NaN
 
     try:
         if ex.has.get("fetchFundingRateHistory"):
@@ -301,6 +492,47 @@ def fetch_derivatives(exchange: str, symbol: str, index: pd.DatetimeIndex) -> pd
                 out["open_interest"] = s.reindex(index, method="ffill")
     except Exception:
         pass
+
+    # --- 清算: 独立 try, 失败不影响 funding/OI; 主所无数据时另试合约所映射 ---
+    if include_liquidations:
+        try:
+            if bar_delta is None:
+                if len(index) >= 2:
+                    bar_delta = pd.Timedelta(pd.Series(index).diff().median())
+                else:
+                    bar_delta = pd.Timedelta(hours=1)
+            liq_rows: list = []
+            if not pd.isna(bar_delta) and bar_delta > pd.Timedelta(0):
+                liq_rows = _paginate_liquidations(ex, symbol, start_ms, end_ms)
+                if not liq_rows:
+                    import ccxt as _ccxt_mod
+
+                    for alt_name in _liq_exchange_fallbacks(exchange)[1:]:
+                        try:
+                            alt_ex = getattr(_ccxt_mod, alt_name)({"enableRateLimit": True})
+                        except Exception:
+                            continue
+                        liq_rows = _paginate_liquidations(alt_ex, symbol, start_ms, end_ms)
+                        if liq_rows:
+                            break
+                if liq_rows:
+                    lng, sht = _aggregate_liquidations(liq_rows, index, bar_delta)
+                    out["liq_long"] = lng
+                    out["liq_short"] = sht
+        except Exception:
+            pass
+    return out
+
+
+def ensure_liquidation_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """旧缓存可能无清算列: 补 NaN 列, 不改已有值(特征层可统一降级)。"""
+    if df is None or len(df.columns) == 0:
+        return df
+    out = df
+    for col in ("liq_long", "liq_short"):
+        if col not in out.columns:
+            out = out.copy()
+            out[col] = np.nan
     return out
 
 
@@ -356,6 +588,11 @@ def generate_synthetic_ohlcv(
     # 合成衍生品: 资金费率与近期收益弱相关(模拟多头拥挤)
     df["funding_rate"] = pd.Series(rets, index=idx).rolling(8).mean().fillna(0.0) * 0.5
     df["open_interest"] = (volume.cumsum() % 1e6) + 1e5
+    # 合成清算: 下跌时多头清算、上涨时空头清算(弱相关, 仅供冒烟/离线路径有列)
+    rets_s = pd.Series(rets, index=idx)
+    shock = volume * np.abs(rets_s)
+    df["liq_long"] = shock.where(rets_s < 0, 0.0).fillna(0.0)
+    df["liq_short"] = shock.where(rets_s > 0, 0.0).fillna(0.0)
     return df
 
 
@@ -433,9 +670,19 @@ def _fetch_real(cfg, symbol: str, timeframe: str) -> pd.DataFrame:
     # 衍生品只挂在主周期面板上(辅周期不重复拉, 避免接口浪费与错位)
     if timeframe == d["timeframe"] and d.get("fetch_derivatives", False):
         try:
-            df = df.join(fetch_derivatives(ex_used, symbol, df.index))
+            df = df.join(
+                fetch_derivatives(
+                    ex_used,
+                    symbol,
+                    df.index,
+                    include_liquidations=bool(d.get("fetch_liquidations", True)),
+                    bar_delta=timeframe_delta(timeframe),
+                )
+            )
         except Exception as e:
             print(f"[warn] {symbol} 衍生品拉取失败({ex_used}: {e}); 继续仅用 OHLCV。")
+    if timeframe == d["timeframe"]:
+        df = ensure_liquidation_columns(df)
     out = drop_incomplete_last_bar(df, timeframe)
     try:
         out.attrs["exchange_used"] = ex_used
@@ -459,13 +706,21 @@ def _incremental_update(cfg, symbol: str, df: pd.DataFrame, timeframe: str) -> p
         max_calls=50,
         for_tip=True,
     )
-    # tip 增量默认不拉衍生品(慢且易失败); 新 tip 的 funding/OI 可为 NaN, 特征侧已 fillna
+    # tip 增量默认不拉衍生品(慢且易失败); 新 tip 的 funding/OI/清算可为 NaN, 特征侧已 fillna
     pull_deriv = bool(d.get("fetch_derivatives", False)) and bool(
         d.get("fetch_derivatives_on_tip", False)
     )
     if timeframe == d["timeframe"] and pull_deriv and len(new):
         try:
-            new = new.join(fetch_derivatives(ex_used, symbol, new.index))
+            new = new.join(
+                fetch_derivatives(
+                    ex_used,
+                    symbol,
+                    new.index,
+                    include_liquidations=bool(d.get("fetch_liquidations", True)),
+                    bar_delta=timeframe_delta(timeframe),
+                )
+            )
         except Exception as e:
             print(f"[warn] {symbol} 增量衍生品失败({ex_used}: {e}); 继续仅用 OHLCV。")
     if len(new) == 0:
@@ -473,10 +728,15 @@ def _incremental_update(cfg, symbol: str, df: pd.DataFrame, timeframe: str) -> p
     else:
         merged = pd.concat([df, new])
         merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-        # tip 默认不重拉衍生品: 对新 tip 行 ffill 历史 funding/OI, 避免 tip 特征静默变 0
+        # tip 默认不重拉衍生品:
+        # - funding/OI 为**状态**量 → ffill 合理
+        # - liq_* 为**流量**(当根名义额) → 禁止 ffill(否则把上根爆仓额复制到新 tip, 假信号)
+        #   新 tip 无重拉时保持 NaN, 由特征层 fillna(0) 降级
         for col in ("funding_rate", "open_interest"):
             if col in merged.columns:
                 merged[col] = merged[col].ffill()
+        if timeframe == d["timeframe"]:
+            merged = ensure_liquidation_columns(merged)
         out = drop_incomplete_last_bar(merged, timeframe)
     try:
         out.attrs["exchange_used"] = ex_used
@@ -552,6 +812,8 @@ def load_symbol_data(
         df = load_parquet(cache_read)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
+        if tf == main_tf:
+            df = ensure_liquidation_columns(df)
         if do_incremental:
             try:
                 df = _incremental_update(cfg, symbol, df, tf)

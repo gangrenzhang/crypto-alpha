@@ -130,6 +130,8 @@ class DecisionService:
         if "side" in fcols:
             feat = feat.copy()
             feat["side"] = side_ser.astype(float)
+            if "liq_align" in fcols and "liq_imbalance" in feat.columns:
+                feat["liq_align"] = feat["side"].astype(float) * feat["liq_imbalance"].astype(float)
 
         def _audit(d: dict) -> dict:
             trained_like = {

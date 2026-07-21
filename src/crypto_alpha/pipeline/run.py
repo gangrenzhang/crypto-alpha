@@ -113,6 +113,10 @@ def prepare_dataset(cfg: Config, symbol: str, *, for_decide: bool = False) -> Da
     ).astype(float)
     # 事件行与标签 side 严格对齐(同一定义, 防任何漂移)
     feat.loc[labels.index, "side"] = labels["side"].astype(float).values
+    # 清算与主信号同向交互: side×liq_imbalance(空头爆仓为正推力 → 利于多头)
+    # 仅当清算特征存在时写入; 不可用时 imbalance 已为 0, 乘积仍为 0, 不改变样本数。
+    if "liq_imbalance" in feat.columns:
+        feat["liq_align"] = feat["side"].astype(float) * feat["liq_imbalance"].astype(float)
     fcols = feature_columns(feat)
 
     # 对齐: 只保留特征无缺失的事件
@@ -504,6 +508,8 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
     if "side" in fcols:
         panel = panel.copy()
         panel["side"] = side_ser.astype(float)
+        if "liq_align" in fcols and "liq_imbalance" in panel.columns:
+            panel["liq_align"] = panel["side"].astype(float) * panel["liq_imbalance"].astype(float)
     # 防御: 训练面板理论上已含全部 feature_cols; 若列缺失则 HOLD(不推理)
     panel, missing = align_feature_schema(panel, fcols)
     if missing:

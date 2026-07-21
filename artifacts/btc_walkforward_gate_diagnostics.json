@@ -1,105 +1,103 @@
 {
-  "prob_threshold": 0.6236786469344607,
+  "prob_threshold": 0.6273291925465838,
   "n_events": 10975,
   "raw_proba": {
-    "mean": 0.49893984578074196,
-    "std": 0.026464207330867556,
-    "min": 0.40242391152036994,
-    "max": 0.6243565747010325,
-    "frac_ge_threshold": 9.111617312072893e-05
+    "mean": 0.4993090408046585,
+    "std": 0.026283146542141013,
+    "min": 0.4034600748733099,
+    "max": 0.6233721881831259,
+    "frac_ge_threshold": 0.0
   },
   "calibrated_proba": {
-    "mean": 0.49343291829587776,
-    "std": 0.037833768636435255,
-    "min": 0.4598356914650844,
-    "max": 0.675,
+    "mean": 0.49359050100462487,
+    "std": 0.03735516099939977,
+    "min": 0.46218678815489755,
+    "max": 0.6301369863013698,
     "n_unique": 25,
     "top_levels": [
       {
-        "prob": 0.459836,
-        "n": 3792,
-        "frac": 0.3455125284738041
+        "prob": 0.462187,
+        "n": 3791,
+        "frac": 0.34542141230068335
       },
       {
-        "prob": 0.505798,
-        "n": 1992,
-        "frac": 0.18150341685649202
+        "prob": 0.490221,
+        "n": 1692,
+        "frac": 0.15416856492027334
       },
       {
-        "prob": 0.469181,
-        "n": 1325,
-        "frac": 0.12072892938496584
+        "prob": 0.527778,
+        "n": 1338,
+        "frac": 0.1219134396355353
       },
       {
-        "prob": 0.536671,
-        "n": 1206,
-        "frac": 0.10988610478359909
+        "prob": 0.463277,
+        "n": 1092,
+        "frac": 0.09949886104783599
       },
       {
-        "prob": 0.485646,
-        "n": 884,
-        "frac": 0.08054669703872437
+        "prob": 0.502347,
+        "n": 972,
+        "frac": 0.08856492027334852
       },
       {
-        "prob": 0.550765,
-        "n": 411,
-        "frac": 0.03744874715261959
+        "prob": 0.510718,
+        "n": 923,
+        "frac": 0.0841002277904328
       },
       {
-        "prob": 0.505938,
-        "n": 359,
-        "frac": 0.03271070615034168
+        "prob": 0.531165,
+        "n": 414,
+        "frac": 0.03772209567198178
       },
       {
-        "prob": 0.498584,
-        "n": 349,
-        "frac": 0.03179954441913439
+        "prob": 0.625272,
+        "n": 222,
+        "frac": 0.02022779043280182
       },
       {
-        "prob": 0.623679,
-        "n": 203,
-        "frac": 0.018496583143507973
+        "prob": 0.605634,
+        "n": 192,
+        "frac": 0.017494305239179955
       },
       {
-        "prob": 0.594714,
-        "n": 127,
-        "frac": 0.011571753986332574
+        "prob": 0.533546,
+        "n": 188,
+        "frac": 0.01712984054669704
       },
       {
-        "prob": 0.583333,
-        "n": 91,
-        "frac": 0.008291571753986333
+        "prob": 0.57,
+        "n": 56,
+        "frac": 0.00510250569476082
       },
       {
-        "prob": 0.578313,
-        "n": 55,
-        "frac": 0.005011389521640091
+        "prob": 0.627329,
+        "n": 49,
+        "frac": 0.004464692482915718
       }
     ]
   },
   "gates": {
-    "n_prob_ge_threshold": 204,
-    "frac_prob_ge_threshold": 0.0185876993166287,
-    "n_confident": 949,
-    "frac_confident": 0.08646924829157175,
-    "n_prob_and_confident": 204,
-    "frac_prob_and_confident": 0.0185876993166287,
-    "n_opened_size_gt_0": 204,
-    "frac_opened_size_gt_0": 0.0185876993166287,
+    "n_prob_ge_threshold": 51,
+    "frac_prob_ge_threshold": 0.004646924829157175,
+    "n_confident": 554,
+    "frac_confident": 0.05047835990888383,
+    "n_prob_and_confident": 51,
+    "frac_prob_and_confident": 0.004646924829157175,
+    "n_opened_size_gt_0": 51,
+    "frac_opened_size_gt_0": 0.004646924829157175,
     "n_pass_gate_but_size_0": 0
   },
-  "conformal_qhat": 0.5401643085349156,
+  "conformal_qhat": 0.5378132118451024,
   "conformal_min_margin": 0.05,
   "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
   "path": "walk_forward_deploy",
   "threshold_tags": [
-    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.6237)",
-    "deploy_calibration_inflates_pass_rate(raw=0.0027,cal=0.0377,ratio=14.06)",
-    "deploy_prob_threshold_inflate_no_raise_room(thr=0.6237,q=0.9900,cand=0.6237)"
+    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.6253)",
+    "deploy_calibration_inflates_pass_rate(raw=0.0028,cal=0.0473,ratio=16.96)",
+    "deploy_prob_threshold_raised_on_inflate(from=0.6253,to=0.6273,q=0.9900)"
   ],
-  "health_tags": [
-    "calibration_inflates_pass_rate(raw=0.0001,cal=0.0186,ratio=204.00)"
-  ],
+  "health_tags": [],
   "split_tags": [
     "walkforward_purged_label_overlap(n=1)"
   ]

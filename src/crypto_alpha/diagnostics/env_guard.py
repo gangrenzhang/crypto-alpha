@@ -23,6 +23,8 @@ _LIVE_ENV_KEYS: tuple[str, ...] = (
     "news_features_sparse",
     "derivatives_funding_unavailable",
     "derivatives_oi_unavailable",
+    "derivatives_liquidations_unavailable",
+    "derivatives_liquidations_sparse",
 )
 
 # 标签前缀/子串 → 严重度权重。未列入 _LIVE_ENV_KEYS 的不计环境分。
@@ -34,6 +36,8 @@ _SEVERITY: list[tuple[str, int]] = [
     ("news_features_sparse", 15),
     ("derivatives_funding_unavailable", 10),
     ("derivatives_oi_unavailable", 10),
+    ("derivatives_liquidations_unavailable", 10),
+    ("derivatives_liquidations_sparse", 5),
 ]
 
 

@@ -53,6 +53,22 @@ def build_feature_matrix(
         tag = "derivatives_oi_unavailable"
         if tag not in degradations:
             degradations.append(tag)
+    if "liq_long" in df.columns and "liq_short" in df.columns:
+        ll, ls = df["liq_long"], df["liq_short"]
+        if ll.isna().all() and ls.isna().all():
+            tag = "derivatives_liquidations_unavailable"
+            if tag not in degradations:
+                degradations.append(tag)
+        else:
+            # 首笔前 NaN 覆盖率: 近端-only REST 时大段未知, 记 sparse(不改数值)
+            finite = ll.notna() & ls.notna()
+            cov = float(finite.mean()) if len(finite) else 0.0
+            if cov < 0.5:
+                tag = f"derivatives_liquidations_sparse(coverage={cov:.3f})"
+                if tag not in degradations and not any(
+                    str(t).startswith("derivatives_liquidations_sparse") for t in degradations
+                ):
+                    degradations.append(tag)
 
     # 分数阶差分(对 log 价格), 平稳且保留记忆
     logprice = np.log(df["close"])
@@ -87,6 +103,7 @@ def feature_columns(feat: pd.DataFrame) -> list[str]:
     """
     exclude = {
         "open", "high", "low", "close", "volume", "open_interest", "funding_rate",
+        "liq_long", "liq_short",  # 绝对名义额; 建模用 liq_imbalance / *_z
         "atr_14",  # 绝对 ATR, 仅供标注/风控; 建模用 atr_norm
     }
     return [c for c in feat.columns if c not in exclude]

@@ -89,4 +89,30 @@ def add_technical_features(
             .replace([np.inf, -np.inf], np.nan).fillna(0.0)
         )
 
+    # 清算衍生特征: 不平衡(空头爆仓−多头爆仓)对价格有短窗推力;
+    # 源列全 NaN(接口不可用)时衍生列填 0, 与 funding_z/oi_change 同纪律。
+    if "liq_long" in out.columns and "liq_short" in out.columns:
+        ll = out["liq_long"]
+        ls = out["liq_short"]
+        if ll.isna().all() and ls.isna().all():
+            out["liq_imbalance"] = 0.0
+            out["liq_imbalance_z"] = 0.0
+            out["liq_total_z"] = 0.0
+        else:
+            ll_f = ll.fillna(0.0)
+            ls_f = ls.fillna(0.0)
+            tot = ll_f + ls_f
+            imb = (ls_f - ll_f) / (tot + 1e-12)
+            out["liq_imbalance"] = imb.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            out["liq_imbalance_z"] = (
+                (imb - rolling_mean(imb, vol_window))
+                / (rolling_std(imb, vol_window) + 1e-12)
+            ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            # 相对名义用 log1p 降偏, 再 z-score
+            log_tot = np.log1p(tot)
+            out["liq_total_z"] = (
+                (log_tot - rolling_mean(log_tot, vol_window))
+                / (rolling_std(log_tot, vol_window) + 1e-12)
+            ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
     return out

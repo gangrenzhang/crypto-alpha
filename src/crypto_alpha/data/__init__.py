@@ -11,6 +11,7 @@ from .fetch import (
     raw_cache_path,
     resolve_raw_cache_path,
     supported_timeframes,
+    ensure_liquidation_columns,
 )
 from .storage import save_parquet, load_parquet
 from .news import (
@@ -37,6 +38,7 @@ __all__ = [
     "raw_cache_path",
     "resolve_raw_cache_path",
     "supported_timeframes",
+    "ensure_liquidation_columns",
     "save_parquet",
     "load_parquet",
     "build_news_panel",

@@ -40,9 +40,13 @@ data:
   # 4×30m ≈ 原 2×1h 的墙钟容差
   require_fresh_for_decide: true
   max_closed_bar_lag: 4
-  # 衍生品数据(资金费率/持仓量): 分页回填覆盖 since→今, 失败则优雅降级 NaN
+  # 衍生品数据(资金费率/持仓量/清算): 分页回填覆盖 since→今, 失败则优雅降级 NaN
   fetch_derivatives: true
-  # 决策 tip 增量默认不重拉衍生品(慢); 新 tip 行 ffill 历史 funding/OI
+  # 公开清算(liq_long/liq_short); 与 funding/OI 同挂主面板, 独立 try 失败不拖垮其它列。
+  # 多数所 REST 仅近端历史 → 首笔前为 NaN + degradations(sparse/unavailable); 特征衍生列填 0。
+  # tip 增量: 清算是流量, 不 ffill; 仅 funding/OI 状态量 ffill。
+  fetch_liquidations: true
+  # 决策 tip 增量默认不重拉衍生品(慢); 新 tip 行 ffill 历史 funding/OI(清算不 ffill)
   fetch_derivatives_on_tip: false
 
 # ---------------- 新闻(喂给 LLM 专家) ----------------
