@@ -30,8 +30,28 @@ class PurgedKFold:
         self.embargo_pct = embargo_pct
 
     def split(self, X: pd.DataFrame):
-        if not X.index.equals(self.t1.index):
+        # 允许仅分辨率不同(ms vs ns)但时刻相同的索引; 统一到 UTC ns 再比
+        def _utc_ns(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+            out = pd.DatetimeIndex(idx)
+            if out.tz is None:
+                out = out.tz_localize("UTC")
+            else:
+                out = out.tz_convert("UTC")
+            try:
+                return out.as_unit("ns")
+            except Exception:
+                return pd.DatetimeIndex(out.asi8, tz="UTC")
+
+        x_idx = _utc_ns(X.index)
+        t_idx = _utc_ns(self.t1.index)
+        if not x_idx.equals(t_idx):
             raise ValueError("X 与 t1 的索引必须一致")
+        # 后续用对齐后的轴, 避免单位混用
+        if not X.index.equals(x_idx) or not self.t1.index.equals(t_idx):
+            X = X.copy()
+            X.index = x_idx
+            self.t1 = self.t1.copy()
+            self.t1.index = t_idx
         indices = np.arange(X.shape[0])
         embargo = int(X.shape[0] * self.embargo_pct)
         test_ranges = [

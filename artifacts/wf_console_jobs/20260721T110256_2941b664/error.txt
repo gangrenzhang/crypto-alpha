@@ -1,0 +1,26 @@
+ValueError: X 与 t1 的索引必须一致
+
+Traceback (most recent call last):
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/wf_console_server.py", line 422, in worker_main
+    summary = run_walkforward(
+        cfg,
+    ...<4 lines>...
+        recompute_sample_weight=True if recompute else None,
+    )
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/pipeline/walkforward.py", line 379, in run_walkforward
+    ens.fit(
+    ~~~~~~~^
+        X_tr, y_tr, t1_tr, sample_weight=w_tr,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        n_splits=int(vcfg["n_splits"]), embargo_pct=float(vcfg["embargo_pct"]),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/ensemble/stacking.py", line 270, in fit
+    oof = self.build_oof(X, y, t1, sample_weight, n_splits, embargo_pct)
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/ensemble/stacking.py", line 86, in build_oof
+    for tr, te in pkf.split(X):
+                  ~~~~~~~~~^^^
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/validation/purged_kfold.py", line 34, in split
+    raise ValueError("X 与 t1 的索引必须一致")
+ValueError: X 与 t1 的索引必须一致

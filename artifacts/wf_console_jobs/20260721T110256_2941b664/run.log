@@ -1,0 +1,31 @@
+$ /Users/zhanggangren/Desktop/pyro/.venv/bin/python3.14.real /Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/wf_console_server.py --worker /Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/wf_console_jobs/20260721T110256_2941b664
+===== ETH/USDT walk-forward (console worker) =====
+train_start=2020-01-01 test_start=2024-09-14 test_end=2026-07-18 recompute_sample_weight=False
+[warn] ETH/USDT: tip 来自备用所 gate (主所 binance); 历史缓存与 tip 可能存在微观价差接缝。
+/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/features/technical.py:88: FutureWarning: The default fill_method='pad' in Series.pct_change is deprecated and will be removed in a future version. Either fill in any non-leading NA values prior to calling pct_change or specify 'fill_method=None' to not fill NA values.
+  out["open_interest"].pct_change(oi_bars)
+Traceback (most recent call last):
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/wf_console_server.py", line 422, in worker_main
+    summary = run_walkforward(
+        cfg,
+    ...<4 lines>...
+        recompute_sample_weight=True if recompute else None,
+    )
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/pipeline/walkforward.py", line 379, in run_walkforward
+    ens.fit(
+    ~~~~~~~^
+        X_tr, y_tr, t1_tr, sample_weight=w_tr,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        n_splits=int(vcfg["n_splits"]), embargo_pct=float(vcfg["embargo_pct"]),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/ensemble/stacking.py", line 270, in fit
+    oof = self.build_oof(X, y, t1, sample_weight, n_splits, embargo_pct)
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/ensemble/stacking.py", line 86, in build_oof
+    for tr, te in pkf.split(X):
+                  ~~~~~~~~~^^^
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/validation/purged_kfold.py", line 34, in split
+    raise ValueError("X 与 t1 的索引必须一致")
+ValueError: X 与 t1 的索引必须一致
+

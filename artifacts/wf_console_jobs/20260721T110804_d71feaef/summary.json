@@ -185,5 +185,5 @@
     "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)",
     "walkforward_purged_label_overlap(n=2)"
   ],
-  "trades_csv": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/btc_walkforward_trades.csv"
+  "trades_csv": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/wf_console_jobs/20260721T110804_d71feaef/trades.csv"
 }

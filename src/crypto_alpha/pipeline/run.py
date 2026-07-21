@@ -127,6 +127,24 @@ def prepare_dataset(cfg: Config, symbol: str, *, for_decide: bool = False) -> Da
 
     X = feat.loc[labels.index, fcols].copy()
 
+    # 统一事件轴为 UTC ns: 部分 parquet(如 ETH)索引为 ms, 标签轴常为 ns,
+    # 否则 PurgedKFold 的 index.equals 失败(值相同但单位不同)。
+    def _utc_ns(idx) -> pd.DatetimeIndex:
+        out = pd.DatetimeIndex(idx)
+        if out.tz is None:
+            out = out.tz_localize("UTC")
+        else:
+            out = out.tz_convert("UTC")
+        try:
+            return out.as_unit("ns")
+        except Exception:
+            return pd.DatetimeIndex(out.asi8, tz="UTC")  # 兜底按 ns 重建
+
+    ev_idx = _utc_ns(labels.index)
+    labels = labels.copy()
+    labels.index = ev_idx
+    X.index = ev_idx
+
     sw = combined_sample_weights(labels, feat.index).reindex(labels.index).fillna(1.0).values
 
     return Dataset(

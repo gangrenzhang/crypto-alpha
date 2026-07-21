@@ -1,0 +1,7 @@
+{
+  "symbol": "ETH/USDT",
+  "train_start": "2020-01-01",
+  "test_start": "2024-09-14",
+  "test_end": "2026-07-18",
+  "recompute_sample_weight": false
+}
