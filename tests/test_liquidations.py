@@ -177,3 +177,186 @@ def test_ensure_liquidation_columns_idempotent():
     assert "liq_long" in out.columns and out["liq_long"].isna().all()
     out2 = ensure_liquidation_columns(out)
     assert list(out2.columns) == list(out.columns)
+
+
+def test_attach_liquidations_from_store_onto_bars(tmp_path):
+    """事件库按 bar 时间对齐后, 特征非全 0。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.data.liquidations import (
+        attach_liquidations_to_ohlcv,
+        save_liquidation_events,
+    )
+    from crypto_alpha.features.build import build_feature_matrix
+
+    cfg = Config.load()
+    cfg.raw["project"]["data_dir"] = str(tmp_path)
+    cfg.raw["features"]["mtf_enabled"] = False
+    cfg.raw["data"]["fetch_liquidations"] = True
+    cfg.raw["data"]["liquidations"] = {"store_dir": "liquidations", "auto_attach": True}
+
+    idx = pd.date_range("2024-06-01", periods=10, freq="1h", tz="UTC")
+    close = pd.Series(np.linspace(60000, 61000, 10), index=idx)
+    ohlcv = pd.DataFrame({
+        "open": close, "high": close * 1.001, "low": close * 0.999,
+        "close": close, "volume": 1.0,
+        "liq_long": np.nan, "liq_short": np.nan,
+    }, index=idx)
+
+    events = pd.DataFrame({
+        "timestamp": [
+            pd.Timestamp("2024-06-01 02:15", tz="UTC"),
+            pd.Timestamp("2024-06-01 05:40", tz="UTC"),
+        ],
+        "side_bucket": ["long", "short"],
+        "notional": [1000.0, 2000.0],
+        "exchange": ["test", "test"],
+        "symbol": ["BTC/USDT", "BTC/USDT"],
+    })
+    save_liquidation_events(cfg, "BTC/USDT", events)
+
+    attached = attach_liquidations_to_ohlcv(ohlcv, cfg, "BTC/USDT", bar_delta=pd.Timedelta(hours=1))
+    assert float(attached.loc[idx[2], "liq_long"]) == pytest.approx(1000.0)
+    assert float(attached.loc[idx[5], "liq_short"]) == pytest.approx(2000.0)
+    # 首笔前未知
+    assert pd.isna(attached.loc[idx[0], "liq_long"])
+
+    feat = build_feature_matrix(ohlcv, cfg, symbol="BTC/USDT")
+    assert "liq_imbalance" in feat.columns
+    assert float(feat["liq_imbalance"].abs().max()) > 0
+    assert feat.attrs.get("liquidations_attached_from_store") is True
+    deg = feat.attrs.get("degradations") or []
+    assert "derivatives_liquidations_unavailable" not in deg
+
+
+def test_attach_keeps_panel_when_store_empty(tmp_path):
+    """事件库为空时保留面板已有 liq; 有落入面板的事件则以事件库为准覆盖。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.data.liquidations import (
+        attach_liquidations_to_ohlcv,
+        save_liquidation_events,
+    )
+
+    cfg = Config.load()
+    cfg.raw["project"]["data_dir"] = str(tmp_path)
+    cfg.raw["data"]["fetch_liquidations"] = True
+    cfg.raw["data"]["liquidations"] = {"store_dir": "liquidations", "auto_attach": True}
+    idx = pd.date_range("2024-06-01", periods=3, freq="1h", tz="UTC")
+    ohlcv = pd.DataFrame({
+        "close": [1.0, 2.0, 3.0],
+        "open": [1.0, 2.0, 3.0], "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0],
+        "volume": 1.0,
+        "liq_long": [5.0, 0.0, 0.0],
+        "liq_short": [0.0, 0.0, 0.0],
+    }, index=idx)
+    out = attach_liquidations_to_ohlcv(ohlcv, cfg, "BTC/USDT", bar_delta=pd.Timedelta(hours=1))
+    assert float(out["liq_long"].iloc[0]) == pytest.approx(5.0)
+
+    events = pd.DataFrame({
+        "timestamp": [pd.Timestamp("2024-06-01 00:10", tz="UTC")],
+        "side_bucket": ["long"],
+        "notional": [99.0],
+        "exchange": ["test"],
+        "symbol": ["BTC/USDT"],
+    })
+    save_liquidation_events(cfg, "BTC/USDT", events)
+    out2 = attach_liquidations_to_ohlcv(ohlcv, cfg, "BTC/USDT", bar_delta=pd.Timedelta(hours=1))
+    assert float(out2["liq_long"].iloc[0]) == pytest.approx(99.0)
+
+
+def test_attach_outside_panel_does_not_wipe(tmp_path):
+    """事件全在面板窗外: 不覆盖面板, 记 liquidations_outside_panel。"""
+    from crypto_alpha.config import Config
+    from crypto_alpha.data.liquidations import (
+        attach_liquidations_to_ohlcv,
+        save_liquidation_events,
+    )
+
+    cfg = Config.load()
+    cfg.raw["project"]["data_dir"] = str(tmp_path)
+    cfg.raw["data"]["fetch_liquidations"] = True
+    cfg.raw["data"]["liquidations"] = {"store_dir": "liquidations", "auto_attach": True}
+    idx = pd.date_range("2024-06-01", periods=3, freq="1h", tz="UTC")
+    ohlcv = pd.DataFrame({
+        "close": [1.0, 2.0, 3.0],
+        "open": [1.0, 2.0, 3.0], "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0],
+        "volume": 1.0,
+        "liq_long": [5.0, 0.0, 0.0],
+        "liq_short": [0.0, 0.0, 0.0],
+    }, index=idx)
+    events = pd.DataFrame({
+        "timestamp": [pd.Timestamp("2025-01-01 00:10", tz="UTC")],
+        "side_bucket": ["long"],
+        "notional": [99.0],
+        "exchange": ["test"],
+        "symbol": ["BTC/USDT"],
+    })
+    save_liquidation_events(cfg, "BTC/USDT", events)
+    out = attach_liquidations_to_ohlcv(ohlcv, cfg, "BTC/USDT", bar_delta=pd.Timedelta(hours=1))
+    assert float(out["liq_long"].iloc[0]) == pytest.approx(5.0)
+    assert out.attrs.get("liquidations_outside_panel") is True
+    assert out.attrs.get("liquidations_attached_from_store") is False
+
+
+def test_aggregate_events_outside_panel_stay_nan():
+    """事件全在面板窗外 → 全 NaN, 不得填 0。"""
+    from crypto_alpha.data.fetch import _aggregate_liquidations
+
+    idx = pd.date_range("2024-01-01", periods=5, freq="1h", tz="UTC")
+    rows = [
+        {"timestamp": int(pd.Timestamp("2024-02-01 00:10", tz="UTC").timestamp() * 1000),
+         "side": "buy", "quoteValue": 9.0},
+    ]
+    lng, sht = _aggregate_liquidations(rows, idx, pd.Timedelta(hours=1))
+    assert lng.isna().all() and sht.isna().all()
+
+
+def test_paginate_liquidations_tip_without_since():
+    """Gate 类: 带 since 空、无 since 有数据 → 仍应返回 tip。"""
+    from crypto_alpha.data.fetch import _paginate_liquidations
+
+    class _Ex:
+        has = {"fetchLiquidations": True}
+
+        def fetch_liquidations(self, symbol, since=None, limit=1000):
+            if since is not None:
+                return []
+            return [
+                {
+                    "timestamp": 1_700_000_000_000,
+                    "side": "buy",
+                    "quoteValue": 1234.0,
+                    "symbol": symbol,
+                }
+            ]
+
+    rows = _paginate_liquidations(
+        _Ex(), "BTC/USDT", start_ms=1_600_000_000_000, end_ms=1_800_000_000_000
+    )
+    assert len(rows) == 1
+    assert float(rows[0]["quoteValue"]) == pytest.approx(1234.0)
+
+
+def test_import_liquidation_events_frame(tmp_path):
+    from crypto_alpha.config import Config
+    from crypto_alpha.data.liquidations import (
+        attach_liquidations_to_ohlcv,
+        import_liquidation_events_frame,
+    )
+
+    cfg = Config.load()
+    cfg.raw["project"]["data_dir"] = str(tmp_path)
+    cfg.raw["data"]["fetch_liquidations"] = True
+    cfg.raw["data"]["liquidations"] = {"store_dir": "liquidations", "auto_attach": True}
+    idx = pd.date_range("2024-06-01", periods=4, freq="1h", tz="UTC")
+    ohlcv = pd.DataFrame({
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0,
+        "liq_long": np.nan, "liq_short": np.nan,
+    }, index=idx)
+    frame = pd.DataFrame({
+        "timestamp": [pd.Timestamp("2024-06-01 01:20", tz="UTC")],
+        "side": ["sell"],
+        "notional": [500.0],
+    })
+    import_liquidation_events_frame(cfg, "BTC/USDT", frame, exchange="csv")
+    attached = attach_liquidations_to_ohlcv(ohlcv, cfg, "BTC/USDT", bar_delta=pd.Timedelta(hours=1))
+    assert float(attached.loc[idx[1], "liq_long"]) == pytest.approx(500.0)

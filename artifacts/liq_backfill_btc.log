@@ -1,0 +1,26 @@
+[fetch] BTC/USDT liquidations …
+/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/data/liquidations.py:105: FutureWarning: The behavior of DataFrame concatenation with empty or all-NA entries is deprecated. In a future version, this will no longer exclude empty or all-NA columns when determining the result dtypes. To retain the old behavior, exclude the relevant entries before the concat operation.
+  merged = pd.concat([old, new_events], ignore_index=True)
+{
+  "ok": true,
+  "n_fetched": 66,
+  "n_stored_total": 66,
+  "path": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/data/liquidations/BTC_USDT.parquet",
+  "exchanges_tried": [
+    "gate",
+    "binanceusdm",
+    "bitget",
+    "mexc",
+    "binance",
+    "bybit",
+    "okx",
+    "htx",
+    "bitmex"
+  ],
+  "t_min": "2026-07-21 04:54:46+00:00",
+  "t_max": "2026-07-21 05:49:04+00:00"
+}
+[align] bars=156101 finite=156101 nonzero_bars=0 liq_long_sum=0.00 liq_short_sum=0.00
+/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/features/technical.py:88: FutureWarning: The default fill_method='pad' in Series.pct_change is deprecated and will be removed in a future version. Either fill in any non-leading NA values prior to calling pct_change or specify 'fill_method=None' to not fill NA values.
+  out["open_interest"].pct_change(oi_bars)
+[feat] degradations=['derivatives_oi_unavailable'] attached=True n_events=66 liq_imbalance_absmax=0.0

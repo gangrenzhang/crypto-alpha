@@ -1,0 +1,10 @@
+[skip-fetch] store=/Users/zhanggangren/Desktop/pyro/crypto-alpha/data/liquidations/BTC_USDT.parquet n=66
+[refresh] OHLCV tip for BTC/USDT …
+[refresh] BTC/USDT: 拉取至当下已收盘 30m tip …
+[refresh] BTC/USDT: last_bar_open=2026-07-21 05:00:00+00:00, lag=0 days 00:25:31.814081, exchange=gate
+[ohlcv] 2017-08-17 04:00:00+00:00 -> 2026-07-21 05:00:00+00:00 n=156208
+[align] bars=156208 finite=2 nonzero_bars=2 liq_long_sum=2060.31 liq_short_sum=1839.05
+[align] last_nonzero_bar=2026-07-21 05:00:00+00:00
+/Users/zhanggangren/Desktop/pyro/crypto-alpha/src/crypto_alpha/features/technical.py:88: FutureWarning: The default fill_method='pad' in Series.pct_change is deprecated and will be removed in a future version. Either fill in any non-leading NA values prior to calling pct_change or specify 'fill_method=None' to not fill NA values.
+  out["open_interest"].pct_change(oi_bars)
+[feat] degradations=['derivatives_oi_unavailable', 'derivatives_liquidations_sparse(coverage=0.000)'] attached=True n_events=66 liq_imbalance_absmax=0.9999999999999996

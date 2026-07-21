@@ -14,6 +14,13 @@ from .fetch import (
     ensure_liquidation_columns,
 )
 from .storage import save_parquet, load_parquet
+from .liquidations import (
+    attach_liquidations_to_ohlcv,
+    fetch_and_store_liquidations,
+    import_liquidation_events_frame,
+    load_liquidation_events,
+    liquidations_path,
+)
 from .news import (
     build_news_panel,
     save_news_panel,
@@ -39,6 +46,11 @@ __all__ = [
     "resolve_raw_cache_path",
     "supported_timeframes",
     "ensure_liquidation_columns",
+    "attach_liquidations_to_ohlcv",
+    "fetch_and_store_liquidations",
+    "import_liquidation_events_frame",
+    "load_liquidation_events",
+    "liquidations_path",
     "save_parquet",
     "load_parquet",
     "build_news_panel",

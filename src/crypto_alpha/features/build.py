@@ -41,20 +41,48 @@ def build_feature_matrix(
     except Exception:
         oi_bars = int(fcfg.get("oi_change_bars", 24) or 24)
 
-    feat = add_technical_features(df, windows, vol_window, oi_change_bars=oi_bars)
+    # 冷缓存 OHLCV 常无清算: 从独立事件库按每根 K 线时间桶对齐喂入 liq_long/liq_short
+    panel = df
+    try:
+        from ..data.liquidations import attach_liquidations_to_ohlcv
+
+        panel = attach_liquidations_to_ohlcv(df, cfg, symbol)
+    except Exception as e:
+        print(f"[warn] 清算事件库对齐失败({e}); 继续无清算列。")
+        panel = df
+
+    feat = add_technical_features(panel, windows, vol_window, oi_change_bars=oi_bars)
 
     # 衍生品不可用时特征已填 0; 记 degradations 供看板/审计(不阻断主流程)
     degradations: list[str] = list(getattr(feat, "attrs", {}).get("degradations") or [])
-    if "funding_rate" in df.columns and df["funding_rate"].isna().all():
+    # 透传「已从事件库对齐」元数据
+    try:
+        if getattr(panel, "attrs", {}).get("liquidations_attached_from_store"):
+            feat.attrs["liquidations_attached_from_store"] = True
+            n_ev = getattr(panel, "attrs", {}).get("liquidations_n_events")
+            if n_ev is not None:
+                feat.attrs["liquidations_n_events"] = n_ev
+            cov = getattr(panel, "attrs", {}).get("liquidations_bar_coverage")
+            if cov is not None:
+                feat.attrs["liquidations_bar_coverage"] = cov
+        if getattr(panel, "attrs", {}).get("liquidations_outside_panel"):
+            feat.attrs["liquidations_outside_panel"] = True
+            n_ev = getattr(panel, "attrs", {}).get("liquidations_n_events")
+            if n_ev is not None:
+                feat.attrs["liquidations_n_events"] = n_ev
+    except Exception:
+        pass
+
+    if "funding_rate" in panel.columns and panel["funding_rate"].isna().all():
         tag = "derivatives_funding_unavailable"
         if tag not in degradations:
             degradations.append(tag)
-    if "open_interest" in df.columns and df["open_interest"].isna().all():
+    if "open_interest" in panel.columns and panel["open_interest"].isna().all():
         tag = "derivatives_oi_unavailable"
         if tag not in degradations:
             degradations.append(tag)
-    if "liq_long" in df.columns and "liq_short" in df.columns:
-        ll, ls = df["liq_long"], df["liq_short"]
+    if "liq_long" in panel.columns and "liq_short" in panel.columns:
+        ll, ls = panel["liq_long"], panel["liq_short"]
         if ll.isna().all() and ls.isna().all():
             tag = "derivatives_liquidations_unavailable"
             if tag not in degradations:
@@ -71,7 +99,7 @@ def build_feature_matrix(
                     degradations.append(tag)
 
     # 分数阶差分(对 log 价格), 平稳且保留记忆
-    logprice = np.log(df["close"])
+    logprice = np.log(panel["close"])
     logprice.name = "logprice"
     fd = frac_diff_ffd(logprice, d=float(fcfg["frac_diff_d"]), thres=float(fcfg["frac_diff_thres"]))
     feat[fd.name] = fd
@@ -82,7 +110,7 @@ def build_feature_matrix(
         if frames is None and symbol is not None:
             from ..data.fetch import load_aux_timeframes
 
-            frames = load_aux_timeframes(cfg, symbol, main_df=df)
+            frames = load_aux_timeframes(cfg, symbol, main_df=panel)
         if frames:
             feat = add_mtf_features(feat, frames, cfg, main_tf=cfg["data"]["timeframe"])
 

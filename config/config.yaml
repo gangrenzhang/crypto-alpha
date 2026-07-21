@@ -42,10 +42,17 @@ data:
   max_closed_bar_lag: 4
   # 衍生品数据(资金费率/持仓量/清算): 分页回填覆盖 since→今, 失败则优雅降级 NaN
   fetch_derivatives: true
-  # 公开清算(liq_long/liq_short); 与 funding/OI 同挂主面板, 独立 try 失败不拖垮其它列。
-  # 多数所 REST 仅近端历史 → 首笔前为 NaN + degradations(sparse/unavailable); 特征衍生列填 0。
-  # tip 增量: 清算是流量, 不 ffill; 仅 funding/OI 状态量 ffill。
-  fetch_liquidations: true
+  # 公开清算: 独立事件库 data/liquidations/ + 按每根 K 线时间桶对齐进面板。
+  # 冷缓存 OHLCV 训练时 build_feature_matrix 会 auto_attach 事件库 → liq_long/liq_short。
+  # 多数所 REST 仅近端 → 首笔前 NaN + sparse; tip 流量不 ffill。
+  # 暂关: 公开源盖不住训练/回测窗; 有多年事件库或付费/CSV import 后再开。
+  fetch_liquidations: false
+  liquidations:
+    store_dir: liquidations          # 相对 data_dir
+    auto_attach: true                # 特征装配时从事件库按每根 K 线时间桶对齐(需 fetch_liquidations=true)
+    fetch_on_tip: true               # tip 刷新时轻量拉近端清算→事件库(需 fetch_liquidations=true)
+    exchanges: [gate]                # 清算优先所(Gate tip 无 since 可用; Binance ccxt 常 NotSupported)
+    merge_all_exchanges: false       # true=扫完全部候选所增补; tip_only 路径强制 false
   # 决策 tip 增量默认不重拉衍生品(慢); 新 tip 行 ffill 历史 funding/OI(清算不 ffill)
   fetch_derivatives_on_tip: false
 

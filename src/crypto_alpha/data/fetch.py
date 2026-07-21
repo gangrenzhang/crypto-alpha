@@ -267,6 +267,14 @@ def _swap_symbol_candidates(symbol: str) -> list[str]:
     return out
 
 
+def _liq_symbol_candidates(symbol: str) -> list[str]:
+    """清算接口优先统一合约符(swap), 再试现货风格(多数所对 spot 直接 NotSupported)。"""
+    cands = _swap_symbol_candidates(symbol)
+    swap = [s for s in cands if ":" in s]
+    spot = [s for s in cands if ":" not in s]
+    return swap + spot
+
+
 def _liq_notional(row: dict) -> float:
     """清算名义额(优先 quoteValue)。失败返回 nan。"""
     for k in ("quoteValue", "cost", "notional"):
@@ -339,6 +347,26 @@ def _liq_exchange_fallbacks(primary: str) -> list[str]:
     alt = mapped.get(p.lower())
     if alt and alt not in out:
         out.append(alt)
+    # Gate 公开 liq_orders 对 tip(无 since)可用; Binance ccxt 常 NotSupported
+    for extra in ("gate", "binanceusdm"):
+        if extra not in out:
+            out.append(extra)
+    return out
+
+
+def _dedupe_liq_rows(rows: list) -> list:
+    """按 timestamp+side+名义粗去重, 保序。"""
+    seen: set[tuple] = set()
+    out: list = []
+    for r in rows or []:
+        ts = r.get("timestamp")
+        side = str(r.get("side") or "").lower()
+        notion = _liq_notional(r)
+        key = (ts, side, round(float(notion), 6) if np.isfinite(notion) else None)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
     return out
 
 
@@ -350,6 +378,9 @@ def _paginate_liquidations(
     注意: 多数所 REST 仅覆盖**近端**清算, 多年全历史常不完整 → 聚合后会把
     「首笔之前」置 NaN, 并由特征层记 ``derivatives_liquidations_sparse`` /
     ``derivatives_liquidations_unavailable``。
+
+    关键实: Gate 等所在传入 ``since``/``from`` 时经常直接空结果或 400, 但**不带 since**
+    的 tip 拉取有数据。因此先 tip(无 since), 再尝试 since 分页补历史。
     """
     if not (getattr(ex, "has", None) or {}).get("fetchLiquidations"):
         return []
@@ -357,8 +388,17 @@ def _paginate_liquidations(
     if fetch_fn is None:
         return []
 
-    for sym in _swap_symbol_candidates(symbol):
+    for sym in _liq_symbol_candidates(symbol):
         rows: list = []
+        # --- A) tip: 不带 since(Gate 等唯一可用路径) ---
+        try:
+            tip = fetch_fn(sym, limit=1000)
+            if tip:
+                rows.extend(tip)
+        except Exception:
+            pass
+
+        # --- B) since 分页: 部分所支持更长历史 ---
         since, pages = int(start_ms), 0
         try:
             while pages < max_pages and since <= end_ms:
@@ -377,10 +417,20 @@ def _paginate_liquidations(
                 if nxt <= since:
                     break
                 since = nxt
-            if rows:
-                return rows
         except Exception:
+            pass
+
+        if not rows:
             continue
+        rows = _dedupe_liq_rows(rows)
+        # 写入事件库时保留 tip 全量; 聚合层再按面板索引裁剪。
+        # 这里若严格按 [start,end] 过滤, tip 事件在 end=面板末(偏旧)时会被误丢。
+        in_window = [
+            r for r in rows
+            if r.get("timestamp") is not None
+            and int(start_ms) - 7 * 86400_000 <= int(r["timestamp"]) <= int(end_ms) + 7 * 86400_000
+        ]
+        return in_window if in_window else rows
     return []
 
 
@@ -428,6 +478,11 @@ def _aggregate_liquidations(
         if first_i > 0:
             long_a[:first_i] = np.nan
             short_a[:first_i] = np.nan
+    elif rows:
+        # 有事件但无一落入本面板时间窗(常见: 冷缓存末 bar 早于 tip 清算)
+        # → 全 NaN, 禁止把「事件在窗外」伪装成「全历史零清算」
+        long_a[:] = np.nan
+        short_a[:] = np.nan
     return (
         pd.Series(long_a, index=index, dtype=float),
         pd.Series(short_a, index=index, dtype=float),
@@ -441,6 +496,7 @@ def fetch_derivatives(
     *,
     include_liquidations: bool = True,
     bar_delta: pd.Timedelta | None = None,
+    cfg=None,
 ) -> pd.DataFrame:
     """尝试拉取资金费率、持仓量与(可选)清算, 对齐到给定索引。
 
@@ -449,6 +505,9 @@ def fetch_derivatives(
 
     ``include_liquidations=False`` 时仍写出 ``liq_long``/``liq_short`` 全 NaN,
     便于特征层统一降级, 且不改变旧调用方对 funding/OI 的行为。
+
+    若传入 ``cfg``, 成功拉到的清算事件会 **append** 到独立事件库
+    ``data/liquidations/<SYMBOL>.parquet``, 供冷缓存 OHLCV 训练时按 bar 对齐。
     """
     out = pd.DataFrame(index=index)
     out["funding_rate"] = np.nan
@@ -502,6 +561,7 @@ def fetch_derivatives(
                 else:
                     bar_delta = pd.Timedelta(hours=1)
             liq_rows: list = []
+            liq_ex_used = str(exchange)
             if not pd.isna(bar_delta) and bar_delta > pd.Timedelta(0):
                 liq_rows = _paginate_liquidations(ex, symbol, start_ms, end_ms)
                 if not liq_rows:
@@ -514,11 +574,26 @@ def fetch_derivatives(
                             continue
                         liq_rows = _paginate_liquidations(alt_ex, symbol, start_ms, end_ms)
                         if liq_rows:
+                            liq_ex_used = alt_name
                             break
                 if liq_rows:
                     lng, sht = _aggregate_liquidations(liq_rows, index, bar_delta)
                     out["liq_long"] = lng
                     out["liq_short"] = sht
+                    if cfg is not None:
+                        try:
+                            from .liquidations import (
+                                _normalize_rows,
+                                append_liquidation_events,
+                            )
+
+                            ev = _normalize_rows(
+                                liq_rows, exchange=liq_ex_used, symbol=str(symbol)
+                            )
+                            if len(ev):
+                                append_liquidation_events(cfg, symbol, ev)
+                        except Exception as e:
+                            print(f"[warn] 清算事件写入事件库失败: {e}")
         except Exception:
             pass
     return out
@@ -677,6 +752,7 @@ def _fetch_real(cfg, symbol: str, timeframe: str) -> pd.DataFrame:
                     df.index,
                     include_liquidations=bool(d.get("fetch_liquidations", True)),
                     bar_delta=timeframe_delta(timeframe),
+                    cfg=cfg,
                 )
             )
         except Exception as e:
@@ -719,6 +795,7 @@ def _incremental_update(cfg, symbol: str, df: pd.DataFrame, timeframe: str) -> p
                     new.index,
                     include_liquidations=bool(d.get("fetch_liquidations", True)),
                     bar_delta=timeframe_delta(timeframe),
+                    cfg=cfg,
                 )
             )
         except Exception as e:
@@ -738,6 +815,26 @@ def _incremental_update(cfg, symbol: str, df: pd.DataFrame, timeframe: str) -> p
         if timeframe == d["timeframe"]:
             merged = ensure_liquidation_columns(merged)
         out = drop_incomplete_last_bar(merged, timeframe)
+    # tip 清算: 独立于 fetch_derivatives_on_tip(后者很重)。轻量 tip 写入事件库再按 bar 对齐。
+    if (
+        timeframe == d["timeframe"]
+        and bool(d.get("fetch_liquidations", True))
+        and bool((d.get("liquidations") or {}).get("fetch_on_tip", True))
+    ):
+        try:
+            from .liquidations import attach_liquidations_to_ohlcv, fetch_and_store_liquidations
+
+            fetch_and_store_liquidations(
+                cfg,
+                symbol,
+                since=pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=2),
+                tip_only=True,
+            )
+            out = attach_liquidations_to_ohlcv(
+                out, cfg, symbol, bar_delta=timeframe_delta(timeframe)
+            )
+        except Exception as e:
+            print(f"[warn] {symbol} tip 清算对齐失败: {e}")
     try:
         out.attrs["exchange_used"] = ex_used
         primary = str(d.get("exchange") or "")

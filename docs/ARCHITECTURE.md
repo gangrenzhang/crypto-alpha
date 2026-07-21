@@ -124,7 +124,7 @@ cryptoCurrency/
 
 ### 4.1 数据获取流程（无需预先准备数据集）
 
-**数据源接口已内置**：行情/衍生品走 `ccxt`，新闻走多源适配器（RSS/API）。**你不需要手工准备任何 CSV/数据集**——跑训练时会自动拉取、缓存、加工成建模结构、再训练。
+**数据源接口已内置**：行情/衍生品走 `ccxt`，新闻走多源适配器（RSS/API）。OHLCV/funding/OI 等主路径可自动拉取、缓存再训练；**清算全史例外**——公开 REST 盖不住多年 WF，若要训练窗真有清算特征，需 `--import-csv`/付费源或自建 WS 积累（见 §4.2「缺清算覆盖」）。
 
 触发点在 `pipeline/run.prepare_dataset`：默认 `load_symbol_data`（拉行情/缓存/合成）；**决策路径**传 `for_decide=True` 时先 `refresh_market_data`（刷到当下已收盘 tip）→ `build_feature_matrix`（特征；衍生品失败则衍生列填 0）→ `ensure_news_panel` + `add_news_features`（缺新闻面板且 `auto_build_panel` 时自动构建）→ `build_meta_labels`（标签）→ 组装 `Dataset`（`panel/X/y/events/t1/sample_weight` + `degradations`），`train_and_validate` 直接吃这个结构。
 
@@ -148,8 +148,9 @@ cryptoCurrency/
 |-----|------|
 | `fetch_ohlcv` | ccxt 分页拉取多年 K 线（单次 limit≈1000，循环至 `since`→今） |
 | `fetch_ohlcv_resilient` | 按交易所候选列表依次尝试；`for_tip=True` 时优先 `tip_exchange`/fallbacks |
-| `fetch_derivatives` | 资金费率 / OI / **可选清算**；分页 `_paginate_funding` / `_paginate_oi` / `_paginate_liquidations`；共用一个 exchange 实例，三路 **各自** try（一路失败不拖另一路）；清算主所空时可另试 `binance→binanceusdm` 映射所；失败→NaN 列 |
+| `fetch_derivatives` | 资金费率 / OI / **可选清算**；分页 `_paginate_funding` / `_paginate_oi` / `_paginate_liquidations`；共用一个 exchange 实例，三路 **各自** try（一路失败不拖另一路）；清算主所空时可另试 `binance→binanceusdm`/`gate` 映射；成功且传入 `cfg` 时 **append** 事件库；失败→NaN 列 |
 | `ensure_liquidation_columns` | 旧缓存缺 `liq_long`/`liq_short` 时补 NaN 列（不改已有值） |
+| `data/liquidations.py` | 独立事件库 + `attach_liquidations_to_ohlcv` / `fetch_and_store_liquidations` / `import_liquidation_events_frame` |
 | `generate_synthetic_ohlcv` | GARCH 味 + regime 合成行情（CI / 离线）；含合成 funding/OI/**清算**列 |
 | `load_symbol_data(..., force_refresh=False)` | 统一入口：合成 / 缓存 / 增量 / 降级；`force_refresh` 无视 `incremental_update` 开关 |
 | `refresh_market_data` | **决策前**：主周期强制增量到当下已收盘 tip + 辅周期 tip 对齐 + 新鲜度校验 |
@@ -180,20 +181,62 @@ cryptoCurrency/
 
 - 从缓存最后一根**开盘**时刻重拉并 `dedupe(keep=last)`，覆盖可能被修正的 tip。  
 - 交易所顺序（`for_tip`）：`tip_exchange` → `exchange_fallbacks` → 主 `exchange`（避免主所 REST 超时拖死决策）。  
-- tip 默认**不**重拉衍生品（`fetch_derivatives_on_tip: false`）；对新 tip 行：**ffill** 历史 `funding_rate`/`open_interest`（状态量）；**禁止 ffill** `liq_long`/`liq_short`（流量/当根名义额，ffill 会把上根爆仓复制成假信号；新 tip 保持 NaN，特征层填 0）。  
+- tip 默认**不**重拉 funding/OI（`fetch_derivatives_on_tip: false`）；对新 tip 行：**ffill** 历史 `funding_rate`/`open_interest`（状态量）；**禁止 ffill** `liq_long`/`liq_short`（流量/当根名义额，ffill 会把上根爆仓复制成假信号）。  
+- 清算 tip：**独立**于 `fetch_derivatives_on_tip`——`liquidations.fetch_on_tip: true`（默认）时，增量路径以 `tip_only=True` 只扫优先所（默认 gate、短超时）→ append 事件库 → `attach_liquidations_to_ohlcv`。  
 - 辅周期：用已刷新主面板 `resample` 的 tip **并入**辅缓存（保留更早独立历史），避免再打多路 REST。  
 - 若 tip 实际来自备用所：记 `degradations+=ohlcv_tip_exchange_fallback`（跨所微观价差接缝风险）。  
 - `require_fresh_for_decide` + `max_closed_bar_lag`：刷完仍过旧则 **fail-fast**，禁止再用数周前冷缓存装成「当下决策」。
 
-**清算信息源（`fetch_liquidations`，默认 true）**
+**清算信息源（`fetch_liquidations`，当前默认 false）**
+
+```
+交易所 tip/REST
+  → _paginate_liquidations（先无 since tip，再 since 分页）
+  → data/liquidations/<SYMBOL>.parquet（append 去重）
+  → attach_liquidations_to_ohlcv（按主周期 bar 开盘桶）
+  → build_feature_matrix → liq_imbalance / *_z
+  → prepare_dataset → 可选 liq_align = side × liq_imbalance
+```
 
 | 项 | 说明 |
 |----|------|
 | 源列 | `liq_long`（多头被强平名义，订单 side=SELL）、`liq_short`（空头被强平，side=BUY） |
-| 桶对齐 | 事件时刻 τ → 开盘 t 满足 `t ≤ τ < t+Δ` 的主周期 bar（与 volume 同属当根收盘信息；决策时刻 `t+Δ` 可用 → **无前视**） |
-| 缺史 | REST 常仅近端：首笔活动 bar **之前**置 **NaN**（未知），禁止整段填 0 假装「零清算」；首笔之后无事件 bar 记 0 |
-| 开关 | `data.fetch_liquidations`；`false` 时仍写出全 NaN 列便于特征层统一降级 |
+| 事件库 | `data/liquidations/<SYMBOL>.parquet`；与 OHLCV 冷缓存解耦；`scripts/13_backfill_liquidations.py` 回填 / `--import-csv` / `--refresh-ohlcv` |
+| 按 bar 喂入 | `build_feature_matrix` → `attach_liquidations_to_ohlcv`：事件 τ → 开盘 t 满足 `t ≤ τ < t+Δ`（与 volume 同属当根收盘信息；决策时刻 `t+Δ` → **无前视**） |
+| 缺史语义 | 首笔活动 bar **之前**置 **NaN**（未知），禁止整段填 0；首笔之后无事件 bar 记 0；**有事件但无一落入面板** → 聚合全 NaN，且 attach **不覆盖**面板已有值，记 `liquidations_outside_panel` |
+| 拉取纪律 | `_paginate_liquidations`：**先 tip(无 since)**（Gate 带 `since`/`from` 常空或 400），再 since 分页；符号优先 `BTC/USDT:USDT`；`liquidations.exchanges` 默认 `[gate]`；`merge_all_exchanges: false` 时首所有效即停 |
+| tip | `fetch_on_tip: true` + `tip_only=True`：仅优先所、8s 超时，不拖死 `refresh_market_data` |
+| 开关 | `data.fetch_liquidations`（**当前 false**：不拉不 attach，有全史/付费库后再开）；`false` 时仍写出全 NaN 列便于特征层统一降级 |
+| 外部历史 | `import_liquidation_events_frame` / `--import-csv` 可补多年；**公开 REST alone 无法覆盖 2017→今**——冷缓存训练若事件仅 tip，会 `unavailable`/`sparse`，特征填 0 |
 | 降级标签 | 全 NaN → `derivatives_liquidations_unavailable`；有限覆盖率 &lt; 0.5 → `derivatives_liquidations_sparse(coverage=…)` |
+| attrs | `liquidations_attached_from_store` / `liquidations_n_events` / `liquidations_bar_coverage` / `liquidations_outside_panel` |
+
+**训练 / 回测窗缺清算覆盖（现状问题，必须知情）**
+
+工程管道（事件库 → 按 bar 对齐 → `liq_imbalance*`）已打通，但**公开数据源填不满研究窗**：
+
+| 事实 | 含义 |
+|------|------|
+| 回填 `ok=true` / `n_fetched>0` | 常只表示 **Gate tip 入库成功**，**不是** 2015→今全史回填成功 |
+| Gate 公开 `liq_orders` | **仅近端 tip**；带 `since`/`from` 分页常空；实测事件跨度约小时级 |
+| 与典型 BTC WF（如 train &lt; 2022-09-14、test → 2026-07-18） | tip 事件落在回测截止日之后或窗外 → **与训练/回测窗无重叠**；WF 产物常见 `derivatives_liquidations_unavailable` |
+| 对齐冷缓存面板 | 十余万根 30m 中有限非零清算 bar 可少至个位数（覆盖率 ≪ 0.1%）；特征层对缺史段 **fillna(0)**，模型**并未真正吃到历史清算 alpha** |
+| Binance 公开全市场历史 REST | `allForceOrders`（fapi/dapi）生产返回 `out of maintenance`；文档仍列出 ≠ 线上可用 |
+| `data.binance.vision` | **UM** `liquidationSnapshot` 空；**CM** `BTCUSD_PERP` 日 zip 约 2023-06→2024-10 后停更（币本位 ≠ BTC/USDT K 线） |
+| GitHub「Historical Liquidation」 | 多数是 **WS/API 采集器**，不是现成多年数据库 |
+| Hugging Face | 无可靠「多年 Binance USDT 永续逐笔清算」开源库；相近者或为 **DeFi 链上**清算，或为极短窗 UM 微结构采集 |
+
+**补齐路径（优先级）**：① 付费聚合 / 外部 CSV → `import` 进事件库（覆盖过去 WF）；② Binance WS `forceOrder` 常驻累积（同所未来 + decide）；③ Gate tip 仅作管道验证 / 过渡代理。**禁止**把 tip 回填成功解读为「训练窗已有清算」。
+
+**清算已知边界（研究时必须诚实）**
+
+1. Binance/ccxt `fetchLiquidations` 常为 `NotSupported`；Gate 公开 `liq_orders` **仅 tip**，无法用 `from`/`to` 拉多年。  
+2. 冷缓存 OHLCV 末 bar 若早于 tip 清算时刻，必须先 `--refresh-ohlcv` / `refresh_market_data`，否则事件落不到桶（outside_panel）。  
+3. 未收盘 bar 上的清算要等该 bar 收盘后才进入面板（`drop_incomplete_last_bar` + `τ < t+Δ`），与决策无前视一致。  
+4. 多年 WF 若要清算 alpha，需持续 tip/WS 积累、或 CSV/付费历史源导入事件库——不能指望单次 REST 回填；**当前默认公开路径不覆盖 train/test 窗**（见上表）。  
+5. **跨所匹配**：默认 K 线主源 `exchange=binance`、清算 `liquidations.exchanges=[gate]`。各所强平引擎/保证金/OI 分布不同 → **Gate 清算 ≠ Binance 清算地图**；当前特征是级联**方向/流量代理**（`liq_imbalance*`），不是同所热力图价位。名义额绝对尺度与 Binance OI 不可直接混读；研究应知情（可记 venue mismatch），理想路径是同所或可加权的多所合计。  
+6. **为何 Binance 清算 REST 拉不下来（实测）**：`GET /fapi/v1/allForceOrders`（及 dapi 同名）自停维护后生产 **400** `out of maintenance`（文档仍可能列出）；`forceOrders` 需签名且仅**本账户**强平（401/非全市场）；ccxt `fetchLiquidations` 对 binance* 为 `NotSupported`。官方留口是 WS `btcusdt@forceOrder` / `!forceOrder@arr`（每秒每 symbol 最多 1 条快照 → 级联低估、无历史回补）。同所完整历史通常需 WS 自建积累或付费聚合源；CM Vision 仅作有损对照。  
+7. **开源数据集缺口**：不宜默认 GitHub/Hugging Face 标题含 Historical Liquidation 即拥有多年全量；HF 上 DeFi 清算 ≠ CEX 合约清算。
 
 **当前默认（研究主路径）**
 
@@ -229,6 +272,7 @@ cryptoCurrency/
 
 ```
 OHLCV(+衍生品: funding/OI/清算)
+  → attach_liquidations_to_ohlcv   # 冷缓存无清算时从事件库按 bar 对齐
   → add_technical_features   # RSI/MACD/ATR/rv/布林/资金费率/清算衍生等
   → frac_diff_ffd(log price) # 分数阶差分，平稳且保留记忆
   → add_mtf_features         # 若 mtf_enabled
@@ -242,7 +286,7 @@ OHLCV(+衍生品: funding/OI/清算)
 - `macd/macd_signal/macd_hist`（主面板与各辅周期 `tf*_macd_hist`）均**除以 close 归一化**，避免多年价格量级漂移（如 BTC 1万→6万）导致的分布漂移与跨 regime 泛化退化。
 - `atr_14` 为**绝对**价格量纲，仅供标注（`_barrier_target`）与实盘 `decide` 计算止损距离；建模改用相对版本 `atr_norm = atr_14 / close`，并把 `atr_14` 从 `feature_columns` 排除。
 
-**衍生品降级**：`funding_rate` / `open_interest` / `liq_*` 拉取失败时源列可为全 NaN；衍生列 `funding_z` / `oi_change` / `liq_imbalance` / `liq_imbalance_z` / `liq_total_z` **fillna(0)**，避免 `prepare_dataset` 的 `notna().all` 清空全部事件。同时写入 `degradations`：`derivatives_funding_unavailable` / `derivatives_oi_unavailable` / `derivatives_liquidations_unavailable`（及可选 `derivatives_liquidations_sparse`）。
+**衍生品降级**：`funding_rate` / `open_interest` / `liq_*` 拉取失败时源列可为全 NaN；衍生列 `funding_z` / `oi_change` / `liq_imbalance` / `liq_imbalance_z` / `liq_total_z` **fillna(0)**，避免 `prepare_dataset` 的 `notna().all` 清空全部事件。同时写入 `degradations`：`derivatives_funding_unavailable` / `derivatives_oi_unavailable` / `derivatives_liquidations_unavailable`（及可选 `derivatives_liquidations_sparse`）。事件库有事件但未落入面板时记 `liquidations_outside_panel`（不假装已对齐）。
 
 **清算衍生特征**（`features/technical.py`，源列存在时）：
 - `liq_imbalance = (liq_short − liq_long) / (sum + ε)`：空头爆仓为正（偏多推力）
@@ -595,7 +639,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | 段 | 关键当前默认 | 说明 |
 |----|--------------|------|
 | `project` | seed=42 | 数据/产物目录 |
-| `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d，`max_closed_bar_lag=4`，`tip_exchange=gate`，`fetch_liquidations=true` | 真实优先；降级可追踪；衍生品/清算失败 → 特征填 0 + degradations |
+| `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d，`max_closed_bar_lag=4`，`tip_exchange=gate`，`fetch_liquidations=false`（有清算全史后再开），`liquidations.auto_attach/fetch_on_tip=true`，`exchanges=[gate]` | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations；清算关时列 NaN→特征 0 + unavailable |
 | `news` | `use_synthetic=false`，**`as_feature=false`**（未回填历史前勿开），`auto_build_panel=true`，`require_panel=false`，`min_coverage_warn=0.05`，`require_min_coverage=false` | 缺面板可自动 build；PIT 互证；覆盖率过低记 degradations；`require_min_coverage=true` 可 fail-fast；禁止仅 synthetic 历史混真实行情；真行情加载 corpus 时过滤 `synthetic:` 行 |
 | `features` | FFD d=0.4，`mtf_enabled=true` | MTF 方案 B |
 | `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐；`barrier_vol=rv` 时 Config.load 告警（decide 仍用 atr） |
@@ -791,6 +835,7 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `10_run_all.py` | 全专家联跑 + HTML | `--experts` `--symbols` `--cpcv` `--walkforward` `--open` |
 | `11_make_canvas.py` | Cursor Canvas | `--out` |
 | `12_audit.py` | 闭环完整性在线体检（CPU，无显卡） | `--json` `--bars` `--seed` |
+| `13_backfill_liquidations.py` | 清算事件库回填 + 按 bar 对齐验证 | `--symbol` `--import-csv` `--refresh-ohlcv` `--skip-fetch` |
 | `btc_walkforward_summary.py` | 真外推基线（库 `run_walkforward` 薄封装） | `--symbol` `--test-start` `--test-end` |
 | `btc_walkforward_compare.py` | 两档门控 WF 对比 | `--run` / `--a` `--b` |
 | `btc_kline_panel.py` | 回测开平仓 K 线 HTML 面板 | `--open` |
@@ -813,7 +858,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | `test_smoke.py` | 合成 + 仅 GBDT 全链路 |
 | `test_leakage.py` | 新闻 as-of（决策时刻）、Purged 无重叠、合成新闻守卫（未来收益面板 / 仅 synthetic 历史 / **corpus 过滤 synthetic 行**）、盘中止损 |
 | `test_design_fixes.py` | pt_sl/ATR/加性空头、**空头 ret↔expm1**、**空头盯市=简单收益(非几何)**、组合敞口、CUSUM 无前视、null 成本、DSR clamp、**权益夏普增量字段**、小样本 stacking、execution_assumption、新闻覆盖率、**require_min_coverage fail-fast**、看板 disclaimer、**联合 CF 校准+保形**、schema HOLD、CPCV 时间切分、**互证 PIT**、**衍生品/清算 NaN 不清空样本**、**禁运从 max(t1) 起算**、**confident 掩码零开仓**、**t0 当根不触发障碍**、**FFD 因果**、**LLM decision_delta**、**notifier reason**、**看板 Degradations / 盯市曲线**、**MTF+空新闻路径**、**base_report 与集成同 report_mask**、**synthetic_fallback 辅周期重采样**、**DeepTS 早停 cutoff** |
-| `test_liquidations.py` | 清算 side 分桶、名义额、**桶对齐无前视**、**首笔前 NaN**、清算失败不影响 funding/OI、衍生特征/degradations、sparse 覆盖率告警、ensure 列幂等 |
+| `test_liquidations.py` | 清算 side 分桶、名义额、**桶对齐无前视**、**首笔前 NaN**、**窗外不全填 0 / attach 不覆盖**、tip 无 since 回退、CSV 导入、清算失败不影响 funding/OI、衍生特征/degradations、sparse、ensure 列幂等 |
 | `test_gate_diagnostics.py` | 有效阈值 fixed/max_of/分位回退、**参考窗时间半回退（禁全 eval）**、**双阈值 freeze（CF vs deploy 尺度）**、**禁止二次校准参考分**、**参考窗灌过线抬 thr**、**CPCV thr 用校准尺度**、**conformal_min_margin 收紧 confident**、校准灌过线/低唯一台阶告警、gate_diagnostics 结构 |
 | `test_labeling_perf_parity.py` | `apply_pt_sl_on_t1` / `num_concurrent_events` / `average_uniqueness` 与 pandas 慢路径**逐事件对拍**；`_barrier_log_returns` 无 side 幅度对称；触碰加速后 `get_bins` 一致 |
 | `test_mtf.py` | 辅周期无前视（对齐层须为 NaN）、拒绝更细周期、特征含 MTF |
@@ -905,7 +950,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 真实数据依赖网络 | 失败可降级，但 **`data_source`/看板会标「合成(降级)」**；可关 `allow_synthetic_fallback`；缺新闻面板时 `auto_build_panel` 也可能联网 | ★★★ 预拉缓存 + 新闻历史库 |
 | 决策 tip 跨所拼接 | 历史常为 Binance Vision，tip 可能来自 Gate 等；重叠 bar `keep=last`，接缝处可有微观价差；已标 `ohlcv_tip_exchange_fallback` | ★★ 同所 tip 或接缝平滑/告警阈值 |
 | tip 衍生品 | 默认不重拉；**状态量** funding/OI ffill；**流量**清算不 ffill（新 tip NaN→特征 0） | ★ 可选 `fetch_derivatives_on_tip` |
-| 清算历史覆盖 | 公开 REST 常仅近端；首笔前 NaN + sparse 标签；多年研究仍缺完整历史库 | ★★★ 清算历史回填/付费源 |
+| 清算历史覆盖 | **现状缺口**：管道已通，但公开源（Gate tip / Binance REST 停维护 / UM Vision 空）**盖不住**典型 train/test 窗；回填 `ok` 常= tip 入库；WF 多见 `derivatives_liquidations_unavailable`；特征填 0 ≠ 已学清算 alpha。HF/GitHub 无多年 Binance USDT 全库 | ★★★ 付费聚合/CSV import（历史 WF）+ Binance WS 常驻（同所未来） |
 | 微观结构 | funding/OI/清算已分页接入；失败填 0；无 CVD/链上 | ★★ CVD / 链上 |
 | `06_decide` 每次全量重训 | 决策 JSON 已含 audit 指纹；仍无模型权重落盘，延迟高 | ★★ 持久化部署模型（serve 路径已训一次复用） |
 | TimesFM | 前向未实现 → 回退 naive 且 **`degraded=True`** 写入元数据 | ★★ 实现原生 forecast 或固定 chronos/naive |
