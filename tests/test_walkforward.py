@@ -166,6 +166,156 @@ def test_resolve_split_from_config():
             cfg, test_start="2023-06-01", test_end="2023-01-01",
         )
 
+    split3 = resolve_walkforward_split(
+        cfg,
+        train_start="2020-01-01T00:00:00Z",
+        test_start="2024-09-14T00:00:00Z",
+        test_end="2026-07-18T00:00:00Z",
+    )
+    assert split3.train_start == pd.Timestamp("2020-01-01", tz="UTC")
+    with pytest.raises(ValueError, match="train_start"):
+        resolve_walkforward_split(
+            cfg, train_start="2024-09-14", test_start="2024-09-14",
+        )
+
+
+def test_train_start_drops_early_events():
+    ev = _idx(10, "2019-12-28")  # crosses into 2020
+    t1 = ev + pd.Timedelta(days=1)
+    split = WalkForwardSplitConfig(
+        test_start=pd.Timestamp("2020-01-05", tz="UTC"),
+        test_end=pd.Timestamp("2020-01-08", tz="UTC"),
+        train_start=pd.Timestamp("2020-01-01", tz="UTC"),
+    )
+    tr, te, tags = build_walkforward_masks(ev, t1, split)
+    assert any("walkforward_train_start" in t for t in tags)
+    assert not np.any(ev[tr] < split.train_start)
+    assert_walkforward_split_invariants(ev, t1, tr, te, split)
+
+
+def test_train_start_identity_and_boundaries():
+    """n(无 start)=n(有)+dropped; t0==train_start 进训, t0==test_start 进测。"""
+    ev = pd.DatetimeIndex(
+        [
+            "2019-12-31",
+            "2020-01-01",
+            "2020-01-02",
+            "2024-09-13",
+            "2024-09-14",
+            "2024-09-15",
+        ],
+        tz="UTC",
+    )
+    t1 = ev + pd.Timedelta(hours=1)
+    s0 = WalkForwardSplitConfig(
+        test_start=pd.Timestamp("2024-09-14", tz="UTC"),
+        test_end=pd.Timestamp("2026-07-18", tz="UTC"),
+    )
+    s1 = WalkForwardSplitConfig(
+        test_start=s0.test_start,
+        test_end=s0.test_end,
+        train_start=pd.Timestamp("2020-01-01", tz="UTC"),
+    )
+    tr0, te0, _ = build_walkforward_masks(ev, t1, s0)
+    tr1, te1, tags = build_walkforward_masks(ev, t1, s1)
+    dropped = int(
+        next(t for t in tags if "dropped_pre_train=" in t).split("=")[-1].rstrip(")")
+    )
+    assert int(tr0.sum()) == int(tr1.sum()) + dropped
+    assert set(ev[tr1]).issubset(set(ev[tr0]))
+    assert list(ev[tr1]) == [ev[1], ev[2], ev[3]]
+    assert list(ev[te1]) == [ev[4], ev[5]]
+    assert_walkforward_split_invariants(ev, t1, tr1, te1, s1)
+
+
+def test_train_start_with_embargo():
+    """embargo 抬高 label_deadline 时, train_start 仍只约束 t0。"""
+    ev = pd.DatetimeIndex(
+        ["2020-01-01", "2020-01-10", "2020-01-20", "2020-02-01"], tz="UTC",
+    )
+    # 第二个事件 t1 越过 deadline(test_start - 5d)
+    t1 = pd.Series(
+        [
+            pd.Timestamp("2020-01-02", tz="UTC"),
+            pd.Timestamp("2020-01-28", tz="UTC"),  # crosses deadline 01-27
+            pd.Timestamp("2020-01-21", tz="UTC"),
+            pd.Timestamp("2020-02-02", tz="UTC"),
+        ],
+        index=ev,
+    )
+    split = WalkForwardSplitConfig(
+        test_start=pd.Timestamp("2020-02-01", tz="UTC"),
+        test_end=pd.Timestamp("2020-02-10", tz="UTC"),
+        train_start=pd.Timestamp("2020-01-01", tz="UTC"),
+    )
+    embargo = pd.Timedelta(days=5)
+    tr, te, tags = build_walkforward_masks(ev, t1, split, embargo_delta=embargo)
+    assert any("walkforward_embargo" in t for t in tags)
+    # 01-10 因 t1 越 deadline 不得进训; 01-01/01-20 可进训
+    assert not bool(tr[1])
+    assert bool(tr[0]) and bool(tr[2])
+    assert bool(te[3])
+    assert_walkforward_split_invariants(
+        ev, t1, tr, te, split, embargo_delta=embargo,
+    )
+
+
+def test_combined_sample_weights_matches_pieces():
+    from crypto_alpha.labeling.sample_weights import (
+        combined_sample_weights,
+        sample_weights_by_return,
+        time_decay_weights,
+    )
+
+    idx = pd.date_range("2020-01-01", periods=5, freq="D", tz="UTC")
+    bars = pd.date_range("2020-01-01", periods=20, freq="h", tz="UTC")
+    events = pd.DataFrame(
+        {
+            "t1": idx + pd.Timedelta(hours=6),
+            "ret": [0.01, -0.02, 0.03, -0.01, 0.02],
+        },
+        index=idx,
+    )
+    got = combined_sample_weights(events, bars)
+    w_u = sample_weights_by_return(events, bars).reindex(events.index).fillna(1.0)
+    w_d = time_decay_weights(events).reindex(events.index).fillna(1.0)
+    exp = (w_u * w_d)
+    exp = exp / (exp.mean() + 1e-12)
+    np.testing.assert_allclose(got.to_numpy(), exp.to_numpy(), rtol=1e-12)
+
+
+def test_recompute_sample_weight_train_local_decay():
+    """重算后训练集最旧衰减应为 last_weight=0.5, 最新为 1。"""
+    from crypto_alpha.labeling.sample_weights import (
+        combined_sample_weights,
+        time_decay_weights,
+    )
+
+    idx = pd.date_range("2020-01-01", periods=4, freq="D", tz="UTC")
+    bars = pd.date_range("2020-01-01", periods=48, freq="h", tz="UTC")
+    events = pd.DataFrame(
+        {"t1": idx + pd.Timedelta(hours=3), "ret": [0.01, 0.02, -0.01, 0.03]},
+        index=idx,
+    )
+    # 人为混入更早「全量」事件只影响全量 decay, 不影响子集重算
+    full_idx = pd.DatetimeIndex(["2019-01-01", *idx.astype(str)], tz="UTC")
+    full = pd.DataFrame(
+        {
+            "t1": [pd.Timestamp("2019-01-01", tz="UTC") + pd.Timedelta(hours=3)]
+            + list(events["t1"]),
+            "ret": [0.01] + list(events["ret"]),
+        },
+        index=full_idx,
+    )
+    decay_full_slice = time_decay_weights(full).reindex(idx)
+    decay_re = time_decay_weights(events)
+    assert float(decay_re.iloc[0]) == pytest.approx(0.5)
+    assert float(decay_re.iloc[-1]) == pytest.approx(1.0)
+    assert float(decay_full_slice.iloc[0]) > 0.5  # 全量里 2020 不是最旧
+    sw = combined_sample_weights(events, bars)
+    assert len(sw) == 4
+    assert abs(float(sw.mean()) - 1.0) < 1e-9
+
 
 def test_run_all_require_walkforward_fails_when_disabled(monkeypatch):
     """发布硬前置: require_in_run_all 且未跑 WF → 训练前立刻 RuntimeError。"""

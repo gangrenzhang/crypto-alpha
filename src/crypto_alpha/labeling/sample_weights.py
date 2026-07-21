@@ -111,3 +111,25 @@ def time_decay_weights(events: pd.DataFrame, last_weight: float = 0.5) -> pd.Ser
     frac = ranks / max(len(order) - 1, 1)
     decay = last_weight + (1.0 - last_weight) * frac
     return pd.Series(decay, index=events.index, name="w_decay")
+
+
+def combined_sample_weights(
+    events: pd.DataFrame,
+    bar_index: pd.DatetimeIndex,
+    *,
+    last_weight: float = 0.5,
+) -> pd.Series:
+    """唯一性×|ret| × 时间衰减, 再归一到均值 1。
+
+    与 ``prepare_dataset`` / WF 截断后重算共用同一公式, 避免两处漂移。
+    ``events`` 须含 ``t1``、``ret``; 索引为事件 t0。
+    """
+    if events is None or len(events) == 0:
+        return pd.Series(dtype=float, name="sample_weight")
+    w_uniq = sample_weights_by_return(events, bar_index).reindex(events.index).fillna(1.0)
+    w_decay = time_decay_weights(events, last_weight=float(last_weight)).reindex(
+        events.index,
+    ).fillna(1.0)
+    sw = (w_uniq.astype(float) * w_decay.astype(float)).fillna(0.0)
+    sw = sw / (float(sw.mean()) + 1e-12)
+    return sw.rename("sample_weight")

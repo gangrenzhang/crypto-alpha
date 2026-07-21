@@ -12,6 +12,7 @@ from .sample_weights import (
     average_uniqueness,
     sample_weights_by_return,
     time_decay_weights,
+    combined_sample_weights,
 )
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "average_uniqueness",
     "sample_weights_by_return",
     "time_decay_weights",
+    "combined_sample_weights",
 ]

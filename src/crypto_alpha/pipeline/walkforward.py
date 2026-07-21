@@ -1,7 +1,9 @@
 """Walk-forward(真外推)基线评估。
 
 与 ``train_and_validate`` 的 OOF / ``backtest_deploy`` 不同:
-  - 训练窗: 仅用 ``t0 < test_start`` **且** ``t1 < test_start - embargo`` 的事件拟合
+  - 训练窗: 仅用 ``t0 < test_start`` **且** ``t1 < test_start - embargo`` 的事件拟合;
+    可选 ``train_start``: 额外要求 ``t0 >= train_start``(截断更早**事件**,
+    不截断 OHLCV/特征回看所用的更早 K 线)
   - 阈值: 仅在**全部**训练窗有限 OOF 上按部署同形冻结 ``prob_threshold_effective``
     (单切 holdout 无「报告半窗」; 与联跑内 deploy 半窗参考不同, 但是对测试窗仍无泄漏)
   - 测试窗: 训练窗拟合后的 ``predict → deploy cal/conf → thr_eff`` 回测
@@ -16,7 +18,9 @@
   - train ∩ test = ∅
   - 任一训练事件的标签区间终点 t1 不得进入 label_deadline(含禁运)
   - 任一训练事件的入场 t0 不得落入测试窗
-  - 落在「t0 在训练侧但 t1 越过 deadline」的事件两边都不进(净化丢弃)
+  - 若设 train_start: 任一训练事件的 t0 不得早于 train_start
+  - 落在「t0 在测试起点前但 t1 越过 deadline」的事件两边都不进(净化丢弃);
+    另: t0 < train_start 的合格训练候选被丢弃(计入 dropped_pre_train), 亦不进测试
 """
 from __future__ import annotations
 
@@ -38,6 +42,7 @@ from ..diagnostics.gates import (
     gate_diagnostics,
 )
 from ..ensemble import StackingEnsemble
+from ..labeling.sample_weights import combined_sample_weights
 from .run import Dataset, build_experts, prepare_dataset
 
 
@@ -47,10 +52,18 @@ class WalkForwardSplitConfig:
 
     test_start: pd.Timestamp
     test_end: pd.Timestamp | None
+    train_start: pd.Timestamp | None = None  # None=不截断训练起点(用面板最早事件)
     embargo_bars: int = 0
     min_train_events: int = 200
     min_test_events: int = 50
     initial_capital: float = 10_000.0
+
+
+def _as_utc_ts(raw: str | pd.Timestamp) -> pd.Timestamp:
+    ts = pd.Timestamp(raw)
+    if ts.tzinfo is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
 
 
 def walkforward_section(cfg: Config) -> dict:
@@ -70,6 +83,7 @@ def resolve_walkforward_split(
     *,
     test_start: str | pd.Timestamp | None = None,
     test_end: str | pd.Timestamp | None = None,
+    train_start: str | pd.Timestamp | None = None,
 ) -> WalkForwardSplitConfig:
     """解析 WF 切分配置; 调用方可覆盖起止时刻。"""
     sec = walkforward_section(cfg)
@@ -80,28 +94,32 @@ def resolve_walkforward_split(
             "（config validation.walkforward.test_start 或函数参数）"
         )
     end_raw = test_end if test_end is not None else sec.get("test_end")
+    train_raw = train_start if train_start is not None else sec.get("train_start")
 
-    start = pd.Timestamp(start_raw)
-    if start.tzinfo is None:
-        start = start.tz_localize("UTC")
-    else:
-        start = start.tz_convert("UTC")
+    start = _as_utc_ts(start_raw)
 
     end: pd.Timestamp | None
     if end_raw is None or (isinstance(end_raw, str) and not str(end_raw).strip()):
         end = None
     else:
-        end = pd.Timestamp(end_raw)
-        if end.tzinfo is None:
-            end = end.tz_localize("UTC")
-        else:
-            end = end.tz_convert("UTC")
+        end = _as_utc_ts(end_raw)
         if end < start:
             raise ValueError(f"walk-forward test_end ({end}) < test_start ({start})")
+
+    train_s: pd.Timestamp | None
+    if train_raw is None or (isinstance(train_raw, str) and not str(train_raw).strip()):
+        train_s = None
+    else:
+        train_s = _as_utc_ts(train_raw)
+        if train_s >= start:
+            raise ValueError(
+                f"walk-forward train_start ({train_s}) 必须早于 test_start ({start})"
+            )
 
     return WalkForwardSplitConfig(
         test_start=start,
         test_end=end,
+        train_start=train_s,
         embargo_bars=max(int(sec.get("embargo_bars", 0) or 0), 0),
         min_train_events=max(int(sec.get("min_train_events", 200) or 200), 1),
         min_test_events=max(int(sec.get("min_test_events", 50) or 50), 1),
@@ -130,7 +148,8 @@ def build_walkforward_masks(
 
     训练:
       ``t0 < test_start`` 且 ``t1 < train_label_deadline``
-      其中 ``train_label_deadline = test_start - embargo_delta``
+      其中 ``train_label_deadline = test_start - embargo_delta``;
+      若设 ``train_start``: 额外要求 ``t0 >= train_start``(丢掉更早事件, OHLCV 特征仍可用更早 K 线)。
     测试:
       ``test_start <= t0`` 且 (``test_end is None`` 或 ``t0 <= test_end``)
 
@@ -163,6 +182,14 @@ def build_walkforward_masks(
     train_mask = np.asarray(
         (ev < split.test_start) & (t1_vals < label_deadline), dtype=bool,
     )
+    if split.train_start is not None:
+        eligible = (ev < split.test_start) & (t1_vals < label_deadline)
+        dropped = int((eligible & (ev < split.train_start)).sum())
+        train_mask = np.asarray(train_mask & (ev >= split.train_start), dtype=bool)
+        tags.append(
+            f"walkforward_train_start={split.train_start.isoformat()}"
+            f"(dropped_pre_train={dropped})"
+        )
     if split.test_end is None:
         test_mask = np.asarray(ev >= split.test_start, dtype=bool)
         tags.append("walkforward_test_end=panel_tail")
@@ -209,6 +236,8 @@ def assert_walkforward_split_invariants(
     if np.any(train_m):
         if np.any(ev[train_m] >= split.test_start):
             raise AssertionError("walk-forward: 训练事件 t0 落入测试窗")
+        if split.train_start is not None and np.any(ev[train_m] < split.train_start):
+            raise AssertionError("walk-forward: 训练事件 t0 早于 train_start")
         if np.any(t1v[train_m] >= label_deadline):
             raise AssertionError(
                 "walk-forward: 训练事件 t1 未在 label_deadline 之前结束(标签泄漏)"
@@ -249,6 +278,8 @@ def run_walkforward(
     ds: Dataset | None = None,
     test_start: str | pd.Timestamp | None = None,
     test_end: str | pd.Timestamp | None = None,
+    train_start: str | pd.Timestamp | None = None,
+    recompute_sample_weight: bool | None = None,
     prepare_kwargs: dict | None = None,
 ) -> dict:
     """对单币种跑部署同形 walk-forward, 返回可 JSON 序列化的 summary。
@@ -258,9 +289,23 @@ def run_walkforward(
     ds :
         可选预构建 Dataset(须与 symbol 一致)。传入则可避免重复 ``prepare_dataset``。
         **不得**传入已按决策 tip 刷过的面板充当研究 WF(应用冷缓存研究口径)。
+    train_start :
+        可选训练起点(含); 仅丢掉更早的**事件**, 不截断 OHLCV 特征回看。
+    recompute_sample_weight :
+        若 True: 在训练掩码确定后, 仅用训练事件重算 sample_weight
+        (uniqueness×|ret|×time_decay, 与 prepare_dataset 同公式)。
+        None: 读 ``validation.walkforward.recompute_sample_weight_on_split``(默认 false,
+        保持历史「全量算权再切片」行为, 不影响未开开关的路径)。
     """
-    split = resolve_walkforward_split(cfg, test_start=test_start, test_end=test_end)
+    split = resolve_walkforward_split(
+        cfg, test_start=test_start, test_end=test_end, train_start=train_start,
+    )
     embargo = _embargo_delta(cfg, split.embargo_bars)
+    wf_sec = walkforward_section(cfg)
+    if recompute_sample_weight is None:
+        recompute_sample_weight = bool(
+            wf_sec.get("recompute_sample_weight_on_split", False)
+        )
 
     if ds is None:
         kw = dict(prepare_kwargs or {})
@@ -303,7 +348,24 @@ def run_walkforward(
     X_tr = ds.X.loc[train_index]
     y_tr = np.asarray(ds.y)[train_mask]
     t1_tr = ds.t1.loc[train_index]
-    w_tr = None if ds.sample_weight is None else np.asarray(ds.sample_weight)[train_mask]
+    if recompute_sample_weight:
+        # 仅用训练子集重算权: 并发/衰减参照系 = 实际参与 fit 的事件
+        # (默认关: 仍用 prepare_dataset 全量权再切片, 行为与历史一致)
+        ev_tr = events.loc[train_index]
+        for col in ("t1", "ret"):
+            if col not in ev_tr.columns:
+                raise ValueError(
+                    f"{symbol}: recompute_sample_weight 需要 events 含 {col!r}"
+                )
+        w_tr = np.asarray(
+            combined_sample_weights(ev_tr, panel.index).to_numpy(dtype=float),
+            dtype=float,
+        )
+        if len(w_tr) != n_train:
+            raise AssertionError("重算 sample_weight 长度与训练事件数不一致")
+        split_tags.append(f"walkforward_sample_weight_recomputed(n={n_train})")
+    else:
+        w_tr = None if ds.sample_weight is None else np.asarray(ds.sample_weight)[train_mask]
     X_te = ds.X.loc[test_index]
     y_te = np.asarray(ds.y)[test_mask]
     events_te = events.loc[test_index]
@@ -410,7 +472,9 @@ def run_walkforward(
         "panel_bars": int(len(panel)),
         "panel_start": str(panel.index.min()) if len(panel) else None,
         "panel_end": str(panel.index.max()) if len(panel) else None,
+        "train_start": str(split.train_start) if split.train_start is not None else None,
         "train_end_exclusive": str(split.test_start),
+        "recompute_sample_weight_on_split": bool(recompute_sample_weight),
         "label_deadline": str(split.test_start - embargo),
         "embargo_bars": int(split.embargo_bars),
         "embargo_delta": str(embargo),
@@ -457,6 +521,7 @@ def slim_walkforward_for_dashboard(summary: dict) -> dict:
         "mode": summary.get("mode"),
         "backtest_start": summary.get("backtest_start"),
         "backtest_end": summary.get("backtest_end"),
+        "train_start": summary.get("train_start"),
         "embargo_bars": summary.get("embargo_bars"),
         "prob_threshold_effective": summary.get("prob_threshold_effective"),
         "n_train_events": summary.get("n_train_events"),

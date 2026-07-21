@@ -1,0 +1,76 @@
+{
+  "question": "longer_training_harmful",
+  "same_eval_window": [
+    "2024-09-14T00:00:00Z",
+    "2026-07-18T00:00:00Z"
+  ],
+  "cut_train_to_2024": {
+    "train_end": "2024-09-14 00:00:00+00:00",
+    "n_train_events": 23841,
+    "n_test_events": 5766,
+    "n_opened": 51,
+    "win_rate": 0.5490196078431373,
+    "total_return": -0.00033134165617154654,
+    "train_auc": 0.5362655783312371,
+    "test_auc": 0.5116675903210647,
+    "thr": 0.6156462585034014,
+    "yearly": [
+      {
+        "year": 2024,
+        "n": 2,
+        "wins": 1,
+        "wr": 0.5,
+        "avg_pnl": -8.032679988510003e-05
+      },
+      {
+        "year": 2025,
+        "n": 36,
+        "wins": 23,
+        "wr": 0.6388888888888888,
+        "avg_pnl": 0.0002133839016606583
+      },
+      {
+        "year": 2026,
+        "n": 13,
+        "wins": 4,
+        "wr": 0.3076923076923077,
+        "avg_pnl": -0.0005871340644556693
+      }
+    ]
+  },
+  "cut_train_to_2022_on_same_window": {
+    "train_end": "2022-09-14",
+    "note": "model fit on t0<2022-09-14; trades filtered to entry in [2024-09-14, 2026-07-18]",
+    "n_opened_full_test": 204,
+    "wr_full_test": 0.6029411764705882,
+    "n_opened_overlap": 89,
+    "wr_overlap": 0.4943820224719101,
+    "avg_pnl_overlap": -0.0002882714544033539,
+    "yearly_overlap": [
+      {
+        "year": 2024,
+        "n": 5,
+        "wins": 2,
+        "wr": 0.4,
+        "avg_pnl": -0.00010826196572520049
+      },
+      {
+        "year": 2025,
+        "n": 66,
+        "wins": 33,
+        "wr": 0.5,
+        "avg_pnl": -0.0002892939661225768
+      },
+      {
+        "year": 2026,
+        "n": 18,
+        "wins": 9,
+        "wr": 0.5,
+        "avg_pnl": -0.0003345248805101348
+      }
+    ],
+    "thr_full_run": 0.6245283018867924,
+    "train_auc": 0.5411165486107754,
+    "test_auc_full": 0.5094396426701492
+  }
+}

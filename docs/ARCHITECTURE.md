@@ -407,18 +407,19 @@ OHLCV(+衍生品: funding/OI/清算)
 | 项 | 行为 |
 |----|------|
 | `split_kind` | **`single_cut_holdout`**：一次时间切分（过去训 → 未来测），**不是**多锚点滚动再训练曲线 |
-| 训练 | `t0 < test_start` **且** `t1 < test_start − embargo_bars×Δ_main` |
+| 训练 | `t0 < test_start` **且** `t1 < test_start − embargo_bars×Δ_main`；可选 `train_start` → 另要求 `t0 ≥ train_start` |
 | 净化带 | `t0` 在训练侧但 `t1` 越过 deadline → **两边都不进**，记 `walkforward_purged_label_overlap` |
 | 测试 | `test_start ≤ t0`；`test_end=null` 时用到面板末根（相对旧脚本固定截止日，覆盖更新） |
+| 样本权 | 默认全量 `prepare_dataset` 算权再切片；`recompute_sample_weight_on_split: true` 时仅训练子集重算（同 `combined_sample_weights`） |
 | 阈值 | 仅在**全部**训练窗有限 OOF 上 `freeze_threshold_on_reference`（deploy 同形）；测试窗只告警不改 thr |
 | 出分 | 训练窗 `fit` → `fit_deploy_calibrator_and_conformal` → 测试窗 `predict→cal→conf→backtest` |
 | 数据 | 默认冷缓存（`for_decide=False`）；CLI 关 tip REST，避免「当下 tip」污染研究基线 |
-| 不变量 | `assert_walkforward_split_invariants`：train∩test=∅、训练 t1 不得越 deadline、t1 含 NaT **fail-fast** |
+| 不变量 | `assert_walkforward_split_invariants`：train∩test=∅、训练 t1 不得越 deadline、可选 train_start 下界、t1 含 NaT **fail-fast** |
 
 **接入**：
 
 - 库入口：`run_walkforward` / `walkforward_public_summary` / `slim_walkforward_for_dashboard`
-- CLI：`scripts/btc_walkforward_summary.py`（薄封装；支持 `--symbol` / `--test-start` / `--test-end`）
+- CLI：`scripts/btc_walkforward_summary.py`（`--symbol` `--train-start` `--test-start` `--test-end` `--recompute-sample-weight`）
 - 联跑：`10_run_all.py --walkforward` 或 `validation.walkforward.enabled_in_run_all: true`
 - 训练脚本：`04_train_and_backtest.py --walkforward`
 - 发布闸：`require_in_run_all: true` 时未启用 WF **训练前**失败；某币种 WF `ok=false` 亦失败
@@ -836,7 +837,7 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `11_make_canvas.py` | Cursor Canvas | `--out` |
 | `12_audit.py` | 闭环完整性在线体检（CPU，无显卡） | `--json` `--bars` `--seed` |
 | `13_backfill_liquidations.py` | 清算事件库回填 + 按 bar 对齐验证 | `--symbol` `--import-csv` `--refresh-ohlcv` `--skip-fetch` |
-| `btc_walkforward_summary.py` | 真外推基线（库 `run_walkforward` 薄封装） | `--symbol` `--test-start` `--test-end` |
+| `btc_walkforward_summary.py` | 真外推基线（库 `run_walkforward` 薄封装） | `--symbol` `--train-start` `--test-start` `--test-end` `--recompute-sample-weight` |
 | `btc_walkforward_compare.py` | 两档门控 WF 对比 | `--run` / `--a` `--b` |
 | `btc_kline_panel.py` | 回测开平仓 K 线 HTML 面板 | `--open` |
 | `train_llm_qlora.py` | LLM QLoRA SFT | `--dry-run` |

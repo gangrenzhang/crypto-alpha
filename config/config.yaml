@@ -166,16 +166,19 @@ validation:
   # (冒烟/12_audit 诊断路径会关)。发布前仍建议人工把 dsr_n_trials 调到真实研究规模。
   log_experiments: true
   # --- Walk-forward 真外推基线(与 OOF / backtest_deploy 不同口径) ---
-  # 训练: t0 < test_start 且 t1 < test_start - embargo_bars×主周期
+  # 训练: [train_start, test_start) ∩ t1 < label_deadline; train_start 省略=不截断起点
   # 阈值: 仅训练窗 OOF 上按部署同形冻结; 测试窗只告警不改 thr
   # 联跑: scripts/10_run_all.py --walkforward 或 enabled_in_run_all: true
   # 发布: require_in_run_all: true 时未跑 WF 直接失败(禁止只看 OOF 上线)
   walkforward:
     enabled_in_run_all: false
     require_in_run_all: false
+    train_start: null            # 可选; 如 "2020-01-01T00:00:00Z" 丢掉更早训练事件
     test_start: "2022-09-14T00:00:00Z"
     test_end: "2026-07-18T00:00:00Z"  # null=用该币种面板末根
     embargo_bars: 0          # 额外标签禁运(主周期 bar); 0=仅要求 t1 < test_start
+    # false=全量 prepare 算权再切片(历史默认); true=仅训练子集重算 uniqueness×衰减
+    recompute_sample_weight_on_split: false
     min_train_events: 200
     min_test_events: 50
     initial_capital: 10000.0

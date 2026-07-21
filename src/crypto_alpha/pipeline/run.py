@@ -16,7 +16,7 @@ from ..labeling.meta_labeling import (
     resolve_event_times,
     _barrier_target,
 )
-from ..labeling.sample_weights import sample_weights_by_return, time_decay_weights
+from ..labeling.sample_weights import combined_sample_weights
 from ..experts import EXPERT_REGISTRY
 from ..ensemble import StackingEnsemble
 from ..calibration import (
@@ -127,10 +127,7 @@ def prepare_dataset(cfg: Config, symbol: str, *, for_decide: bool = False) -> Da
 
     X = feat.loc[labels.index, fcols].copy()
 
-    w_uniq = sample_weights_by_return(labels, feat.index).reindex(labels.index).fillna(1.0)
-    w_decay = time_decay_weights(labels).reindex(labels.index).fillna(1.0)
-    sw = (w_uniq * w_decay).values
-    sw = sw / (sw.mean() + 1e-12)
+    sw = combined_sample_weights(labels, feat.index).reindex(labels.index).fillna(1.0).values
 
     return Dataset(
         symbol=symbol, panel=feat, feature_cols=fcols, X=X,
