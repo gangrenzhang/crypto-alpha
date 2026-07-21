@@ -9,165 +9,166 @@
   "panel_start": "2017-08-17 04:00:00+00:00",
   "panel_end": "2026-07-21 05:00:00+00:00",
   "train_start": "2020-01-01 00:00:00+00:00",
-  "train_end_exclusive": "2024-09-14 00:00:00+00:00",
+  "train_end_exclusive": "2025-09-14 00:00:00+00:00",
   "recompute_sample_weight_on_split": false,
-  "label_deadline": "2024-09-14 00:00:00+00:00",
+  "label_deadline": "2025-09-14 00:00:00+00:00",
   "embargo_bars": 0,
   "embargo_delta": "0 days 00:00:00",
-  "backtest_start": "2024-09-14 00:00:00+00:00",
+  "backtest_start": "2025-09-14 00:00:00+00:00",
   "backtest_end": "2026-07-18 00:00:00+00:00",
-  "prob_threshold_effective": 0.6403508771929823,
-  "n_train_events": 16566,
-  "n_test_events": 5766,
-  "n_opened_trades": 47,
-  "n_wins": 28,
-  "n_losses": 19,
-  "win_rate": 0.5957446808510638,
-  "total_return": 0.0020090188658468122,
-  "max_drawdown": -0.00919637964975051,
+  "prob_threshold_effective": 0.5948963317384371,
+  "n_train_events": 19623,
+  "n_test_events": 2711,
+  "n_opened_trades": 49,
+  "n_wins": 29,
+  "n_losses": 20,
+  "win_rate": 0.5918367346938775,
+  "total_return": 0.0031400245060886345,
+  "max_drawdown": -0.013024072443776341,
   "initial_capital": 10000.0,
-  "final_capital": 10020.090188658469,
+  "final_capital": 10031.400245060886,
   "train_oof_report": {
-    "n": 16566,
-    "auc": 0.5365909368088918,
-    "brier": 0.24899771409626648,
-    "logloss": 0.6911423091107053,
-    "accuracy": 0.5269226125799831,
-    "base_rate": 0.4966195822769528
+    "n": 19623,
+    "auc": 0.525856837109167,
+    "brier": 0.24944223778938385,
+    "logloss": 0.6920312450589053,
+    "accuracy": 0.5178616929113795,
+    "base_rate": 0.4963563165672935
   },
   "test_report": {
-    "n": 5766,
-    "auc": 0.5207979290886149,
-    "brier": 0.250426063245904,
-    "logloss": 0.6940146377731747,
-    "accuracy": 0.5053763440860215,
-    "base_rate": 0.508324661810614
+    "n": 2711,
+    "auc": 0.5024199961384781,
+    "brier": 0.2508034490037444,
+    "logloss": 0.6947548950814755,
+    "accuracy": 0.49096274437476944,
+    "base_rate": 0.5230542235337514
   },
   "backtest_metrics": {
-    "n_events": 5766,
-    "n_trades": 47,
+    "n_events": 2711,
+    "n_trades": 49,
     "n_halted": 0,
-    "total_return": 0.0020090188658468122,
-    "sharpe": 0.02510291313816601,
-    "sharpe_annualized": 0.11812076754496177,
-    "max_drawdown": -0.00919637964975051,
-    "max_drawdown_realized": -0.00919637964975051,
+    "total_return": 0.0031400245060886345,
+    "sharpe": 0.06311772106795142,
+    "sharpe_annualized": 0.4429034726006087,
+    "max_drawdown": -0.013024072443776341,
+    "max_drawdown_realized": -0.01221531845033467,
     "mark_to_market": true,
-    "avg_uniqueness": 0.8661152436801774,
-    "n_trades_effective": 40.70741645296834,
-    "win_rate": 0.5957446808510638,
-    "avg_pnl": 4.443960356366987e-05,
+    "avg_uniqueness": 0.8438297301194629,
+    "n_trades_effective": 41.347656775853686,
+    "win_rate": 0.5918367346938775,
+    "avg_pnl": 6.502066641292301e-05,
     "portfolio_mode": "portfolio",
-    "sharpe_equity": 0.04331733201425789,
-    "sharpe_equity_annualized": 0.2195766773644064,
-    "sharpe_equity_mtm": 0.0014130897748745074,
-    "sharpe_equity_mtm_annualized": 0.09397324252047891,
+    "sharpe_equity": 0.06587018244325986,
+    "sharpe_equity_annualized": 0.5078201711952192,
+    "sharpe_equity_mtm": 0.0034696408304315707,
+    "sharpe_equity_mtm_annualized": 0.23234909221675448,
     "n_skipped_capacity": 0,
-    "calmar": 0.21845755872461797
+    "calmar": 0.24109388814826752
   },
   "gate_diagnostics": {
-    "prob_threshold": 0.6403508771929823,
-    "n_events": 5766,
+    "prob_threshold": 0.5948963317384371,
+    "n_events": 2711,
     "raw_proba": {
-      "mean": 0.4888204962982306,
-      "std": 0.027432557491472373,
-      "min": 0.40615881834442724,
-      "max": 0.6007779883999789,
+      "mean": 0.4950686453337295,
+      "std": 0.018300951574608072,
+      "min": 0.42505007574706355,
+      "max": 0.5669897531902808,
       "frac_ge_threshold": 0.0
     },
     "calibrated_proba": {
-      "mean": 0.4891994666971549,
-      "std": 0.035849923124605235,
-      "min": 0.4397993311036789,
-      "max": 0.6403508771929823,
-      "n_unique": 28,
+      "mean": 0.4890627990134209,
+      "std": 0.023989165869975678,
+      "min": 0.46954813359528486,
+      "max": 0.5948963317384371,
+      "n_unique": 18,
       "top_levels": [
         {
-          "prob": 0.482508,
-          "n": 1539,
-          "frac": 0.26690946930280957
+          "prob": 0.477755,
+          "n": 993,
+          "frac": 0.366285503504242
         },
         {
-          "prob": 0.452535,
-          "n": 1411,
-          "frac": 0.2447103711411724
+          "prob": 0.472574,
+          "n": 487,
+          "frac": 0.17963850977499077
         },
         {
-          "prob": 0.514011,
-          "n": 907,
-          "frac": 0.15730142212972598
+          "prob": 0.474969,
+          "n": 244,
+          "frac": 0.0900036886757654
         },
         {
-          "prob": 0.493681,
-          "n": 703,
-          "frac": 0.12192160943461672
+          "prob": 0.5,
+          "n": 241,
+          "frac": 0.08889708594614533
         },
         {
-          "prob": 0.439799,
-          "n": 285,
-          "frac": 0.049427679500520294
+          "prob": 0.518356,
+          "n": 227,
+          "frac": 0.08373293987458502
         },
         {
-          "prob": 0.581871,
-          "n": 208,
-          "frac": 0.036073534512660425
+          "prob": 0.510684,
+          "n": 157,
+          "frac": 0.057912209516783476
         },
         {
-          "prob": 0.498876,
-          "n": 195,
-          "frac": 0.033818938605619145
+          "prob": 0.508475,
+          "n": 125,
+          "frac": 0.046108447067502764
         },
         {
-          "prob": 0.528409,
-          "n": 163,
-          "frac": 0.02826916406520985
+          "prob": 0.473451,
+          "n": 55,
+          "frac": 0.02028771670970122
         },
         {
-          "prob": 0.525692,
-          "n": 82,
-          "frac": 0.01422129725979882
+          "prob": 0.594896,
+          "n": 49,
+          "frac": 0.018074511250461084
         },
         {
-          "prob": 0.543956,
-          "n": 80,
-          "frac": 0.01387443635102324
-        },
-        {
-          "prob": 0.556818,
-          "n": 59,
-          "frac": 0.01023239680887964
-        },
-        {
-          "prob": 0.640351,
+          "prob": 0.569787,
           "n": 47,
-          "frac": 0.008151231356226153
+          "frac": 0.01733677609738104
+        },
+        {
+          "prob": 0.469548,
+          "n": 33,
+          "frac": 0.01217263002582073
+        },
+        {
+          "prob": 0.47973,
+          "n": 33,
+          "frac": 0.01217263002582073
         }
       ]
     },
     "gates": {
-      "n_prob_ge_threshold": 47,
-      "frac_prob_ge_threshold": 0.008151231356226153,
-      "n_confident": 646,
-      "frac_confident": 0.11203607353451266,
-      "n_prob_and_confident": 47,
-      "frac_prob_and_confident": 0.008151231356226153,
-      "n_opened_size_gt_0": 47,
-      "frac_opened_size_gt_0": 0.008151231356226153,
+      "n_prob_ge_threshold": 49,
+      "frac_prob_ge_threshold": 0.018074511250461084,
+      "n_confident": 96,
+      "frac_confident": 0.03541128734784212,
+      "n_prob_and_confident": 49,
+      "frac_prob_and_confident": 0.018074511250461084,
+      "n_opened_size_gt_0": 49,
+      "frac_opened_size_gt_0": 0.018074511250461084,
       "n_pass_gate_but_size_0": 0
     },
-    "conformal_qhat": 0.5474649406688241,
+    "conformal_qhat": 0.5274261603375527,
     "conformal_min_margin": 0.05,
     "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
     "path": "walk_forward_deploy",
     "threshold_tags": [
-      "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5819)",
-      "deploy_calibration_inflates_pass_rate(raw=0.0085,cal=0.0931,ratio=11.01)",
-      "deploy_prob_threshold_raised_on_inflate(from=0.5819,to=0.6404,q=0.9900)"
+      "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5949)",
+      "deploy_calibration_inflates_pass_rate(raw=0.0005,cal=0.0439,ratio=86.10)",
+      "deploy_prob_threshold_inflate_no_raise_room(thr=0.5949,q=0.9900,cand=0.5949)"
     ],
-    "health_tags": [],
+    "health_tags": [
+      "calibration_low_unique_levels(n=18,min=20)"
+    ],
     "split_tags": [
-      "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)",
-      "walkforward_purged_label_overlap(n=2)"
+      "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)"
     ]
   },
   "dropped_experts": [],
@@ -175,15 +176,14 @@
     "ohlcv_tip_exchange_fallback",
     "derivatives_oi_unavailable",
     "derivatives_liquidations_sparse(coverage=0.000)",
-    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5819)",
-    "deploy_calibration_inflates_pass_rate(raw=0.0085,cal=0.0931,ratio=11.01)",
-    "deploy_prob_threshold_raised_on_inflate(from=0.5819,to=0.6404,q=0.9900)",
-    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)",
-    "walkforward_purged_label_overlap(n=2)"
+    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5949)",
+    "deploy_calibration_inflates_pass_rate(raw=0.0005,cal=0.0439,ratio=86.10)",
+    "deploy_prob_threshold_inflate_no_raise_room(thr=0.5949,q=0.9900,cand=0.5949)",
+    "calibration_low_unique_levels(n=18,min=20)",
+    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)"
   ],
   "split_tags": [
-    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)",
-    "walkforward_purged_label_overlap(n=2)"
+    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)"
   ],
   "trades_csv": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/btc_walkforward_trades.csv"
 }
