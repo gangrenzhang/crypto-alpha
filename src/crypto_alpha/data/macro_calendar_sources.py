@@ -27,9 +27,9 @@ from .macro_calendar_alfred import FRED_SERIES, load_or_fetch_first_prints
 from .macro_calendar_bls_schedule import (
     enrich_schedule_from_ff_hist,
     load_or_build_bls_schedule,
-    lookup_official_release,
 )
 from .macro_calendar_global_ff import fetch_ff_historical_events
+from .macro_calendar_merge import dedupe_cross_source_events
 
 ET = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
@@ -534,6 +534,10 @@ def build_macro_calendar_frame(
         return pd.DataFrame(columns=EVENT_COLUMNS)
 
     df = normalize_macro_events(pd.DataFrame(chunks))
+    before = len(df)
+    df = dedupe_cross_source_events(df)
+    if len(df) < before:
+        print(f"[macro-build] dedupe: {before} → {len(df)} (-{before - len(df)})", flush=True)
     df = df.loc[pd.to_datetime(df["scheduled_at"], utc=True) >= start_ts].copy()
     # 写构建元数据
     meta_path = sdir / "build_meta.json"

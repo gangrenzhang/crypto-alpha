@@ -346,25 +346,39 @@ PYTHONPATH=src python scripts/validate_news_alignment.py
 | `scheduled_at` | 计划公布时刻（UTC；可事先用于 `hours_to_next`） |
 | `released_at` | actual 变为可得的时刻（UTC；讲话类常 = scheduled） |
 | `previous` / `forecast` / `actual` | 前值 / 预测 / 公布（**讲话可空，无利多/利空字段**） |
+| `print_kind` | `first_print` \| `current_vintage` \| `n/a`（首印 vs 现行修订） |
+| `schedule_source` | `bls_official` \| `forexfactory` \| `heuristic` \| `federalreserve` |
 | `unit` / `source` / `event_id` | 单位、来源、稳定主键 |
 
 **如何构建完整库**
 
 ```bash
-# BLS(NFP/失业率/CPI/Core CPI) + 美联储日历(FOMC/讲话/纪要) + FF 本周补强
+# BLS 官方日程 + BLS 数值 + ALFRED 首印(FRED_API_KEY) + Fed + FF 全球历史
 PYTHONPATH=src python scripts/15_build_macro_calendar.py --start 2020-01-01 --export-csv
+
+# 强制重拉
+PYTHONPATH=src python scripts/15_build_macro_calendar.py --refresh-bls-schedule --refresh-alfred
 
 # PIT 校验
 PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 ```
 
-| 来源 | 内容 | 备注 |
-|------|------|------|
-| BLS Public API | Nonfarm / Unemployment / CPI YoY / Core CPI YoY | `forecast` 默认=上期同口径(naive consensus)，surprise≈变化 |
-| Federal Reserve `calendar.json` | FOMC Meeting / Minutes / Speeches / Beige Book | 日程为主；数值常空 → 走注意力通道 |
-| ForexFactory 本周 JSON | 近端中高影响事件 | 可选补强；历史不全 |
+| 来源 | 国家 | 内容 | 关键元数据 |
+|------|------|------|------------|
+| BLS 官方 schedule + Wayback | US | Employment / CPI **精确公布时刻** | `schedule_source=bls_official` |
+| BLS Public API | US | NFP / 失业率 / CPI 数值 | `print_kind=current_vintage` |
+| ALFRED `output_type=4` | US | 同上 **首印** | `print_kind=first_print`, `source=alfred_bls` |
+| Federal Reserve `calendar.json` | **仅 US** | FOMC / 讲话 / 纪要 | 无他国指标公布 |
+| FF GitHub 归档 2020–2023 | **全球** | actual/forecast/previous | `forexfactory_hist` |
+| FF 本周 JSON | 全球近端 | 近一周中高影响 | 近端补强 |
 
-就业公布时刻：次月**第一个周五** 08:30 ET；CPI：次月**第二个周三** 08:30 ET（贴近 BLS 惯例的启发式，非逐日官方 PDF）。
+**首印 vs 修订**：特征默认 `prefer_first_print=true`，同公布窗优先 `first_print`；构建需 `FRED_API_KEY` 拉 ALFRED，否则 BLS 用现行修订版(warn)。
+
+**跨源去重**：`(country, canonical_name, release_hour)` 合并 BLS 与 FF 重复；优先级 `alfred_bls` > `bls` > `forexfactory_hist`。
+
+**美联储日历不含他国指标**：`calendar.json` 仅为联储/FOMC 日程；欧元区/英国等来自 **FF 历史归档**，非 Fed。
+
+无官方日程时仍回退启发式(次月首周五就业 / 第二周三 CPI)，并标 `schedule_source=heuristic`。
 
 **PIT 纪律（严谨）**
 
@@ -776,7 +790,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | `project` | seed=42 | 数据/产物目录 |
 | `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d，`max_closed_bar_lag=4`，`tip_exchange=gate`，`fetch_liquidations=false`（有清算全史后再开），`liquidations.auto_attach/fetch_on_tip=true`，`exchanges=[gate]` | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations；清算关时列 NaN→特征 0 + unavailable |
 | `news` | `use_synthetic=false`，**`as_feature=false`**（未回填历史前勿开），`use_history=false`，`auto_build_panel=true`，`history.start=2020-01-01`，`providers=[gdelt,cryptocompare]`，`window_days=2`，`rate_limit_sec=90`，`gdelt_429_cooldown_sec=300`，`min_coverage_warn=0.05` | 见 §4.3.1；GDELT 全进程闸门+429 熔断；满额切分 + failed/pending/truncated 续跑补洞 |
-| `macro_calendar` | **`as_feature=true`**，`store_dir=data/macro_calendar`，`buffer_minutes=5`，`feature_ttl_hours=72`，`min_importance=3`，`min_coverage_warn=0` | 见 §4.3.2；`15_build_macro_calendar.py` 从 BLS+Fed 构建；surprise 仅数值事件 |
+| `macro_calendar` | **`as_feature=true`**，`prefer_first_print=true`，`store_dir=data/macro_calendar`，`buffer_minutes=5`，`feature_ttl_hours=72`，`min_importance=3` | §4.3.2；BLS 官方日程+ALFRED 首印+FF 全球历史；Fed 仅 US |
 | `features` | FFD d=0.4，`mtf_enabled=true` | MTF 方案 B |
 | `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐；`barrier_vol=rv` 时 Config.load 告警（decide 仍用 atr） |
 | `validation` | N=6,k=2，embargo=1%，`dsr_n_trials=50`，`log_experiments=true`；**`walkforward`** 见下 | 禁运从 `max(t1)` 起算；CPCV 组合评估；WF single-cut 真外推基线 |
@@ -974,7 +988,7 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `run_news_backfill_robust.py` | **推荐**稳健回填+重建面板+校验 | `--start` `--no-resume` `--providers` |
 | `validate_news_alignment.py` | 语料/面板网格/PIT/覆盖率抽查 | `--symbol` |
 | `14_import_macro_calendar.py` | 导入宏观日历 CSV → events.parquet | `--csv` `--replace` |
-| `15_build_macro_calendar.py` | 从 BLS+Fed(+FF 本周)构建完整日历 | `--start` `--export-csv` |
+| `15_build_macro_calendar.py` | BLS 官方日程+ALFRED 首印+Fed+FF 全球历史 → events.parquet | `--start` `--refresh-bls-schedule` `--refresh-alfred` `--export-csv` |
 | `validate_macro_calendar_alignment.py` | 宏观日历 PIT（含单事件隔离 surprise_raw） | |
 | `10_run_all.py` | 全专家联跑 + HTML | `--experts` `--symbols` `--cpcv` `--walkforward` `--open` |
 | `11_make_canvas.py` | Cursor Canvas | `--out` |
@@ -1009,7 +1023,8 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | `test_pipeline_integrity.py` | 闭环完整性闸门（见 18.1；精简面 + **MTF 全开**空对照） |
 | `test_hardening_guards.py` | 环境 HOLD、实验日志抬 DSR、波动滑点、单专家报告后半窗、保形跳过→不自信、oi 墙钟、决策 audit |
 | `test_gdelt_backfill_coverage.py` | GDELT 满额切分覆盖窗前半；HTTP 429 长冷却 |
-| `test_macro_calendar.py` | surprise 不被讲话冲刷；TTL；延迟 awaiting；`as_feature` 读盘/空库；PIT |
+| `test_macro_calendar.py` | surprise 分流；TTL；awaiting；`as_feature` 读盘；PIT |
+| `test_macro_calendar_rigor.py` | BLS 日程 HTML 解析；跨源去重；首印过滤 |
 | `test_calibration_primary_gates.py` | `method=auto`→sigmoid；显式 isotonic 不切换；confluence 门控 |
 
 ### 18.1 闭环完整性诊断（`diagnostics/integrity.py`）
@@ -1053,7 +1068,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - [x] 校准 `method=auto`：唯一台阶过少回退 sigmoid；单类阻塞回退；未知 method 拒绝  
 - [x] `backtest_deploy.not_for_go_live` + 看板「部署·偏乐观·勿拍板」  
 - [x] 新闻历史回填：满额切分、failed/pending/truncated 续跑补洞、UTC 秒去重键、PIT 校验脚本（§4.3.1；语料仍受 GDELT 429，corpus 待续跑）
-- [x] 宏观日历定点绑定：BLS+Fed 完整库(~900 事件) + surprise/PIT + 数值/讲话分流 + `as_feature=true`（§4.3.2）
+- [x] 宏观日历：BLS 官方日程+ALFRED 首印+FF 全球历史(~6k) + 跨源去重 + surprise 分流 + `as_feature=true`（§4.3.2）
 
 **防过拟合**
 

@@ -223,6 +223,14 @@ def add_macro_calendar_features(
 
     sym = symbol or "?"
     events = load_macro_events(cfg)
+    prefer_fp = bool(mcfg.get("prefer_first_print", True))
+    if prefer_fp and events is not None and len(events):
+        from ..data.macro_calendar_merge import filter_events_for_features
+        events = filter_events_for_features(
+            events,
+            prefer_first_print=True,
+            numeric_print_kind=str(mcfg.get("numeric_print_kind", "first_print")),
+        )
     if events is None or len(events) == 0:
         feat = _empty_macro_features(feat, ttl, horizon)
         tag = "macro_calendar_unavailable"

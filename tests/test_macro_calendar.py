@@ -32,6 +32,8 @@ def _sample_events() -> pd.DataFrame:
             "actual": 3.4,
             "unit": "%",
             "source": "test",
+            "print_kind": "first_print",
+            "schedule_source": "bls_official",
         },
         {
             "name": "Speech",

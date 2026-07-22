@@ -54,17 +54,15 @@ def fred_api_key() -> str | None:
 
 def fetch_series_first_release(series_id: str, api_key: str,
                                observation_start: str = "2019-01-01") -> pd.DataFrame:
-    """ALFRED: realtime 窗拉宽后按 obs 取最早 realtime_start 作为首印。"""
+    """ALFRED output_type=4: 仅首印; realtime_start=首印公布日。"""
     from urllib.parse import urlencode
 
-    # 拉全部 vintage 片段: realtime_start 很早, realtime_end 很晚
     params = {
         "series_id": series_id,
         "api_key": api_key,
         "file_type": "json",
         "observation_start": observation_start,
-        "realtime_start": "1776-07-04",
-        "realtime_end": "9999-12-31",
+        "output_type": "4",
     }
     url = "https://api.stlouisfed.org/fred/series/observations?" + urlencode(params)
     raw = _curl_bytes(url, timeout=120)
@@ -77,15 +75,13 @@ def fetch_series_first_release(series_id: str, api_key: str,
 
     df = pd.DataFrame(obs)
     df["obs_date"] = pd.to_datetime(df["date"], utc=True)
+    # output_type=4: realtime_start 即首印公布时刻(日)
     df["realtime_start"] = pd.to_datetime(df["realtime_start"], utc=True)
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["value", "obs_date", "realtime_start"])
-    # 每个观测期取最早 realtime_start = 首印
-    df = df.sort_values(["obs_date", "realtime_start"])
-    first = df.groupby("obs_date", as_index=False).first()
-    first["series_id"] = series_id
-    first["print_kind"] = "first_print"
-    return first[["series_id", "obs_date", "value", "realtime_start", "print_kind"]]
+    df["series_id"] = series_id
+    df["print_kind"] = "first_print"
+    return df[["series_id", "obs_date", "value", "realtime_start", "print_kind"]]
 
 
 def load_or_fetch_first_prints(

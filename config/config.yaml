@@ -138,6 +138,8 @@ macro_calendar:
   feature_halflife_hours: 24       # 指数衰减半衰期
   horizon_hours: 168               # hours_to_next 上限(7 天)
   min_importance: 3                # 1–5; 低于此星级不进特征
+  prefer_first_print: true          # 数值事件优先 first_print; 无首印时保留 current_vintage
+  numeric_print_kind: first_print   # 与 ALFRED/BLS 首印对齐; 需 FRED_API_KEY 构建时拉取
   min_coverage_warn: 0.0           # >0 时 has_recent_macro 过低 → macro_features_sparse(计入 env_guard); 日历天生稀疏, 默认关
   require_min_coverage: false      # true=覆盖率不足 fail-fast
 
