@@ -102,6 +102,49 @@ def _panel_info_light(cfg, symbol: str) -> dict[str, Any] | None:
         return {"error": str(e), "bars": None, "start": None, "end": None}
 
 
+# Setup 面板分组标题（与 config.yaml 顶层键对齐）
+_CONFIG_SECTION_LABELS: dict[str, str] = {
+    "project": "项目",
+    "data": "数据",
+    "news": "新闻",
+    "features": "特征",
+    "labeling": "标注",
+    "validation": "验证 / Walk-Forward",
+    "experts": "专家模型",
+    "ensemble": "集成",
+    "calibration": "校准 / 保形",
+    "backtest": "回测门控",
+    "serve": "实时服务",
+    "risk": "风控",
+}
+
+# 默认展开的分组（WF 研究高频改动）
+_CONFIG_SECTIONS_OPEN: frozenset[str] = frozenset({
+    "validation", "calibration", "backtest", "risk", "labeling", "experts", "ensemble", "features",
+})
+
+
+def _jsonable(obj: Any) -> Any:
+    """把 config 树变成可 JSON 往返的结构（保留 null）。"""
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    return str(obj)
+
+
+def deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+    """src 覆盖 dst（就地）；嵌套 dict 递归合并，list/标量整段替换。"""
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            deep_merge(dst[k], v)
+        else:
+            dst[k] = v
+    return dst
+
+
 def build_meta() -> dict[str, Any]:
     from crypto_alpha.config import Config
 
@@ -120,10 +163,17 @@ def build_meta() -> dict[str, Any]:
             "train_start": train_default or "",
             "test_start": _date_only(wf.get("test_start")) or "2022-09-14",
             "test_end": _date_only(wf.get("test_end")) or "2026-07-18",
+            "recompute_sample_weight": bool(wf.get("recompute_sample_weight_on_split", False)),
         },
         "min_test_events": int(wf.get("min_test_events") or 50),
         "min_train_events": int(wf.get("min_train_events") or 200),
-        "note": "single_cut_holdout walk-forward；训练窗拟合，测试窗部署门控。",
+        "config": _jsonable(cfg.raw),
+        "config_section_labels": dict(_CONFIG_SECTION_LABELS),
+        "config_sections_open": sorted(_CONFIG_SECTIONS_OPEN),
+        "note": (
+            "single_cut_holdout walk-forward；训练窗拟合，测试窗部署门控。"
+            "Setup 面板含完整 config.yaml；训练时以面板配置深合并覆盖后跑。"
+        ),
     }
 
 
@@ -403,6 +453,14 @@ def worker_main(out_dir: Path) -> int:
     params = json.loads((out_dir / "params.json").read_text(encoding="utf-8"))
     try:
         cfg = Config.load()
+        # 面板完整配置覆盖（与 config.yaml 同构）
+        overlay = params.get("config")
+        if isinstance(overlay, dict) and overlay:
+            deep_merge(cfg.raw, overlay)
+            print("[console] 已合并面板 config 覆盖", flush=True)
+
+        # 研究 WF：禁止 tip REST 拖慢/污染；面板里这两项改了也会被强制回写
+        cfg.raw.setdefault("data", {})
         cfg.raw["data"]["refresh_before_decide"] = False
         cfg.raw["data"]["incremental_update"] = False
 
@@ -412,11 +470,32 @@ def worker_main(out_dir: Path) -> int:
         test_end = params.get("test_end") or None
         recompute = bool(params.get("recompute_sample_weight"))
 
+        # 切分参数与 validation.walkforward 对齐（便于产物自描述）
+        wf = cfg.raw.setdefault("validation", {}).setdefault("walkforward", {})
+        wf["train_start"] = f"{train_start}T00:00:00Z" if train_start else None
+        wf["test_start"] = f"{test_start}T00:00:00Z"
+        wf["test_end"] = f"{test_end}T00:00:00Z" if test_end else None
+        if "recompute_sample_weight" in params:
+            wf["recompute_sample_weight_on_split"] = recompute
+
         print(f"===== {symbol} walk-forward (console worker) =====", flush=True)
         print(
             f"train_start={train_start} test_start={test_start} test_end={test_end} "
             f"recompute_sample_weight={recompute}",
             flush=True,
+        )
+        print(
+            f"experts={cfg.raw.get('experts', {}).get('enabled')} "
+            f"cal={cfg.raw.get('calibration', {}).get('method')} "
+            f"thr_mode={cfg.raw.get('backtest', {}).get('prob_threshold_mode')} "
+            f"thr={cfg.raw.get('backtest', {}).get('prob_threshold')}",
+            flush=True,
+        )
+
+        # 落盘本次实际生效配置，便于复现
+        (out_dir / "effective_config.json").write_text(
+            json.dumps(_jsonable(cfg.raw), ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
         )
 
         summary = run_walkforward(
@@ -521,7 +600,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         length = int(self.headers.get("Content-Length") or 0)
-        if length > 1_000_000:
+        if length > 4_000_000:
             code, body, ct = _json_bytes({"error": "payload too large"}, 413)
             self._send(code, body, ct)
             return

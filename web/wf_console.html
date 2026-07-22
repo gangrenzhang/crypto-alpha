@@ -263,6 +263,129 @@
   }
   .check b { color: var(--text); font-weight: 600; }
 
+  .cfg-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 18px;
+    margin-bottom: 10px;
+  }
+  .cfg-toolbar .lab {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-right: 4px;
+  }
+  .cfg-note {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.45;
+    margin-bottom: 10px;
+  }
+  .config-tree {
+    display: grid;
+    gap: 8px;
+    max-height: min(62vh, 720px);
+    overflow: auto;
+    padding-right: 4px;
+  }
+  details.cfg-sec {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-inset) 75%, transparent);
+    overflow: hidden;
+  }
+  details.cfg-sec > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 11px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    user-select: none;
+  }
+  details.cfg-sec > summary::-webkit-details-marker { display: none; }
+  details.cfg-sec > summary::before {
+    content: "▸";
+    color: var(--accent);
+    font-size: 11px;
+    width: 12px;
+  }
+  details.cfg-sec[open] > summary::before { content: "▾"; }
+  details.cfg-sec > summary .sec-key {
+    color: var(--muted);
+    font-weight: 500;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .cfg-sec-body {
+    padding: 0 12px 12px;
+    display: grid;
+    gap: 6px;
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+  }
+  details.cfg-node {
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: 0;
+    margin: 2px 0;
+  }
+  details.cfg-node > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent-2);
+  }
+  details.cfg-node > summary::-webkit-details-marker { display: none; }
+  .cfg-node-body { padding: 0 10px 10px; display: grid; gap: 6px; }
+  .cfg-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 38%) 1fr;
+    gap: 8px 12px;
+    align-items: start;
+    padding: 4px 0;
+  }
+  @media (max-width: 640px) {
+    .cfg-row { grid-template-columns: 1fr; }
+  }
+  .cfg-row .cfg-key {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    padding-top: 10px;
+    word-break: break-all;
+  }
+  .cfg-row input.ctl,
+  .cfg-row select.ctl,
+  .cfg-row textarea.ctl {
+    width: 100%;
+  }
+  .cfg-row textarea.ctl {
+    min-height: 72px;
+    resize: vertical;
+    font: 12px/1.4 var(--mono);
+    background: var(--bg-inset);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 10px 12px;
+  }
+  .cfg-bool {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+  }
+  .cfg-bool input { width: 16px; height: 16px; accent-color: var(--accent); }
+  .cfg-bool span { font-size: 13px; color: var(--text); }
+
   .actions {
     display: flex;
     flex-wrap: wrap;
@@ -471,8 +594,21 @@
 
     <label class="check">
       <input type="checkbox" id="recomputeWeight"/>
-      <span><b>重算 sample_weight</b> — 仅训练事件上重算权重（实验开关）。日常建议关闭，以保持与历史结果可比。</span>
+      <span><b>重算 sample_weight</b> — 仅训练事件上重算权重（实验开关）。与下方 <code>validation.walkforward.recompute_sample_weight_on_split</code> 同步。</span>
     </label>
+
+    <div class="cfg-toolbar">
+      <span class="lab">全量配置</span>
+      <button type="button" class="btn btn-ghost" id="btnExpandCfg" style="padding:8px 12px;font-size:12px">展开全部</button>
+      <button type="button" class="btn btn-ghost" id="btnCollapseCfg" style="padding:8px 12px;font-size:12px">收起全部</button>
+      <button type="button" class="btn btn-ghost" id="btnResetCfg" style="padding:8px 12px;font-size:12px">恢复默认 config</button>
+    </div>
+    <div class="cfg-note">
+      下列字段来自 <code>config/config.yaml</code> 全树；训练时深合并进本次任务，并写入产物
+      <code>effective_config.json</code>。控制台仍强制关闭 <code>data.refresh_before_decide</code> /
+      <code>incremental_update</code>（避免 tip REST 污染研究 WF）。复杂列表（如 news.sources）用 JSON 编辑。
+    </div>
+    <div class="config-tree" id="configTree">加载配置…</div>
 
     <div class="actions">
       <button class="btn btn-primary" id="btnTrain" type="button">开始训练 + 回测</button>
@@ -522,9 +658,317 @@
   let pollTimer = null;
   let currentJobId = null;
   let meta = null;
+  let liveConfig = null;
   const YEAR_MIN = 2017;
   const YEAR_MAX = 2027;
   const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
+
+  const ENUMS = {
+    "calibration.method": ["isotonic", "sigmoid"],
+    "labeling.barrier_vol": ["atr", "rv"],
+    "labeling.primary_signal": ["momentum", "meanrev"],
+    "ensemble.meta_learner": ["logistic", "gbdt"],
+    "backtest.prob_threshold_mode": ["fixed", "quantile", "max_of"],
+    "risk.execution_assumption": ["close_fill"],
+    "experts.tsfm.backend": ["chronos", "timesfm", "naive"],
+    "experts.tsfm.head": ["logistic", "gbdt"],
+    "experts.deep_ts.device": ["auto", "cpu", "cuda"],
+    "news.sentiment.backend": ["lexicon", "cryptobert", "finbert", "chinese", "multilingual"],
+    "news.sentiment.device": ["auto", "cpu", "cuda"],
+    "news.sentiment.fusion": ["route", "average"],
+    "news.sentiment.en_backend": ["lexicon", "cryptobert", "finbert", "chinese"],
+    "news.sentiment.zh_backend": ["lexicon", "chinese", "finbert"],
+  };
+
+  function deepClone(o) {
+    return JSON.parse(JSON.stringify(o));
+  }
+
+  function pathJoin(base, key) {
+    return base ? base + "." + key : key;
+  }
+
+  function isPlainObject(v) {
+    return v !== null && typeof v === "object" && !Array.isArray(v);
+  }
+
+  function isComplexArray(arr) {
+    return Array.isArray(arr) && arr.some((x) => isPlainObject(x) || Array.isArray(x));
+  }
+
+  function setByPath(obj, path, value) {
+    const parts = path.split(".");
+    let cur = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const p = parts[i];
+      if (!isPlainObject(cur[p])) cur[p] = {};
+      cur = cur[p];
+    }
+    cur[parts[parts.length - 1]] = value;
+  }
+
+  function getByPath(obj, path) {
+    return path.split(".").reduce((a, k) => (a == null ? undefined : a[k]), obj);
+  }
+
+  function parseScalar(raw, kind) {
+    const s = String(raw ?? "").trim();
+    if (kind === "nullish" || s === "" || s.toLowerCase() === "null") return null;
+    if (kind === "number") {
+      const n = Number(s);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (kind === "bool") return Boolean(raw);
+    return s;
+  }
+
+  function parseListInput(text, sample) {
+    const s = String(text ?? "").trim();
+    if (!s || s.toLowerCase() === "null") return null;
+    if (s.startsWith("[")) return JSON.parse(s);
+    const parts = s.split(/[,，]/).map((x) => x.trim()).filter((x) => x.length);
+    if (!parts.length) return [];
+    if (typeof sample === "number") return parts.map((x) => Number(x));
+    if (typeof sample === "boolean") return parts.map((x) => x === "true" || x === "1");
+    return parts;
+  }
+
+  function formatListInput(arr) {
+    if (arr == null) return "";
+    if (!Array.isArray(arr)) return String(arr);
+    if (isComplexArray(arr)) return JSON.stringify(arr, null, 2);
+    return arr.map((x) => String(x)).join(", ");
+  }
+
+  function makeInput(path, value) {
+    const wrap = document.createElement("div");
+    wrap.className = "cfg-row";
+    const lab = document.createElement("div");
+    lab.className = "cfg-key";
+    lab.textContent = path.split(".").pop();
+    lab.title = path;
+    wrap.appendChild(lab);
+
+    const enums = ENUMS[path];
+    if (typeof value === "boolean") {
+      const box = document.createElement("label");
+      box.className = "cfg-bool";
+      const inp = document.createElement("input");
+      inp.type = "checkbox";
+      inp.checked = value;
+      inp.dataset.path = path;
+      inp.dataset.kind = "bool";
+      const sp = document.createElement("span");
+      sp.textContent = value ? "true" : "false";
+      inp.addEventListener("change", () => {
+        sp.textContent = inp.checked ? "true" : "false";
+        onConfigFieldChange(path, inp.checked);
+      });
+      box.append(inp, sp);
+      wrap.appendChild(box);
+      return wrap;
+    }
+
+    if (enums && (typeof value === "string" || value == null)) {
+      const sel = document.createElement("select");
+      sel.className = "ctl";
+      sel.dataset.path = path;
+      sel.dataset.kind = "enum";
+      const optNull = document.createElement("option");
+      optNull.value = "";
+      optNull.textContent = "(null)";
+      sel.appendChild(optNull);
+      enums.forEach((e) => {
+        const o = document.createElement("option");
+        o.value = e;
+        o.textContent = e;
+        sel.appendChild(o);
+      });
+      sel.value = value == null ? "" : String(value);
+      if (value != null && !enums.includes(String(value))) {
+        const o = document.createElement("option");
+        o.value = String(value);
+        o.textContent = String(value) + " (当前)";
+        sel.appendChild(o);
+        sel.value = String(value);
+      }
+      sel.addEventListener("change", () => {
+        onConfigFieldChange(path, sel.value === "" ? null : sel.value);
+      });
+      wrap.appendChild(sel);
+      return wrap;
+    }
+
+    if (Array.isArray(value) || (value == null && path.endsWith("s"))) {
+      const ta = document.createElement(isComplexArray(value || []) ? "textarea" : "input");
+      ta.className = "ctl";
+      ta.dataset.path = path;
+      ta.dataset.kind = isComplexArray(value || []) ? "json" : "list";
+      if (ta.tagName === "INPUT") ta.type = "text";
+      ta.value = formatListInput(value);
+      ta.placeholder = isComplexArray(value || []) ? "JSON 数组" : "逗号分隔，或 JSON；空=null";
+      ta.addEventListener("change", () => {
+        try {
+          const sample = Array.isArray(value) && value.length ? value[0] : "";
+          const parsed = ta.dataset.kind === "json"
+            ? (String(ta.value).trim() ? JSON.parse(ta.value) : null)
+            : parseListInput(ta.value, sample);
+          onConfigFieldChange(path, parsed);
+          ta.style.borderColor = "";
+        } catch (e) {
+          ta.style.borderColor = "var(--bad)";
+          alert(path + " 解析失败: " + e.message);
+        }
+      });
+      wrap.appendChild(ta);
+      return wrap;
+    }
+
+    if (isPlainObject(value)) {
+      // 不应落到这里；对象走递归
+      const ta = document.createElement("textarea");
+      ta.className = "ctl";
+      ta.dataset.path = path;
+      ta.dataset.kind = "json";
+      ta.value = JSON.stringify(value, null, 2);
+      ta.addEventListener("change", () => {
+        try {
+          onConfigFieldChange(path, JSON.parse(ta.value || "null"));
+        } catch (e) {
+          alert(path + " JSON 无效: " + e.message);
+        }
+      });
+      wrap.appendChild(ta);
+      return wrap;
+    }
+
+    const inp = document.createElement("input");
+    inp.className = "ctl";
+    inp.dataset.path = path;
+    if (typeof value === "number") {
+      inp.type = "number";
+      inp.step = "any";
+      inp.dataset.kind = "number";
+      inp.value = String(value);
+    } else if (value == null) {
+      inp.type = "text";
+      inp.dataset.kind = "nullish";
+      inp.value = "";
+      inp.placeholder = "null";
+    } else {
+      inp.type = "text";
+      inp.dataset.kind = "string";
+      inp.value = String(value);
+    }
+    inp.addEventListener("change", () => {
+      onConfigFieldChange(path, parseScalar(inp.value, inp.dataset.kind));
+    });
+    wrap.appendChild(inp);
+    return wrap;
+  }
+
+  function renderObjectFields(obj, basePath, host) {
+    Object.keys(obj || {}).forEach((key) => {
+      const path = pathJoin(basePath, key);
+      const val = obj[key];
+      if (isPlainObject(val)) {
+        // 叶子式小对象（如 telegram、liquidations）可折叠
+        const node = document.createElement("details");
+        node.className = "cfg-node";
+        if (["walkforward", "gbdt", "deep_ts", "sentiment", "liquidations"].includes(key)) {
+          node.open = true;
+        }
+        const sum = document.createElement("summary");
+        sum.textContent = key;
+        const body = document.createElement("div");
+        body.className = "cfg-node-body";
+        node.append(sum, body);
+        host.appendChild(node);
+        renderObjectFields(val, path, body);
+        return;
+      }
+      if (Array.isArray(val) && isComplexArray(val)) {
+        host.appendChild(makeInput(path, val));
+        return;
+      }
+      if (Array.isArray(val)) {
+        host.appendChild(makeInput(path, val));
+        return;
+      }
+      host.appendChild(makeInput(path, val));
+    });
+  }
+
+  function renderConfigTree() {
+    const root = $("configTree");
+    root.innerHTML = "";
+    if (!liveConfig) {
+      root.textContent = "无配置";
+      return;
+    }
+    const labels = meta?.config_section_labels || {};
+    const openSet = new Set(meta?.config_sections_open || []);
+    Object.keys(liveConfig).forEach((sec) => {
+      const det = document.createElement("details");
+      det.className = "cfg-sec";
+      det.open = openSet.has(sec);
+      const sum = document.createElement("summary");
+      const title = labels[sec] || sec;
+      sum.innerHTML = `${esc(title)} <span class="sec-key">${esc(sec)}</span>`;
+      const body = document.createElement("div");
+      body.className = "cfg-sec-body";
+      det.append(sum, body);
+      root.appendChild(det);
+      const val = liveConfig[sec];
+      if (isPlainObject(val)) renderObjectFields(val, sec, body);
+      else body.appendChild(makeInput(sec, val));
+    });
+  }
+
+  function onConfigFieldChange(path, value) {
+    if (!liveConfig) return;
+    setByPath(liveConfig, path, value);
+    // 与切分 UI 双向同步
+    if (path === "validation.walkforward.recompute_sample_weight_on_split") {
+      $("recomputeWeight").checked = Boolean(value);
+    }
+    if (path === "validation.walkforward.train_start") {
+      setDateValue("trainStart", value ? String(value).slice(0, 10) : "");
+    }
+    if (path === "validation.walkforward.test_start") {
+      const s = value ? String(value).slice(0, 10) : "";
+      if (s) setDateValue("testStart", s);
+    }
+    if (path === "validation.walkforward.test_end") {
+      setDateValue("testEnd", value ? String(value).slice(0, 10) : "");
+    }
+    if (path === "validation.walkforward.min_test_events" && meta) {
+      meta.min_test_events = Number(value) || meta.min_test_events;
+      updatePanelHint();
+    }
+  }
+
+  function syncDatesIntoConfig() {
+    if (!liveConfig) return;
+    liveConfig.validation = liveConfig.validation || {};
+    liveConfig.validation.walkforward = liveConfig.validation.walkforward || {};
+    const wf = liveConfig.validation.walkforward;
+    const tr = getDateValue("trainStart");
+    const ts = getDateValue("testStart");
+    const te = getDateValue("testEnd");
+    wf.train_start = tr ? tr + "T00:00:00Z" : null;
+    if (ts) wf.test_start = ts + "T00:00:00Z";
+    wf.test_end = te ? te + "T00:00:00Z" : null;
+    wf.recompute_sample_weight_on_split = $("recomputeWeight").checked;
+  }
+
+  function resetLiveConfig() {
+    liveConfig = deepClone(meta?.config || {});
+    $("recomputeWeight").checked = Boolean(
+      liveConfig?.validation?.walkforward?.recompute_sample_weight_on_split
+    );
+    renderConfigTree();
+  }
 
   const dateFields = {
     trainStart: { optional: true, root: "dp-trainStart", valueEl: "dv-trainStart", emptyText: "未设置 · 用面板最早事件" },
@@ -687,6 +1131,7 @@
       el.textContent = v;
       el.classList.remove("empty");
     }
+    if (liveConfig) syncDatesIntoConfig();
   }
 
   function setStatus(kind, text) {
@@ -784,6 +1229,7 @@
     setDateValue("trainStart", d.train_start || "");
     setDateValue("testStart", d.test_start || "2022-09-14");
     setDateValue("testEnd", d.test_end || "");
+    $("recomputeWeight").checked = Boolean(d.recompute_sample_weight);
     updatePanelHint();
     updateTimeline();
     markPresetActive();
@@ -849,7 +1295,13 @@
   async function loadMeta(refresh = false) {
     meta = await api("/api/meta" + (refresh ? "?refresh=1" : ""));
     fillSymbols();
+    liveConfig = deepClone(meta.config || {});
     applyDefaults();
+    $("recomputeWeight").checked = Boolean(
+      meta.defaults?.recompute_sample_weight
+      ?? liveConfig?.validation?.walkforward?.recompute_sample_weight_on_split
+    );
+    renderConfigTree();
   }
 
   function renderResult(job) {
@@ -948,12 +1400,14 @@
   }
 
   async function startTrain() {
+    syncDatesIntoConfig();
     const payload = {
       symbol: $("symbol").value,
       train_start: getDateValue("trainStart") || null,
       test_start: getDateValue("testStart"),
       test_end: getDateValue("testEnd") || null,
       recompute_sample_weight: $("recomputeWeight").checked,
+      config: liveConfig,
     };
     if (!payload.test_start) {
       alert("请完整选择回测起点（年/月/日）");
@@ -988,6 +1442,31 @@
 
   $("btnTrain").addEventListener("click", startTrain);
   $("btnRefreshMeta").addEventListener("click", () => loadMeta(true).catch((e) => alert(e.message)));
+  $("btnResetCfg").addEventListener("click", () => {
+    if (!meta?.config) return;
+    resetLiveConfig();
+    applyDefaults();
+  });
+  $("btnExpandCfg").addEventListener("click", () => {
+    document.querySelectorAll("#configTree details.cfg-sec").forEach((d) => { d.open = true; });
+  });
+  $("btnCollapseCfg").addEventListener("click", () => {
+    document.querySelectorAll("#configTree details.cfg-sec").forEach((d) => { d.open = false; });
+  });
+  $("recomputeWeight").addEventListener("change", () => {
+    if (!liveConfig) return;
+    liveConfig.validation = liveConfig.validation || {};
+    liveConfig.validation.walkforward = liveConfig.validation.walkforward || {};
+    liveConfig.validation.walkforward.recompute_sample_weight_on_split = $("recomputeWeight").checked;
+    const inp = document.querySelector(
+      '[data-path="validation.walkforward.recompute_sample_weight_on_split"]'
+    );
+    if (inp && inp.type === "checkbox") {
+      inp.checked = $("recomputeWeight").checked;
+      const sp = inp.parentElement?.querySelector("span");
+      if (sp) sp.textContent = inp.checked ? "true" : "false";
+    }
+  });
   $("symbol").addEventListener("change", () => {
     updatePanelHint();
     updateTimeline();

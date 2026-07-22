@@ -1,0 +1,189 @@
+{
+  "symbol": "BTC/USDT",
+  "mode": "walk_forward_train_then_test",
+  "evaluation_unit": "walk_forward",
+  "split_kind": "single_cut_holdout",
+  "note": "真外推(single-cut holdout, 非滚动再训练): 仅训练窗拟合; 测试窗 predict+deploy 门控; 阈值在全部训练 OOF 冻结, 禁止测试窗刷 thr。勿与 research OOF / train_and_validate.backtest_deploy 成交数直接对比。",
+  "data_source": "cache",
+  "panel_bars": 156208,
+  "panel_start": "2017-08-17 04:00:00+00:00",
+  "panel_end": "2026-07-21 05:00:00+00:00",
+  "train_start": null,
+  "train_end_exclusive": "2022-09-14 00:00:00+00:00",
+  "recompute_sample_weight_on_split": false,
+  "label_deadline": "2022-09-14 00:00:00+00:00",
+  "embargo_bars": 0,
+  "embargo_delta": "0 days 00:00:00",
+  "backtest_start": "2022-09-14 00:00:00+00:00",
+  "backtest_end": "2026-07-18 00:00:00+00:00",
+  "prob_threshold_effective": 0.6245283018867924,
+  "n_train_events": 18633,
+  "n_test_events": 10975,
+  "n_opened_trades": 204,
+  "n_wins": 123,
+  "n_losses": 81,
+  "win_rate": 0.6029411764705882,
+  "total_return": 0.023224438448922635,
+  "max_drawdown": -0.05213368155068517,
+  "initial_capital": 10000.0,
+  "final_capital": 10232.244384489226,
+  "train_oof_report": {
+    "n": 18633,
+    "auc": 0.5411165486107754,
+    "brier": 0.24959613597854052,
+    "logloss": 0.6924534340799064,
+    "accuracy": 0.5326034454999194,
+    "base_rate": 0.5021198948102829
+  },
+  "test_report": {
+    "n": 10975,
+    "auc": 0.5094396426701492,
+    "brier": 0.2504702784803135,
+    "logloss": 0.6940928741311364,
+    "accuracy": 0.5052391799544419,
+    "base_rate": 0.5026879271070614
+  },
+  "backtest_metrics": {
+    "n_events": 10975,
+    "n_trades": 204,
+    "n_halted": 0,
+    "total_return": 0.023224438448922635,
+    "sharpe": 0.05879399182498528,
+    "sharpe_annualized": 0.35770590625469323,
+    "max_drawdown": -0.05213368155068517,
+    "max_drawdown_realized": -0.04849821436437435,
+    "mark_to_market": true,
+    "avg_uniqueness": 0.6968196854437395,
+    "n_trades_effective": 142.15121583052286,
+    "win_rate": 0.6029411764705882,
+    "avg_pnl": 0.00011670725783537404,
+    "portfolio_mode": "portfolio",
+    "sharpe_equity": 0.04800102488548892,
+    "sharpe_equity_annualized": 0.3209988982880562,
+    "sharpe_equity_mtm": 0.0038571462790001807,
+    "sharpe_equity_mtm_annualized": 0.2449520438539977,
+    "n_skipped_capacity": 0,
+    "calmar": 0.44547857186845524
+  },
+  "gate_diagnostics": {
+    "prob_threshold": 0.6245283018867924,
+    "n_events": 10975,
+    "raw_proba": {
+      "mean": 0.500071131028191,
+      "std": 0.026514863775579038,
+      "min": 0.4019008202246085,
+      "max": 0.6249603685590792,
+      "frac_ge_threshold": 9.111617312072893e-05
+    },
+    "calibrated_proba": {
+      "mean": 0.4957570833342334,
+      "std": 0.03473334545936039,
+      "min": 0.46810035842293907,
+      "max": 0.6245283018867924,
+      "n_unique": 21,
+      "top_levels": [
+        {
+          "prob": 0.4681,
+          "n": 5079,
+          "frac": 0.4627790432801822
+        },
+        {
+          "prob": 0.496602,
+          "n": 1691,
+          "frac": 0.15407744874715262
+        },
+        {
+          "prob": 0.522888,
+          "n": 1254,
+          "frac": 0.11425968109339407
+        },
+        {
+          "prob": 0.49115,
+          "n": 736,
+          "frac": 0.06706150341685649
+        },
+        {
+          "prob": 0.549188,
+          "n": 703,
+          "frac": 0.06405466970387244
+        },
+        {
+          "prob": 0.492565,
+          "n": 516,
+          "frac": 0.04701594533029613
+        },
+        {
+          "prob": 0.546191,
+          "n": 432,
+          "frac": 0.039362186788154896
+        },
+        {
+          "prob": 0.624528,
+          "n": 204,
+          "frac": 0.0185876993166287
+        },
+        {
+          "prob": 0.569767,
+          "n": 175,
+          "frac": 0.015945330296127564
+        },
+        {
+          "prob": 0.582192,
+          "n": 85,
+          "frac": 0.007744874715261959
+        },
+        {
+          "prob": 0.564356,
+          "n": 65,
+          "frac": 0.00592255125284738
+        },
+        {
+          "prob": 0.473684,
+          "n": 23,
+          "frac": 0.0020956719817767653
+        }
+      ]
+    },
+    "gates": {
+      "n_prob_ge_threshold": 204,
+      "frac_prob_ge_threshold": 0.0185876993166287,
+      "n_confident": 530,
+      "frac_confident": 0.04829157175398633,
+      "n_prob_and_confident": 204,
+      "frac_prob_and_confident": 0.0185876993166287,
+      "n_opened_size_gt_0": 204,
+      "frac_opened_size_gt_0": 0.0185876993166287,
+      "n_pass_gate_but_size_0": 0
+    },
+    "conformal_qhat": 0.5318996415770609,
+    "conformal_min_margin": 0.05,
+    "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
+    "path": "walk_forward_deploy",
+    "threshold_tags": [
+      "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.6245)",
+      "deploy_calibration_inflates_pass_rate(raw=0.0024,cal=0.0356,ratio=15.09)",
+      "deploy_prob_threshold_inflate_no_raise_room(thr=0.6245,q=0.9900,cand=0.6245)"
+    ],
+    "health_tags": [
+      "calibration_inflates_pass_rate(raw=0.0001,cal=0.0186,ratio=204.00)"
+    ],
+    "split_tags": [
+      "walkforward_purged_label_overlap(n=1)"
+    ]
+  },
+  "dropped_experts": [],
+  "degradations": [
+    "ohlcv_tip_exchange_fallback",
+    "derivatives_oi_unavailable",
+    "derivatives_liquidations_sparse(coverage=0.000)",
+    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.6245)",
+    "deploy_calibration_inflates_pass_rate(raw=0.0024,cal=0.0356,ratio=15.09)",
+    "deploy_prob_threshold_inflate_no_raise_room(thr=0.6245,q=0.9900,cand=0.6245)",
+    "calibration_inflates_pass_rate(raw=0.0001,cal=0.0186,ratio=204.00)",
+    "walkforward_purged_label_overlap(n=1)"
+  ],
+  "split_tags": [
+    "walkforward_purged_label_overlap(n=1)"
+  ],
+  "trades_csv": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/wf_console_jobs/20260722T022413_681f6f86/trades.csv"
+}
