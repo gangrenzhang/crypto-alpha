@@ -137,8 +137,9 @@ RESEARCH_DISCLAIMERS: list[str] = [
     "勿用研究 OOF 或 train_and_validate.backtest_deploy 拍板上线。",
     "摘要中的 backtest_deploy / gate_diagnostics_deploy 为部署出分路径"
     "（predict→fit_deploy 校准/保形），与 decide/serve 同形；"
-    "在 train_and_validate 内对报告窗仍可能偏乐观，成交数勿与 research OOF 直接对比。"
-    "面板 KPI 同时展示「交易数(研究OOF)」与「交易数(部署路径)」。",
+    "在 train_and_validate 内对报告窗仍可能偏乐观，**not_for_go_live=true**——"
+    "成交数勿与 research OOF 直接对比，更勿作上线拍板。"
+    "面板 KPI：「交易数(研究OOF)」与「交易数(部署·偏乐观·勿拍板)」。",
     "开仓阈值双冻结：prob_threshold_research=交叉拟合参考窗尺度（仅研究回测）；"
     "prob_threshold_effective=deploy 校准器变换参考窗原始 OOF（decide/serve/部署回测/"
     "与 walk-forward 同形）。参考窗为空时用时间半段回退（禁止全评估窗刷 thr）。"
@@ -523,7 +524,7 @@ def _render_symbol(d: dict) -> str:
     p.append(_kpi("交易数(研究OOF)", str(bt["n_trades"])))
     bt_dep = d.get("backtest_deploy") or {}
     if bt_dep:
-        p.append(_kpi("交易数(部署路径)", str(bt_dep.get("n_trades", "?"))))
+        p.append(_kpi("交易数(部署·偏乐观·勿拍板)", str(bt_dep.get("n_trades", "?"))))
     thr_r = d.get("prob_threshold_research")
     thr_eff = d.get("prob_threshold_effective")
     if thr_r is not None:

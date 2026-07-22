@@ -28,6 +28,195 @@ import pandas as pd
 # --------------------------------------------------------------------------
 _UA = {"User-Agent": "Mozilla/5.0 (crypto-alpha news fetcher)"}
 
+# GDELT DOC API 全进程级节流/熔断(跨重试与跨窗共享, 避免「窗间 30s + 重试连打」仍超限)
+_GDELT_GATE: dict = {
+    "last_mono": 0.0,
+    "consec_429": 0,
+}
+
+
+def _is_gdelt_url(url: str) -> bool:
+    return "gdeltproject.org" in str(url).lower()
+
+
+def _gdelt_gate_wait(min_interval_sec: float) -> None:
+    """确保任意两次 GDELT 请求间隔 >= min_interval(含重试)。"""
+    gap = max(0.0, float(min_interval_sec))
+    # 连续 429 后强制加长间隔(熔断), 否则官方 5s 建议在实践中不够
+    streak = int(_GDELT_GATE.get("consec_429") or 0)
+    if streak >= 1:
+        gap = max(gap, 60.0 * streak)
+    if streak >= 3:
+        gap = max(gap, 300.0)
+    last = float(_GDELT_GATE.get("last_mono") or 0.0)
+    now = time.monotonic()
+    wait = last + gap - now
+    if wait > 0:
+        time.sleep(wait)
+    _GDELT_GATE["last_mono"] = time.monotonic()
+
+
+def _gdelt_note_result(*, ok: bool) -> None:
+    if ok:
+        _GDELT_GATE["consec_429"] = 0
+    else:
+        _GDELT_GATE["consec_429"] = int(_GDELT_GATE.get("consec_429") or 0) + 1
+
+
+def _resolve_http_proxies() -> dict[str, str]:
+    """解析 HTTP(S) 代理: 环境变量优先, 其次 macOS 系统代理(scutil)。
+
+    Clash/Surge 等「系统代理」常只写进 macOS 设置, Python urllib 默认不读,
+    会导致 curl 能通 GDELT、回填脚本却打到直连旧 IP 一直 429。
+    """
+    import os
+
+    proxies = {k: v for k, v in urllib.request.getproxies().items() if v}
+    # getproxies 可能只有 'all'; 归一到 http/https
+    if "all" in proxies and "https" not in proxies:
+        proxies["https"] = proxies["all"]
+    if "all" in proxies and "http" not in proxies:
+        proxies["http"] = proxies["all"]
+    # urllib ProxyHandler 只稳妥支持 http/https; socks 键常导致走错或仍直连
+    proxies = {k: v for k, v in proxies.items() if k in ("http", "https") and v}
+    if proxies.get("http") or proxies.get("https"):
+        return proxies
+
+    # macOS SystemConfiguration
+    try:
+        import subprocess
+        import re as _re
+
+        out = subprocess.check_output(
+            ["scutil", "--proxy"], text=True, timeout=3, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return {}
+
+    def _flag(key: str) -> bool:
+        m = _re.search(rf"{key}\s*:\s*(\d+)", out)
+        return bool(m and m.group(1) == "1")
+
+    def _host_port(host_key: str, port_key: str) -> str | None:
+        hm = _re.search(rf"{host_key}\s*:\s*(\S+)", out)
+        pm = _re.search(rf"{port_key}\s*:\s*(\d+)", out)
+        if not hm or not pm:
+            return None
+        return f"http://{hm.group(1)}:{pm.group(1)}"
+
+    resolved: dict[str, str] = {}
+    if _flag("HTTPEnable"):
+        u = _host_port("HTTPProxy", "HTTPPort")
+        if u:
+            resolved["http"] = u
+    if _flag("HTTPSEnable"):
+        u = _host_port("HTTPSProxy", "HTTPSPort")
+        if u:
+            resolved["https"] = u
+    # HTTPS 未开时回退 HTTP 代理(多数本地代理两者同端口)
+    if "https" not in resolved and "http" in resolved:
+        resolved["https"] = resolved["http"]
+    return resolved
+
+
+def _http_get(
+    url: str,
+    timeout: float = 30.0,
+    *,
+    max_retries: int = 4,
+    base_backoff_sec: float = 20.0,
+    min_interval_sec: float | None = None,
+) -> bytes | None:
+    """GET with retries for transient HTTP errors (esp. GDELT 429).
+
+    On 429, prefer long cool-downs over rapid retries (rapid retries worsen bans).
+    Honors ``Retry-After`` when present. Returns ``None`` after exhausting retries.
+
+    GDELT URL 自动走全进程闸门: 任意两次请求间隔受 ``min_interval_sec`` /
+    连续 429 熔断约束(默认间隔至少 5s)。
+    自动使用环境变量 / macOS 系统 HTTP(S) 代理。
+    """
+    import urllib.error
+
+    is_gdelt = _is_gdelt_url(url)
+    # GDELT: 默认少重试(窗级会再排), 避免单窗连打 3 次把 IP 打进长黑名单
+    if is_gdelt and max_retries > 2:
+        max_retries = 1
+    interval = min_interval_sec
+    if interval is None and is_gdelt:
+        interval = 5.0
+
+    proxies = _resolve_http_proxies()
+    if proxies:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+        open_url = opener.open
+    else:
+        open_url = urllib.request.urlopen
+
+    last_err: Exception | None = None
+    for attempt in range(int(max_retries) + 1):
+        if interval is not None:
+            _gdelt_gate_wait(float(interval))
+        try:
+            req = urllib.request.Request(url, headers=_UA)
+            with open_url(req, timeout=timeout) as r:
+                raw = r.read()
+            if is_gdelt:
+                _gdelt_note_result(ok=True)
+            return raw
+        except urllib.error.HTTPError as e:
+            last_err = e
+            body_preview = ""
+            try:
+                body_preview = (e.read() or b"")[:160].decode("utf-8", errors="replace")
+            except Exception:
+                body_preview = ""
+            if is_gdelt and e.code == 429:
+                _gdelt_note_result(ok=False)
+            retryable = e.code in (408, 425, 429, 500, 502, 503, 504)
+            if (not retryable) or attempt >= int(max_retries):
+                print(
+                    f"[warn] 抓取失败 HTTP {e.code} {url[:60]}...: {body_preview or e}",
+                    flush=True,
+                )
+                return None
+            ra = e.headers.get("Retry-After") if e.headers else None
+            try:
+                if ra is not None:
+                    sleep_s = float(ra)
+                elif e.code == 429:
+                    streak = int(_GDELT_GATE.get("consec_429") or 1)
+                    # 429: 长冷却; 连续越多越久(上限 15min)
+                    sleep_s = max(120.0, float(base_backoff_sec) * (attempt + 2), 90.0 * streak)
+                else:
+                    sleep_s = base_backoff_sec * (1.5 ** attempt)
+            except Exception:
+                sleep_s = 120.0 if e.code == 429 else base_backoff_sec
+            sleep_s = min(max(sleep_s, 1.0), 900.0)
+            print(
+                f"[warn] HTTP {e.code} 重试 {attempt + 1}/{max_retries} "
+                f"sleep={sleep_s:.1f}s consec_429={_GDELT_GATE.get('consec_429', 0)} "
+                f"{url[:60]}...",
+                flush=True,
+            )
+            time.sleep(sleep_s)
+        except Exception as e:
+            last_err = e
+            if attempt >= int(max_retries):
+                print(f"[warn] 抓取失败 {url[:60]}...: {e}", flush=True)
+                return None
+            sleep_s = min(base_backoff_sec * (1.5 ** attempt), 90.0)
+            print(
+                f"[warn] 网络异常重试 {attempt + 1}/{max_retries} "
+                f"sleep={sleep_s:.1f}s ({e})",
+                flush=True,
+            )
+            time.sleep(sleep_s)
+    if last_err is not None:
+        print(f"[warn] 抓取失败 {url[:60]}...: {last_err}", flush=True)
+    return None
+
+
 # 轻量情绪词典(可替换为 FinBERT/CryptoBERT 等模型)
 _POS = {
     "surge", "rally", "bullish", "approve", "approval", "adopt", "adoption", "inflow",
@@ -80,16 +269,6 @@ def _relevant_symbols(text: str) -> list[str]:
     if not hit and any(k in t for k in _MARKET_KEYWORDS):
         hit = list(_SYMBOL_KEYWORDS.keys())  # 市场级新闻对两币都相关
     return hit
-
-
-def _http_get(url: str, timeout: float = 12.0) -> bytes | None:
-    try:
-        req = urllib.request.Request(url, headers=_UA)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read()
-    except Exception as e:
-        print(f"[warn] 抓取失败 {url[:60]}...: {e}")
-        return None
 
 
 # --------------------------------------------------------------------------
@@ -576,11 +755,13 @@ def _history_cfg(cfg) -> dict:
     h = dict(cfg["news"].get("history", {}) or {})
     h.setdefault("raw_dir", "data/news_raw")
     h.setdefault("providers", ["synthetic"])
-    h.setdefault("window_days", 7)
-    h.setdefault("rate_limit_sec", 5.0)
+    h.setdefault("window_days", 2)
+    h.setdefault("rate_limit_sec", 90.0)
     h.setdefault("max_windows", 400)
     h.setdefault("max_pages", 400)
     h.setdefault("gdelt_query", "(bitcoin OR ethereum)")
+    h.setdefault("gdelt_http_retries", 1)
+    h.setdefault("gdelt_429_cooldown_sec", 300.0)
     h.setdefault("synthetic_per_day", 8)
     return h
 
@@ -624,9 +805,14 @@ def _append_raw_store(cfg, items: list[dict]) -> tuple[int, int]:
     rows = []
     for it in items:
         syms = it.get("symbols", [])
+        ts = pd.Timestamp(it["published_at"])
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        ts = ts.floor("s")  # 与 _news_dedupe_ts / 内存 seen 对齐
         rows.append({
-            "published_at": pd.Timestamp(it["published_at"]).tz_convert("UTC")
-            if pd.Timestamp(it["published_at"]).tzinfo else pd.Timestamp(it["published_at"], tz="UTC"),
+            "published_at": ts,
             "source": str(it.get("source", "")),
             "tier": int(it.get("tier", 3)),
             "title": str(it.get("title", "")),
@@ -636,7 +822,7 @@ def _append_raw_store(cfg, items: list[dict]) -> tuple[int, int]:
     new = pd.DataFrame(rows)
     cur = _load_raw_store(cfg)
     combined = new if cur is None else pd.concat([cur, new], ignore_index=True)
-    combined["published_at"] = pd.to_datetime(combined["published_at"], utc=True)
+    combined["published_at"] = pd.to_datetime(combined["published_at"], utc=True).dt.floor("s")
     before = 0 if cur is None else len(cur)
     combined = combined.drop_duplicates(subset=["source", "title", "published_at"]).sort_values("published_at")
     p = _raw_store_path(cfg)
@@ -738,47 +924,369 @@ def fetch_cryptocompare_history(name, url, tier, api_key, start, end,
     return out
 
 
+def _news_dedupe_ts(dt) -> str:
+    """统一去重时间键: UTC 秒精度 ISO, 避免 datetime vs Timestamp / us 精度不一致。"""
+    ts = pd.Timestamp(dt)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts.floor("s").isoformat()
+
+
 def fetch_gdelt_history(name, tier, start, end, window_days=7,
                         rate_limit_sec=5.0, max_windows=400,
-                        query="(bitcoin OR ethereum)") -> list[dict]:
-    """GDELT 历史新闻: 把 [start,end] 切成窗口, 每窗最多 250 条, 逐窗抓取。"""
+                        query="(bitcoin OR ethereum)",
+                        cfg=None, resume_from=None,
+                        http_retries: int = 1,
+                        cooldown_429_sec: float = 300.0) -> list[dict]:
+    """GDELT 历史新闻: 把 [start,end] 切成窗口逐窗抓取。
+
+    时间戳取 ``seendate``(GDELT 首次见到文章的 UTC; 常量化到 15min 网格)。
+    API 日期参数必须为 ``YYYYMMDDHHMMSS``(无 ``T``); ``maxrecords`` 上限 250。
+
+    **覆盖正确性**: 若某窗返回满 250 条, 说明该窗可能被截断 — 自动对半分窗重抓,
+    直到不满额或窗宽 < 1 小时。避免 ``sort=datedesc`` + 宽窗系统性丢掉窗前半段。
+
+    **限流**: DOC API 对高频极敏感。``rate_limit_sec`` 同时作为全进程最小请求间隔;
+    429 后用 ``cooldown_429_sec`` 与连续失败熔断, ``http_retries`` 宜小(默认 1)。
+    """
     out: list[dict] = []
     seen = set()
-    win = timedelta(days=int(window_days))
-    cur = start
+    if cfg is not None:
+        existing = _load_raw_store(cfg)
+        if existing is not None and len(existing):
+            for r in existing.itertuples(index=False):
+                pa = getattr(r, "published_at", None)
+                pa_s = _news_dedupe_ts(pa) if pa is not None else ""
+                seen.add((
+                    str(getattr(r, "source", "")),
+                    str(getattr(r, "title", "")),
+                    pa_s,
+                ))
+    cur = resume_from if resume_from is not None else start
+    if cur < start:
+        cur = start
     n = 0
+    n_fail = 0
+    n_split = 0
     q_enc = urllib.parse.quote(query)
-    while cur < end and n < int(max_windows):
-        w_end = min(cur + win, end)
+    max_per_window = 250
+    min_split = timedelta(hours=1)
+    http_retries = max(0, int(http_retries))
+    cool_429 = max(60.0, float(cooldown_429_sec))
+
+    def _fetch_window(w0: datetime, w1: datetime) -> tuple[list[dict], int]:
+        """返回 (相关条目, 原始 articles 条数); 原始条数用于判断是否截断。"""
         url = (f"https://api.gdeltproject.org/api/v2/doc/doc?query={q_enc}"
-               f"&mode=artlist&format=json&maxrecords=250&sort=datedesc"
-               f"&startdatetime={cur.strftime('%Y%m%d%H%M%S')}"
-               f"&enddatetime={w_end.strftime('%Y%m%d%H%M%S')}")
-        raw = _http_get(url)
-        if raw is not None:
+               f"&mode=artlist&format=json&maxrecords={max_per_window}&sort=datedesc"
+               f"&startdatetime={w0.strftime('%Y%m%d%H%M%S')}"
+               f"&enddatetime={w1.strftime('%Y%m%d%H%M%S')}")
+        raw = _http_get(
+            url,
+            timeout=45.0,
+            max_retries=http_retries,
+            base_backoff_sec=max(60.0, float(rate_limit_sec)),
+            min_interval_sec=float(rate_limit_sec),
+        )
+        if raw is None:
+            return [], -1
+        text = raw.decode("utf-8", errors="replace").strip()
+        if not text.startswith("{") and not text.startswith("["):
+            print(f"[warn] GDELT 非 JSON 响应窗 {w0.date()}~{w1.date()}: {text[:120]}")
+            return [], -1
+        try:
+            articles = json.loads(text).get("articles", [])
+        except Exception as e:
+            print(f"[warn] GDELT JSON 解析失败窗 {w0.date()}: {e}")
+            return [], -1
+        items = []
+        for r in articles:
             try:
-                data = json.loads(raw).get("articles", [])
+                dt = datetime.strptime(
+                    r["seendate"], "%Y%m%dT%H%M%SZ"
+                ).replace(tzinfo=timezone.utc)
             except Exception:
-                data = []
-            for r in data:
-                try:
-                    dt = datetime.strptime(r["seendate"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-                except Exception:
+                continue
+            if dt < start or dt > end:
+                continue
+            title = r.get("title", "")
+            src = f"{name}:{r.get('domain', '')}"
+            key = (src, title, _news_dedupe_ts(dt))
+            if key in seen:
+                continue
+            syms = _relevant_symbols(title)
+            if not syms:
+                continue
+            items.append({
+                "published_at": dt,
+                "source": src,
+                "tier": tier,
+                "title": title,
+                "url": r.get("url", ""),
+                "symbols": syms,
+                # 与 _append_raw_store 去重键对齐: source+title+published_at
+                "_key": key,
+            })
+        return items, len(articles)
+
+    # 待处理区间队列(支持满额自动对半分窗 + 失败重试)
+    from collections import deque
+
+    win = timedelta(days=int(window_days))
+    t = cur
+    queue: deque[tuple[datetime, datetime, int]] = deque()  # (w0,w1,attempt)
+    while t < end:
+        t2 = min(t + win, end)
+        queue.append((t, t2, 0))
+        t = t2
+
+    # 续跑时把上次放弃/截断窗重新入队(插到队首), 避免 cursor 前进后永久空洞
+    if cfg is not None:
+        st_path = _checkpoint_path(cfg)
+        if st_path.exists():
+            try:
+                st0 = json.loads(st_path.read_text(encoding="utf-8"))
+            except Exception:
+                st0 = {}
+            replay = []
+            for pair in (st0.get("gdelt_failed_windows") or []):
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
                     continue
-                title = r.get("title", "")
-                key = (title, r.get("url", ""))
-                if key in seen:
+                a, b = _parse_dt(pair[0]), _parse_dt(pair[1])
+                if a is not None and b is not None and a < b:
+                    replay.append((a, b, 0))
+            for pair in (st0.get("gdelt_truncated_windows") or []):
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
                     continue
-                seen.add(key)
-                syms = _relevant_symbols(title)
-                if not syms:
+                a, b = _parse_dt(pair[0]), _parse_dt(pair[1])
+                if a is not None and b is not None and a < b:
+                    replay.append((a, b, 0))
+            for pair in (st0.get("gdelt_pending_windows") or []):
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
                     continue
-                out.append({"published_at": dt, "source": f"{name}:{r.get('domain','')}",
-                            "tier": tier, "title": title, "url": r.get("url", ""), "symbols": syms})
-        cur = w_end
+                a, b = _parse_dt(pair[0]), _parse_dt(pair[1])
+                att = int(pair[2]) if len(pair) >= 3 else 0
+                if a is not None and b is not None and a < b:
+                    replay.append((a, b, max(0, att)))
+            for item in reversed(replay):
+                queue.appendleft(item)
+            if replay:
+                print(
+                    f"[hist] GDELT 续跑补洞: 重新入队失败/截断/pending 窗 {len(replay)} 个",
+                    flush=True,
+                )
+                # 清空列表, 本次跑完若再失败会重新写入
+                st0["gdelt_failed_windows"] = []
+                st0["gdelt_truncated_windows"] = []
+                st0["gdelt_pending_windows"] = []
+                st_path.write_text(
+                    json.dumps(st0, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+
+    print(f"[hist] GDELT 从 {cur.isoformat()} 扫到 {end.isoformat()} "
+          f"(window_days={window_days}, rate={rate_limit_sec}s, "
+          f"http_retries={http_retries}, cool_429={cool_429:.0f}s, 满额自动切分)",
+          flush=True)
+
+    max_window_attempts = 5
+    while queue and n < int(max_windows):
+        w0, w1, attempt = queue.popleft()
+        items, n_raw = _fetch_window(w0, w1)
         n += 1
+        if n_raw < 0:
+            n_fail += 1
+            if attempt + 1 < max_window_attempts:
+                streak = int(_GDELT_GATE.get("consec_429") or 1)
+                cool = max(cool_429, float(rate_limit_sec) * 3, 90.0 * streak)
+                cool = min(cool, 900.0)
+                print(
+                    f"[warn] GDELT 窗失败 {w0.isoformat()}~{w1.isoformat()} "
+                    f"attempt={attempt+1}/{max_window_attempts}, "
+                    f"冷却 {cool:.0f}s 后重试 (consec_429={streak})",
+                    flush=True,
+                )
+                time.sleep(cool)
+                queue.append((w0, w1, attempt + 1))
+                # 立即记 pending: 否则后续成功窗推高 cursor 后进程崩溃会永久丢洞
+                if cfg is not None:
+                    st_path = _checkpoint_path(cfg)
+                    st = {}
+                    if st_path.exists():
+                        try:
+                            st = json.loads(st_path.read_text(encoding="utf-8"))
+                        except Exception:
+                            st = {}
+                    pending = [
+                        p for p in (st.get("gdelt_pending_windows") or [])
+                        if not (
+                            isinstance(p, (list, tuple)) and len(p) >= 2
+                            and str(p[0]) == w0.isoformat()
+                            and str(p[1]) == w1.isoformat()
+                        )
+                    ]
+                    pending.append([w0.isoformat(), w1.isoformat(), int(attempt + 1)])
+                    st["gdelt_pending_windows"] = pending[-500:]
+                    st_path.write_text(
+                        json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8",
+                    )
+            else:
+                print(
+                    f"[warn] GDELT 窗放弃 {w0.isoformat()}~{w1.isoformat()} "
+                    f"(已重试 {max_window_attempts} 次)",
+                    flush=True,
+                )
+                if cfg is not None:
+                    # 记录空洞供后续补洞, 避免 cursor 越过失败窗后永久丢失
+                    st_path = _checkpoint_path(cfg)
+                    st = {}
+                    if st_path.exists():
+                        try:
+                            st = json.loads(st_path.read_text(encoding="utf-8"))
+                        except Exception:
+                            st = {}
+                    failed = list(st.get("gdelt_failed_windows") or [])
+                    failed.append([w0.isoformat(), w1.isoformat()])
+                    st["gdelt_failed_windows"] = failed[-500:]
+                    # 放弃后不再留在 pending
+                    st["gdelt_pending_windows"] = [
+                        p for p in (st.get("gdelt_pending_windows") or [])
+                        if not (
+                            isinstance(p, (list, tuple)) and len(p) >= 2
+                            and str(p[0]) == w0.isoformat()
+                            and str(p[1]) == w1.isoformat()
+                        )
+                    ]
+                    st_path.parent.mkdir(parents=True, exist_ok=True)
+                    st_path.write_text(
+                        json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8",
+                    )
+            if cfg is not None:
+                cur_store = _load_raw_store(cfg)
+                store_total = 0 if cur_store is None else len(cur_store)
+                _write_checkpoint(
+                    cfg, start, end, ["gdelt"], int(store_total),
+                    extra={
+                        "gdelt_cursor": w0.isoformat(),
+                        "gdelt_windows_done": n,
+                        "gdelt_fail_windows": n_fail,
+                        "gdelt_split_windows": n_split,
+                    },
+                )
+            time.sleep(max(0.0, float(rate_limit_sec)))
+            continue
+
+        # 满额且窗仍可分 → 对半切分, 本窗结果丢弃(子窗会重抓, 防 datedesc 截断)
+        if n_raw >= max_per_window and (w1 - w0) > min_split * 2:
+            mid = w0 + (w1 - w0) / 2
+            queue.appendleft((mid, w1, 0))
+            queue.appendleft((w0, mid, 0))
+            n_split += 1
+            print(
+                f"[hist] GDELT 窗满额 {n_raw} @ {w0.isoformat()}~{w1.isoformat()} "
+                f"→ 切分为 2 子窗 (累计切分 {n_split})",
+                flush=True,
+            )
+            time.sleep(max(0.0, float(rate_limit_sec)))
+            continue
+        if n_raw >= max_per_window:
+            print(
+                f"[warn] GDELT 窗仍满额但不可再切 "
+                f"{w0.isoformat()}~{w1.isoformat()} (raw={n_raw}); "
+                f"datedesc 可能截断窗前半 — 记 gdelt_truncated_window",
+                flush=True,
+            )
+            if cfg is not None:
+                st_path = _checkpoint_path(cfg)
+                st = {}
+                if st_path.exists():
+                    try:
+                        st = json.loads(st_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        st = {}
+                trunc = list(st.get("gdelt_truncated_windows") or [])
+                trunc.append([w0.isoformat(), w1.isoformat(), int(n_raw)])
+                st["gdelt_truncated_windows"] = trunc[-200:]
+                st_path.write_text(
+                    json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+
+        window_items = []
+        for it in items:
+            key = it.pop("_key")
+            seen.add(key)
+            window_items.append(it)
+            out.append(it)
+
+        store_total = None
+        if cfg is not None and window_items:
+            added, store_total = _append_raw_store(cfg, window_items)
+            print(
+                f"[hist] GDELT 窗 {w0.isoformat()}~{w1.isoformat()}: "
+                f"raw={n_raw} +{len(window_items)} 相关 / +{added} 入库 "
+                f"(库总量 {store_total})",
+                flush=True,
+            )
+        elif cfg is not None:
+            cur_store = _load_raw_store(cfg)
+            store_total = 0 if cur_store is None else len(cur_store)
+            if n_raw == 0:
+                print(f"[hist] GDELT 窗 {w0.date()}~{w1.date()}: 空", flush=True)
+        if cfg is not None:
+            # 成功后从 pending 移除本窗(若曾失败重试)
+            st_path = _checkpoint_path(cfg)
+            if st_path.exists():
+                try:
+                    st = json.loads(st_path.read_text(encoding="utf-8"))
+                except Exception:
+                    st = {}
+                pend = st.get("gdelt_pending_windows") or []
+                if pend:
+                    st["gdelt_pending_windows"] = [
+                        p for p in pend
+                        if not (
+                            isinstance(p, (list, tuple)) and len(p) >= 2
+                            and str(p[0]) == w0.isoformat()
+                            and str(p[1]) == w1.isoformat()
+                        )
+                    ]
+                    st_path.write_text(
+                        json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8",
+                    )
+            _write_checkpoint(
+                cfg, start, end, ["gdelt"],
+                int(store_total or 0),
+                extra={
+                    "gdelt_cursor": w1.isoformat(),
+                    "gdelt_windows_done": n,
+                    "gdelt_fail_windows": n_fail,
+                    "gdelt_split_windows": n_split,
+                },
+            )
         time.sleep(max(0.0, float(rate_limit_sec)))
-    print(f"[hist] GDELT 历史抓取 {len(out)} 条 / {n} 窗 ({start.date()}~{end.date()})")
+
+    if queue:
+        print(f"[warn] GDELT 达到 max_windows={max_windows}, 仍剩 {len(queue)} 个子窗未抓; "
+              f"请提高 max_windows 后续跑(cursor={queue[0][0].isoformat()})",
+              flush=True)
+        if cfg is not None:
+            _write_checkpoint(
+                cfg, start, end, ["gdelt"],
+                0 if _load_raw_store(cfg) is None else len(_load_raw_store(cfg)),
+                extra={
+                    "gdelt_cursor": queue[0][0].isoformat(),
+                    "gdelt_windows_done": n,
+                    "gdelt_fail_windows": n_fail,
+                    "gdelt_split_windows": n_split,
+                    "gdelt_incomplete": True,
+                },
+            )
+
+    print(
+        f"[hist] GDELT 历史抓取 {len(out)} 条 / {n} 请求 "
+        f"(失败 {n_fail}, 切分 {n_split}) ({start.date()}~{end.date()})",
+        flush=True,
+    )
     return out
 
 
@@ -830,48 +1338,90 @@ def backfill_news(cfg, start=None, end=None, providers=None) -> dict:
     import os
 
     hcfg = _history_cfg(cfg)
-    start = _parse_dt(start or hcfg.get("start"), default=_parse_dt("2021-01-01T00:00:00Z"))
+    start = _parse_dt(start or hcfg.get("start"), default=_parse_dt("2020-01-01T00:00:00Z"))
     end = _parse_dt(end or hcfg.get("end"), default=datetime.now(timezone.utc))
     providers = providers or hcfg["providers"]
     rate = float(hcfg["rate_limit_sec"])
     src_by_type = {s.get("type"): s for s in cfg["news"].get("sources", [])}
+
+    before = _load_raw_store(cfg)
+    before_n = 0 if before is None else len(before)
+
+    # 读取可续跑 cursor(仅 gdelt)
+    ckpt = {}
+    cp = _checkpoint_path(cfg)
+    if cp.exists():
+        try:
+            ckpt = json.loads(cp.read_text(encoding="utf-8"))
+        except Exception:
+            ckpt = {}
+    gdelt_resume = _parse_dt(ckpt.get("gdelt_cursor"))
+    ckpt_range_start = _parse_dt((ckpt.get("range") or [None])[0])
+    # 仅当「同一战役起点」时续跑, 避免旧试点 cursor 把 2020 全量跳到 2024
+    resume_same_campaign = (
+        gdelt_resume is not None
+        and ckpt_range_start is not None
+        and ckpt_range_start == start
+        and start <= gdelt_resume < end
+        and "gdelt" in (ckpt.get("providers") or [])
+    )
 
     stats: dict = {}
     for p in providers:
         try:
             if p == "synthetic":
                 items = _synthetic_history_items(cfg, start, end)
+                stats[p] = len(items)
+                _append_raw_store(cfg, items)
             elif p == "cryptocompare":
                 s = src_by_type.get("cryptocompare", {})
+                key = os.environ.get(s.get("api_key_env", "CRYPTOCOMPARE_KEY"), "")
+                if not key:
+                    print("[warn] CRYPTOCOMPARE_KEY 未设置; 跳过 cryptocompare 历史回填"
+                          "(免费档对历史分页常 401)。请设置环境变量后重跑该 provider。")
+                    stats[p] = 0
+                    continue
                 items = fetch_cryptocompare_history(
                     s.get("name", "CryptoCompare"),
                     s.get("url", "https://min-api.cryptocompare.com/data/v2/news/"),
                     int(s.get("tier", 2)),
-                    os.environ.get(s.get("api_key_env", "CRYPTOCOMPARE_KEY"), ""),
+                    key,
                     start, end, rate, int(hcfg["max_pages"]))
+                stats[p] = len(items)
+                _append_raw_store(cfg, items)
             elif p == "gdelt":
                 s = src_by_type.get("gdelt", {})
+                # 已增量写入 store, 这里不再二次 append
                 items = fetch_gdelt_history(
                     s.get("name", "GDELT"), int(s.get("tier", 2)),
                     start, end, int(hcfg["window_days"]), rate,
-                    int(hcfg["max_windows"]), hcfg["gdelt_query"])
+                    int(hcfg["max_windows"]), hcfg["gdelt_query"],
+                    cfg=cfg,
+                    resume_from=gdelt_resume if resume_same_campaign else None,
+                    http_retries=int(hcfg.get("gdelt_http_retries", 1)),
+                    cooldown_429_sec=float(hcfg.get("gdelt_429_cooldown_sec", 300.0)),
+                )
+                stats[p] = len(items)
             else:
                 print(f"[warn] 未知 history provider: {p}")
                 continue
         except Exception as e:
             print(f"[warn] provider {p} 回填失败: {e}")
-            items = []
-        stats[p] = len(items)
-        _append_raw_store(cfg, items)
+            stats[p] = 0
 
-    added, total = _append_raw_store(cfg, [])
-    stats["_added"] = added
+    after = _load_raw_store(cfg)
+    total = 0 if after is None else len(after)
+    stats["_added"] = max(0, total - before_n)
     stats["_total"] = total
-    _write_checkpoint(cfg, start, end, providers, total)
+    # 不覆盖 gdelt_cursor: 窗级写入已是权威进度; 完整跑完时 cursor≈end
+    extra = {}
+    if "gdelt" not in providers and ckpt.get("gdelt_cursor"):
+        extra["gdelt_cursor"] = ckpt["gdelt_cursor"]
+    _write_checkpoint(cfg, start, end, providers, total, extra=extra or None)
     return stats
 
 
-def _write_checkpoint(cfg, start, end, providers, total) -> None:
+def _write_checkpoint(cfg, start, end, providers, total, extra: dict | None = None) -> None:
     p = _checkpoint_path(cfg)
     p.parent.mkdir(parents=True, exist_ok=True)
     state = {}
@@ -884,4 +1434,6 @@ def _write_checkpoint(cfg, start, end, providers, total) -> None:
     state["range"] = [start.isoformat(), end.isoformat()]
     state["providers"] = list(providers)
     state["total"] = int(total)
+    if extra:
+        state.update(extra)
     p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")

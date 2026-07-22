@@ -388,6 +388,7 @@ def run_walkforward(
         alpha=float(ccfg["conformal_alpha"]),
         conformal_frac=float(ccfg.get("conformal_frac", 0.3)),
         min_margin=conf_margin,
+        min_unique_levels=int(ccfg.get("min_unique_levels", 20)),
     )
 
     # 与 train_and_validate 的 thr_eff 同形: 仅训练窗 OOF × deploy cal

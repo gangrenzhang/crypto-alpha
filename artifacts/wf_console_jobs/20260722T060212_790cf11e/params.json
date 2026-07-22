@@ -1,0 +1,17 @@
+{
+  "symbol": "BTC/USDT",
+  "train_start": "2020-01-01",
+  "test_start": "2024-09-14",
+  "test_end": "2026-07-18",
+  "recompute_sample_weight": false,
+  "config": {
+    "validation": {
+      "walkforward": {
+        "train_start": "2020-01-01T00:00:00Z",
+        "test_end": "2026-07-18T00:00:00Z",
+        "recompute_sample_weight_on_split": false,
+        "test_start": "2024-09-14T00:00:00Z"
+      }
+    }
+  }
+}

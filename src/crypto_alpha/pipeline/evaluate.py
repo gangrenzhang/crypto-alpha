@@ -92,6 +92,7 @@ def _apply_deploy_cal_conformal(
     conformal_frac: float,
     min_oof: int = 20,
     min_margin: float = 0.0,
+    min_unique_levels: int = 20,
 ) -> tuple[np.ndarray, np.ndarray, list[str], object | None]:
     """用训练折 OOF 按部署口径时间切分拟合校准+保形, 变换测试折概率。
 
@@ -111,6 +112,7 @@ def _apply_deploy_cal_conformal(
         cal, conf, dep_tags = fit_deploy_calibrator_and_conformal(
             oof, yy, method=method, alpha=alpha, conformal_frac=conformal_frac,
             min_margin=min_margin,
+            min_unique_levels=int(min_unique_levels),
         )
         tags.extend(dep_tags)
         p_cal = cal.transform(p_test)
@@ -135,6 +137,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     conformal_frac = float(ccfg.get("conformal_frac", 0.3))
     conf_margin = float(ccfg.get("conformal_min_margin", 0.0) or 0.0)
     inflate_max = float(ccfg.get("pass_rate_inflate_max", 1.5) or 0.0)
+    min_unique_levels = int(ccfg.get("min_unique_levels", 20) or 20)
 
     def _thr_from_train_oof(oof_tr, cal, tags_out: list[str]) -> float:
         """部署同形阈值: cal.transform(train OOF); 无校准器时用原始 OOF。"""
@@ -197,7 +200,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
             p, conf_mask, cal_tags, cal_e = _apply_deploy_cal_conformal(
                 oof_tr, ytr, p_raw,
                 method=method, alpha=conf_alpha, conformal_frac=conformal_frac,
-                min_margin=conf_margin,
+                min_margin=conf_margin, min_unique_levels=min_unique_levels,
             )
             for t in cal_tags:
                 if t not in cal_degradations:
@@ -218,7 +221,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         pe, conf_e, cal_tags_e, cal_ens = _apply_deploy_cal_conformal(
             oof_e, ytr, pe_raw,
             method=method, alpha=conf_alpha, conformal_frac=conformal_frac,
-            min_margin=conf_margin,
+            min_margin=conf_margin, min_unique_levels=min_unique_levels,
         )
         for t in cal_tags_e:
             if t not in cal_degradations:

@@ -59,19 +59,25 @@ data:
 # ---------------- 新闻(喂给 LLM 专家) ----------------
 news:
   use_synthetic: false         # 实盘/研究默认关; 无语料时再临时打开(禁止与真实价格混用, 有守卫)
-  use_history: false           # true=优先用回填的历史原始库聚合(支撑几年期回测)
+  use_history: false           # 真实语料回填完成后改为 true(脚本重建面板时会临时打开)
   output_dir: data/news        # 每币种落盘 <SYMBOL>.parquet
   # 历史回填(多年期回测): 分页/分窗抓取真实历史新闻 -> 追加去重到原始语料库
+  # 起点对齐 BTC WF train_start=2020-01-01; 终点 null=至今(覆盖 test 至 tip)
   history:
     raw_dir: data/news_raw     # 原始语料库(corpus.parquet)+续跑检查点目录
-    start: "2021-01-01T00:00:00Z"  # 回填起点
+    start: "2020-01-01T00:00:00Z"  # 与 walk-forward 训练窗起点对齐
     end: null                  # 回填终点(null=至今)
     # 真实行情下禁止仅用 synthetic(硬守卫); 混回填的 synthetic: 行在加载时也会被过滤。
     # 离线演示请同时打开 data.use_synthetic。合成历史=随机标题, 非未来收益造情绪。
-    providers: ["cryptocompare", "gdelt"]   # synthetic / cryptocompare / gdelt
-    window_days: 7             # GDELT 分窗宽度(每窗<=250条)
-    rate_limit_sec: 5.0        # 每次请求间隔(对公共API友好, 防封)
-    max_windows: 400           # GDELT 窗口数安全上限
+    # cryptocompare 需 CRYPTOCOMPARE_KEY; 无 key 时脚本会跳过并只跑 gdelt
+    providers: ["gdelt", "cryptocompare"]   # synthetic / cryptocompare / gdelt
+    # 窗越宽越易满 250→切分爆炸→429; 2 天比 7 天稳。rate 同时是全进程最小请求间隔。
+    window_days: 2
+    rate_limit_sec: 90.0       # 经系统代理后仍建议 ≥60–90s, 避免切分连打再 429
+    gdelt_http_retries: 1      # 单窗 HTTP 重试次数(宜小; 窗级会再排)
+    gdelt_429_cooldown_sec: 300.0  # 窗失败后基础冷却(连续 429 还会再拉长)
+    max_windows: 8000          # 含满额自动切分后的请求上限; 不够可续跑
+
     max_pages: 400             # CryptoCompare 分页数安全上限
     gdelt_query: "(bitcoin OR ethereum)"
     synthetic_per_day: 8       # 合成历史: 日均条数(泊松均值)
@@ -120,6 +126,20 @@ news:
     - {name: "CryptoCompare", type: "cryptocompare", tier: 2, url: "https://min-api.cryptocompare.com/data/v2/news/?lang=EN", api_key_env: "CRYPTOCOMPARE_KEY"}
     - {name: "CryptoPanic",   type: "cryptopanic",   tier: 2, url: "https://cryptopanic.com/api/v1/posts/", api_key_env: "CRYPTOPANIC_KEY"}
     - {name: "GDELT",         type: "gdelt",         tier: 2}
+
+# ---------------- 宏观日历(结构化事件 → 定点绑定 K 线; 与新闻文章流互补) ----------------
+# 存前值/预测/公布/重要性; actual/surprise 仅在 released_at+buffer 后可见。
+# 完整库由 scripts/15_build_macro_calendar.py 从 BLS+Fed(+FF 本周)构建; 训练默认开启。
+macro_calendar:
+  store_dir: data/macro_calendar   # events.parquet + meta.json
+  as_feature: true                 # 并入所有专家特征(需 events.parquet 非空)
+  buffer_minutes: 5                # 公布后传播缓冲(与新闻一致口径)
+  feature_ttl_hours: 72            # 冲击有效期(小时); 超时衰减归零
+  feature_halflife_hours: 24       # 指数衰减半衰期
+  horizon_hours: 168               # hours_to_next 上限(7 天)
+  min_importance: 3                # 1–5; 低于此星级不进特征
+  min_coverage_warn: 0.0           # >0 时 has_recent_macro 过低 → macro_features_sparse(计入 env_guard); 日历天生稀疏, 默认关
+  require_min_coverage: false      # true=覆盖率不足 fail-fast
 
 # ---------------- 特征 ----------------
 features:
@@ -207,6 +227,8 @@ experts:
     device: auto           # auto/cpu/cuda
     val_frac: 0.15         # 时间切分验证集比例(early stopping)
     early_stop_patience: 3 # 验证损失无改善的容忍 epoch; 0=关闭
+    # OOF 折内是否把 post-cutoff 样本并入训练(默认 false=更诚实; true=旧行为消融)
+    oof_include_post_cutoff: false
   tsfm:
     backend: chronos        # chronos / timesfm / naive(离线兜底)
     model_name: amazon/chronos-bolt-base
@@ -253,7 +275,7 @@ ensemble:
 
 # ---------------- 校准 / 保形预测 ----------------
 calibration:
-  method: isotonic         # isotonic / sigmoid
+  method: auto             # auto / isotonic / sigmoid; auto=台阶过少回退 Platt
   conformal_alpha: 0.1     # 保形预测显著性(1-覆盖率)
   calib_splits: 5          # 交叉拟合校准/保形的折数(评估用无泄漏)
   conformal_frac: 0.3      # 部署: 较晚该比例 OOF 专供保形拟合(与校准器时间切分独立)

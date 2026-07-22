@@ -15,6 +15,7 @@ from ..config import Config
 from ..data import load_symbol_data, refresh_market_data
 from ..features.build import build_feature_matrix
 from ..features.news_features import add_news_features
+from ..features.macro_calendar import add_macro_calendar_features
 from ..labeling.meta_labeling import primary_signal
 from ..pipeline import prepare_dataset, train_and_validate
 from ..backtest.engine import resolve_event_slippage
@@ -75,11 +76,16 @@ class DecisionService:
         md = (trained.get("backtest_deploy") or {}).get("metrics") or {}
         print(
             f"[train] {symbol}: 研究夏普={m['sharpe']:.3f} 胜率={m['win_rate']:.3f} "
-            f"部署成交={md.get('n_trades', '?')} "
+            f"部署成交(勿拍板)={md.get('n_trades', '?')} "
             f"thr_r={trained.get('prob_threshold_research')} "
             f"thr_d={trained.get('prob_threshold_effective', self.cfg['backtest'].get('prob_threshold'))} "
             f"数据={trained.get('data_mode_zh', ds.data_source)}"
         )
+        if (trained.get("backtest_deploy") or {}).get("not_for_go_live"):
+            print(
+                f"[train] WARN {symbol}: backtest_deploy.not_for_go_live=true — "
+                f"部署路径 KPI 仅诊断, 上线以 walk-forward 为准"
+            )
 
     def train_all(self) -> None:
         for s in self._symbols:
@@ -104,6 +110,7 @@ class DecisionService:
         feat["high"] = raw["high"] if "high" in raw.columns else raw["close"]
         feat["low"] = raw["low"] if "low" in raw.columns else raw["close"]
         feat = add_news_features(feat, self.cfg, symbol)  # 与训练特征保持一致
+        feat = add_macro_calendar_features(feat, self.cfg, symbol)
         # 环境 HOLD 只计「本次 tip/特征装配」标签; 训练期质量标签仅并入展示
         live_deg: list[str] = []
         for t in list(getattr(raw, "attrs", {}).get("degradations") or []):

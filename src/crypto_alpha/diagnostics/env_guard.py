@@ -1,6 +1,6 @@
 """降级环境护栏: 多 degradations 叠加时识别低置信环境并强制 HOLD。
 
-校准器在「正常数据」条件下拟合; 当 tip 跨所、合成降级、衍生品全缺、新闻稀疏等
+校准器在「正常数据」条件下拟合; 当 tip 跨所、合成降级、衍生品全缺、新闻/宏观稀疏等
 同时出现时, 模型输出的 win_probability 不再具有校准语义。与 ``feature_schema_mismatch``
 强制 HOLD 同一哲学: 分布外则弃权, 而非静默开仓。
 
@@ -21,6 +21,8 @@ _LIVE_ENV_KEYS: tuple[str, ...] = (
     "ohlcv_tip_exchange_fallback",
     "aux_tip_resample_seam",
     "news_features_sparse",
+    "macro_calendar_unavailable",
+    "macro_features_sparse",
     "derivatives_funding_unavailable",
     "derivatives_oi_unavailable",
     "derivatives_liquidations_unavailable",
@@ -34,6 +36,10 @@ _SEVERITY: list[tuple[str, int]] = [
     ("ohlcv_tip_exchange_fallback", 25),
     ("aux_tip_resample_seam", 15),
     ("news_features_sparse", 15),
+    # 开 macro_calendar.as_feature 后: 空库比「稀疏」更严重(全 0 伪特征)
+    ("macro_calendar_unavailable", 20),
+    # 日历事件天生稀疏; 权重低于新闻, 且需配置 min_coverage_warn>0 才会打标
+    ("macro_features_sparse", 10),
     ("derivatives_funding_unavailable", 10),
     ("derivatives_oi_unavailable", 10),
     ("derivatives_liquidations_unavailable", 10),

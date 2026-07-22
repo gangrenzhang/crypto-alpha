@@ -262,7 +262,139 @@ cryptoCurrency/
 
 情绪后端：`lexicon`（默认）/ `cryptobert` / `finbert` / `chinese` / `multilingual`。
 
-历史回填：`scripts/09_backfill_news.py` → `data/news_raw/`，再设 `news.use_history: true`。
+#### 4.3.1 历史新闻回填（多年 WF 必读）
+
+**填的是什么**：原始报道语料（`published_at[UTC], source, tier, title, url, symbols`），**不是**价格、标签或模型权重。合成历史（`synthetic:`）在真行情下加载时会被过滤。
+
+**两层存储**
+
+| 层 | 路径 | 内容 |
+|----|------|------|
+| 原始库（append-only） | `data/news_raw/corpus.parquet` + `backfill_state.json` | 一篇报道一行；按 `source+title+published_at(UTC秒)` 去重；可续跑 |
+| 聚合面板 | `data/news/<SYMBOL>.parquet` | 按 `news.bucket`（默认 **30m**）聚合成桶末摘要；可供特征/LLM |
+
+**时点搭配（防前视）**
+
+1. 抓取时间戳统一为 **UTC aware**（GDELT 用 `seendate`，常量化到 15min 网格）  
+2. 面板索引 = **桶末** = Grouper 左沿 + bucket（与主周期 `30m` 对齐）  
+3. 可用时刻 = 桶末 + `buffer_minutes`（默认 5）  
+4. 决策时刻 = 主 bar 开盘 + `Δ_main`（与 MTF / `add_news_features` 一致）  
+5. `merge_asof(backward)`：仅当可用时刻 ≤ 决策时刻才对齐  
+6. TTL / 半衰期相对**决策时刻**；过期数值列全归零  
+
+**回填区间**：`news.history.start` 应对齐 WF 训练起点（当前默认 **2020-01-01**）；`end=null` 表示至今，覆盖测试窗至 tip。
+
+**GDELT 正确性要点**
+
+- API `maxrecords≤250` + `sort=datedesc`：宽窗会系统性丢掉窗前半段 → 实现**满额自动对半切分**直至不满额或窗宽 &lt; 1h  
+- 仍满额且不可再切 → 写入 checkpoint `gdelt_truncated_windows`（可能残留截断）  
+- 请求失败 → 冷却后重入队（最多 5 次）；重试中写入 `gdelt_pending_windows`（防 cursor 被后续成功窗推高后崩溃丢洞）；放弃则记 `gdelt_failed_windows`  
+- **续跑补洞**：战役对齐（`range[0]==本次 start`）后，除从 `gdelt_cursor` 继续外，会把 `failed` / `truncated` / `pending` **重新入队队首**  
+- 去重键：内存 `seen` 与磁盘 `_append_raw_store` 统一为 `(source, title, UTC秒 ISO)`，避免 `datetime`/`Timestamp`/微秒不一致导致重复入库  
+- 限流：窗间 `rate_limit_sec`（默认 **90s**，同时作全进程最小请求间隔）+ HTTP 429 熔断（连续失败拉长至数分钟，窗失败基础冷却 `gdelt_429_cooldown_sec` 默认 300s）；单窗 `gdelt_http_retries` 宜小（默认 1）  
+- 起始窗宽默认 **2 天**（比 7 天更少满额切分爆炸）  
+- CryptoCompare 需 `CRYPTOCOMPARE_KEY`；无 key 时脚本跳过该源  
+- **现实约束**：GDELT DOC API 官方对高流量建议改用 ngrams/批量数据；6.5 年全量 DOC 回填本身极慢，429 时优先「单进程 + 长冷却」，勿并行多开  
+
+**推荐命令**
+
+```bash
+# 稳健入口（推荐）: 满额切分 / 续跑战役对齐 / 429 冷却 / 重建面板 / PIT 校验
+PYTHONUNBUFFERED=1 PYTHONPATH=src python -u scripts/run_news_backfill_robust.py \
+  --start 2020-01-01T00:00:00Z --providers gdelt
+# 强制从起点重扫(仍按语料去重): 加 --no-resume
+# 可选第二源: export CRYPTOCOMPARE_KEY=... 后 --providers gdelt cryptocompare
+
+# 兼容入口
+python scripts/09_backfill_news.py --start 2020-01-01 --providers gdelt
+
+# 时点校验（回填出语料并重建面板后）
+PYTHONPATH=src python scripts/validate_news_alignment.py
+```
+
+**配置开关（回填完成后）**
+
+1. `news.use_history: true` — 训练/WF 走历史语料聚合  
+2. 校验覆盖率与 PIT 通过后，再开 `news.as_feature: true`  
+3. 严肃研究可开 `news.require_min_coverage: true`  
+
+**勿做**：在 corpus 仍为空/仍是 synthetic 时打开 `as_feature`（会得到中性空特征，误判「新闻无 alpha」）；真行情下不要把 `history.providers` 设为仅 `synthetic`。
+
+**当前运维状态（2026-07-22）**
+
+| 项 | 状态 |
+|----|------|
+| 合成语料 | 已隔离至 `data/news_raw/_quarantine_synthetic_20260722T062852Z/` 与 `data/news/_quarantine_synthetic_.../` |
+| 活跃 `corpus.parquet` | **尚无**（`total=0`） |
+| `backfill_state.json` | 战役 `2020-01-01`→今；`gdelt_cursor≈2020-01-05T09:00Z`；`windows_done/fail/split` 有计数 |
+| 主阻塞 | GDELT **HTTP 429**（日志 `artifacts/news_backfill.log`）；需单进程 + 长冷却续跑 |
+| 面板 | `data/news/` 仅 quarantine，无可用符号面板 |
+| 特征开关 | `use_history=false` / `as_feature=false`（保持，待语料与 `validate_news_alignment.py` 绿灯） |
+
+日志与进度：`artifacts/news_backfill.log`、`data/news_raw/backfill_state.json`。
+
+#### 4.3.2 宏观日历定点绑定（与新闻文章流互补）
+
+**解决什么问题**：新闻层是「标题情绪 as-of」；宏观日历是「结构化公布/讲话 → 官方时刻钉到 K 线决策时刻」，带前值/预测/公布与 surprise。两者可并存；训练默认 **`macro_calendar.as_feature=true`**（仓库已含 `events.parquet`，由官方源构建）。
+
+**存什么**（`data/macro_calendar/events.parquet`，全局表，非按币种）
+
+| 字段 | 含义 |
+|------|------|
+| `name` / `country` / `category` | 事件名、国家、类别（inflation/employment/speech/…） |
+| `importance` | 1–5 星（特征默认只用 ≥ `min_importance`） |
+| `scheduled_at` | 计划公布时刻（UTC；可事先用于 `hours_to_next`） |
+| `released_at` | actual 变为可得的时刻（UTC；讲话类常 = scheduled） |
+| `previous` / `forecast` / `actual` | 前值 / 预测 / 公布（**讲话可空，无利多/利空字段**） |
+| `unit` / `source` / `event_id` | 单位、来源、稳定主键 |
+
+**如何构建完整库**
+
+```bash
+# BLS(NFP/失业率/CPI/Core CPI) + 美联储日历(FOMC/讲话/纪要) + FF 本周补强
+PYTHONPATH=src python scripts/15_build_macro_calendar.py --start 2020-01-01 --export-csv
+
+# PIT 校验
+PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
+```
+
+| 来源 | 内容 | 备注 |
+|------|------|------|
+| BLS Public API | Nonfarm / Unemployment / CPI YoY / Core CPI YoY | `forecast` 默认=上期同口径(naive consensus)，surprise≈变化 |
+| Federal Reserve `calendar.json` | FOMC Meeting / Minutes / Speeches / Beige Book | 日程为主；数值常空 → 走注意力通道 |
+| ForexFactory 本周 JSON | 近端中高影响事件 | 可选补强；历史不全 |
+
+就业公布时刻：次月**第一个周五** 08:30 ET；CPI：次月**第二个周三** 08:30 ET（贴近 BLS 惯例的启发式，非逐日官方 PDF）。
+
+**PIT 纪律（严谨）**
+
+1. 决策时刻 = 主 bar 开盘 + `Δ_main`（与 MTF / 新闻一致）  
+2. **actual / surprise** 仅当 `released_at + buffer_minutes ≤ decision_at`  
+3. **禁止**在公布前把 actual 读进特征（完整历史表可含未来 actual，特征层按可见切片过滤）  
+4. `hours_to_next` / `macro_next_importance` 只用 `scheduled_at > decision_at`（日历事先公开，不算前视）  
+5. TTL / 半衰期：过期冲击衰减归零；`surprise = (actual−forecast) / max(|forecast|,|previous|,1)`  
+
+**特征分流（数值 vs 讲话）**
+
+| 通道 | 取哪一场 | 列 |
+|------|----------|-----|
+| surprise | TTL 窗内最近一场 **有限 surprise**（有 forecast+actual） | `macro_surprise` / `macro_surprise_raw` / `macro_surprise_abs_max` |
+| 注意力 | TTL 窗内最近一场 **任意可见** 事件（含讲话） | `macro_importance` / `macro_hours_since` / `has_recent_macro` / `macro_n_events_window` |
+| 前瞻 | 未来 schedule | `macro_hours_to_next` / `macro_next_importance` |
+| 未可见等待 | `scheduled_at ≤ decision < available_at`（含 buffer 窗） | `macro_awaiting_release` ∈ {0,1} |
+
+讲话**不**携带利多/利空；也不会把数值 surprise 冲成 0。
+
+**特征列**（`MACRO_FEATURE_COLS`）：上表全部列名。
+
+**降级 / 实盘护栏**（`as_feature=true`）
+
+- 空库 → `macro_calendar_unavailable`（`env_guard` 权重 20）  
+- `min_coverage_warn>0` 且 `has_recent_macro` 过低 → `macro_features_sparse`（权重 10；默认 warn=0）  
+
+**勿做**：把图中「利多/利空金银」标签原样当 BTC 方向；删掉 `events.parquet` 却保持 `as_feature=true`；用新闻 GDELT 标题冒充宏观日历；把 BLS naive forecast 当成调查中位数。
+
+**实现位置**：`data/macro_calendar.py` + `data/macro_calendar_sources.py` + `features/macro_calendar.py`；挂入 `prepare_dataset` / `decide_live` / `02_build_features.py`。
 
 ---
 
@@ -277,6 +409,7 @@ OHLCV(+衍生品: funding/OI/清算)
   → frac_diff_ffd(log price) # 分数阶差分，平稳且保留记忆
   → add_mtf_features         # 若 mtf_enabled
   → (pipeline 内) add_news_features
+  → (pipeline 内) add_macro_calendar_features  # 默认开; 见 §4.3.2
   → (pipeline 内) side + 可选 liq_align=side×liq_imbalance
 ```
 
@@ -453,7 +586,8 @@ OHLCV(+衍生品: funding/OI/清算)
 
 - 每个事件回看 `lookback=64` 根主周期特征窗（含面板上的 `side` 通道）  
 - `BCEWithLogitsLoss` 加权（反传与日志均为 `sum(loss·w)/sum(w)`）；**时间切分** `val_frac` + `early_stop_patience`  
-- **早停因果性**：全量部署 fit 用时间序**末尾** `val_frac`（最近样本）。Purged OOF / CPCV 折内由 `stacking` / `evaluate` 传入 `es_cutoff_time=测试折最早时刻`：验证集**只**从 cutoff **之前**的训练样本中取末尾 `val_frac`；post-cutoff 样本仍可参与梯度更新，但**不得**用于选 checkpoint。若 pre-cutoff 不足则关闭早停（避免第一折等「训练全在测试后」时误用未来 val）  
+- **早停因果性**：全量部署 fit 用时间序**末尾** `val_frac`（最近样本）。Purged OOF / CPCV 折内由 `stacking` / `evaluate` 传入 `es_cutoff_time=测试折最早时刻`：验证集**只**从 cutoff **之前**的训练样本中取末尾 `val_frac`  
+- **OOF 训练样本（D2）**：默认 `experts.deep_ts.oof_include_post_cutoff: false` — 折内训练**不含** post-cutoff（防 lookback 吃到测试期行情导致 OOF 乐观）；设 `true` 仅作消融对照。部署全量 fit（无 cutoff）不受该开关影响  
 - 特征标准化 **仅用训练段**统计量（不含 early-stopping 验证段）  
 - `device: auto`；无 torch → 探测阶段跳过  
 
@@ -511,7 +645,7 @@ OHLCV(+衍生品: funding/OI/清算)
 | 字段 | 出分路径 | 阈值 | 用途 |
 |------|----------|------|------|
 | `backtest` / `gate_diagnostics_research` | OOF + 交叉拟合校准/保形 | `prob_threshold_research` | 研究面板默认 KPI |
-| `backtest_deploy` / `gate_diagnostics_deploy` | 全量拟合后的 `predict` + `fit_deploy` | `prob_threshold_effective` | 与实盘门控对齐；报告窗内仍可能偏乐观 |
+| `backtest_deploy` / `gate_diagnostics_deploy` | 全量拟合后的 `predict` + `fit_deploy` | `prob_threshold_effective` | 与实盘门控对齐；报告窗内仍可能偏乐观；**`not_for_go_live=true`（D5）**，勿作上线拍板 |
 | walk-forward（`scripts/btc_walkforward_summary.py`） | 仅过去窗 fit → 未来窗 predict | `prob_threshold_effective` 同形 | **真外推**成交预期 |
 
 **勿**用 research OOF 成交数直接当 live 开仓频率；**勿**把研究 thr 用于 decide。
@@ -527,7 +661,7 @@ OHLCV(+衍生品: funding/OI/清算)
 
 参考窗灌过线时各自 `raise_threshold_if_inflated` 后冻结；**报告/测试窗只告警、不改 thr**。禁止对已 CF 校准分再 `deploy_cal.transform`（二次校准）。
 
-配置：`method: isotonic`，`conformal_alpha: 0.1`，`calib_splits: 5`，`conformal_frac: 0.3`，`conformal_min_margin: 0.05`，`pass_rate_inflate_max: 1.5`，`min_unique_levels: 20`；回测侧 `raise_thr_on_inflate: true`，`inflate_raise_quantile: 0.99`。
+配置：`method: auto`（台阶过少时 isotonic→sigmoid；单类则保持 isotonic），`conformal_alpha: 0.1`，`calib_splits: 5`，`conformal_frac: 0.3`，`conformal_min_margin: 0.05`，`pass_rate_inflate_max: 1.5`，`min_unique_levels: 20`；回测侧 `raise_thr_on_inflate: true`，`inflate_raise_quantile: 0.99`。`resolve_calibrator_method` / `count_unique_prob_levels` 见 `calibration/calibrate.py`；未知 method 字符串**拒绝**（不再静默当 sigmoid）。
 
 ---
 
@@ -612,7 +746,7 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 
 **特征 schema 护栏（实盘）**：`align_feature_schema` 将训练期 `feature_cols` 中缺失列补 `0.0`（防 KeyError，与 MTF 冷启动填 0 语义一致），但若存在缺失列则 **`hold_for_schema_mismatch` 强制 HOLD**——记 `degradations`（`feature_schema_mismatch(...)`），**不调用**集成/校准推理，避免辅周期偶发失败时在错误特征分布上开仓。`decide_live` 与 `latest_decision` 共用此纪律。
 
-**降级环境护栏（实盘）**：`diagnostics/env_guard.py` 仅对**本次推理数据面**标签（合成降级、tip 跨所、新闻稀疏、衍生品/清算不可用或 sparse、schema mismatch 等）累计严重度；训练期校准/剪枝/nested-OOF 等质量标签**不计分**（否则会永久 HOLD）。`risk.env_degradation_hold_score`（默认 50，≤0 关闭）达标时强制 `low_confidence_environment` HOLD。研究回测不套用。决策 JSON 仍可展示全部 degradations。
+**降级环境护栏（实盘）**：`diagnostics/env_guard.py` 仅对**本次推理数据面**标签（合成降级、tip 跨所、新闻/宏观稀疏或空库、衍生品/清算不可用或 sparse、schema mismatch 等）累计严重度；训练期校准/剪枝/nested-OOF 等质量标签**不计分**（否则会永久 HOLD）。`risk.env_degradation_hold_score`（默认 50，≤0 关闭）达标时强制 `low_confidence_environment` HOLD。研究回测不套用。决策 JSON 仍可展示全部 degradations。
 
 **决策可复盘快照**：`latest_decision` / `decide_live` 写入 `audit`（`config_fingerprint`、`data_window_hash`、特征列哈希、冻结阈值、degradations 等），便于事后核对「那次信号用了哪段数据/哪套旋钮」，无需落盘完整权重。
 
@@ -641,14 +775,16 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 |----|--------------|------|
 | `project` | seed=42 | 数据/产物目录 |
 | `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d，`max_closed_bar_lag=4`，`tip_exchange=gate`，`fetch_liquidations=false`（有清算全史后再开），`liquidations.auto_attach/fetch_on_tip=true`，`exchanges=[gate]` | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations；清算关时列 NaN→特征 0 + unavailable |
-| `news` | `use_synthetic=false`，**`as_feature=false`**（未回填历史前勿开），`auto_build_panel=true`，`require_panel=false`，`min_coverage_warn=0.05`，`require_min_coverage=false` | 缺面板可自动 build；PIT 互证；覆盖率过低记 degradations；`require_min_coverage=true` 可 fail-fast；禁止仅 synthetic 历史混真实行情；真行情加载 corpus 时过滤 `synthetic:` 行 |
+| `news` | `use_synthetic=false`，**`as_feature=false`**（未回填历史前勿开），`use_history=false`，`auto_build_panel=true`，`history.start=2020-01-01`，`providers=[gdelt,cryptocompare]`，`window_days=2`，`rate_limit_sec=90`，`gdelt_429_cooldown_sec=300`，`min_coverage_warn=0.05` | 见 §4.3.1；GDELT 全进程闸门+429 熔断；满额切分 + failed/pending/truncated 续跑补洞 |
+| `macro_calendar` | **`as_feature=true`**，`store_dir=data/macro_calendar`，`buffer_minutes=5`，`feature_ttl_hours=72`，`min_importance=3`，`min_coverage_warn=0` | 见 §4.3.2；`15_build_macro_calendar.py` 从 BLS+Fed 构建；surprise 仅数值事件 |
 | `features` | FFD d=0.4，`mtf_enabled=true` | MTF 方案 B |
 | `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐；`barrier_vol=rv` 时 Config.load 告警（decide 仍用 atr） |
 | `validation` | N=6,k=2，embargo=1%，`dsr_n_trials=50`，`log_experiments=true`；**`walkforward`** 见下 | 禁运从 `max(t1)` 起算；CPCV 组合评估；WF single-cut 真外推基线 |
 | `validation.walkforward` | `enabled_in_run_all=false`，`require_in_run_all=false`，`test_start=2022-09-14`，`test_end=null`，`embargo_bars=0`，min 事件 200/50 | 联跑/发布闸；`test_end=null`=面板末；`require_in_run_all` 未跑 WF 则 fail-fast |
 | `experts` | **enabled=[gbdt, deep_ts]** | tsfm/llm 可选 |
+| `experts.deep_ts` | `oof_include_post_cutoff=false` | D2：折内默认禁 post-cutoff 训练 |
 | `ensemble` | logistic，`min_expert_auc=0.5`，`exclude_pseudo_oof_from_meta=true` | 前半选型 / 后半报告回测；伪 OOF 不进 meta |
-| `calibration` | isotonic，α=0.1，`conformal_frac=0.3`，`conformal_min_margin=0.05` | 主路径联合 CF；部署时间切分；过线灌水/台阶告警 |
+| `calibration` | **`method=auto`**，α=0.1，`conformal_frac=0.3`，`conformal_min_margin=0.05`，`min_unique_levels=20` | D7：auto→sigmoid；主路径联合 CF；部署时间切分 |
 | `backtest` | **`portfolio_mode=true`**，`prob_threshold_mode=max_of`，地板 0.55，`prob_quantile=0.98`，`slippage_vol_scale=true`，`slippage_vol_mult_cap=3`，`raise_thr_on_inflate=true` | 组合加性记账；双阈值；波动放大滑点 |
 | `risk` | 半 Kelly，`min_kelly_edge=0`，日熔断 5%，`execution_assumption=close_fill`，`env_degradation_hold_score=50` | 未实现取值报错；实盘多降级叠加可强制 HOLD |
 | `serve` | 1800s 轮询，48 周期重训（≈24h） | Telegram 默认关 |
@@ -730,9 +866,11 @@ pip install -e ".[data]"
 # 2. 拉行情（主+辅周期缓存）
 python scripts/01_fetch_data.py
 
-# 3. （可选）历史新闻
-python scripts/09_backfill_news.py --providers cryptocompare gdelt
-# 然后 config: news.use_history: true
+# 3. （可选）历史新闻 — 见 §4.3.1
+PYTHONUNBUFFERED=1 PYTHONPATH=src python -u scripts/run_news_backfill_robust.py \
+  --start 2020-01-01T00:00:00Z --providers gdelt
+# 校验通过后: news.use_history=true；再视覆盖率打开 as_feature
+PYTHONPATH=src python scripts/validate_news_alignment.py
 
 # 4. 特征 / 标注检查
 python scripts/02_build_features.py
@@ -832,7 +970,12 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `06_decide.py` | 单次最新决策 JSON | — |
 | `07_serve.py` | 实时服务 | `--once` / `--loop` |
 | `08_fetch_news.py` | 建新闻面板 | — |
-| `09_backfill_news.py` | 历史新闻回填 | `--start` `--end` `--providers` |
+| `09_backfill_news.py` | 历史新闻回填（兼容入口） | `--start` `--end` `--providers` |
+| `run_news_backfill_robust.py` | **推荐**稳健回填+重建面板+校验 | `--start` `--no-resume` `--providers` |
+| `validate_news_alignment.py` | 语料/面板网格/PIT/覆盖率抽查 | `--symbol` |
+| `14_import_macro_calendar.py` | 导入宏观日历 CSV → events.parquet | `--csv` `--replace` |
+| `15_build_macro_calendar.py` | 从 BLS+Fed(+FF 本周)构建完整日历 | `--start` `--export-csv` |
+| `validate_macro_calendar_alignment.py` | 宏观日历 PIT（含单事件隔离 surprise_raw） | |
 | `10_run_all.py` | 全专家联跑 + HTML | `--experts` `--symbols` `--cpcv` `--walkforward` `--open` |
 | `11_make_canvas.py` | Cursor Canvas | `--out` |
 | `12_audit.py` | 闭环完整性在线体检（CPU，无显卡） | `--json` `--bars` `--seed` |
@@ -865,7 +1008,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | `test_mtf.py` | 辅周期无前视（对齐层须为 NaN）、拒绝更细周期、特征含 MTF |
 | `test_pipeline_integrity.py` | 闭环完整性闸门（见 18.1；精简面 + **MTF 全开**空对照） |
 | `test_hardening_guards.py` | 环境 HOLD、实验日志抬 DSR、波动滑点、单专家报告后半窗、保形跳过→不自信、oi 墙钟、决策 audit |
-| `test_walkforward.py` | 切分净化/禁运/重叠 fail-fast、NaT 拒绝、配置解析、`require_in_run_all`、看板 WF 卡与 disclaimer |
+| `test_gdelt_backfill_coverage.py` | GDELT 满额切分覆盖窗前半；HTTP 429 长冷却 |
+| `test_macro_calendar.py` | surprise 不被讲话冲刷；TTL；延迟 awaiting；`as_feature` 读盘/空库；PIT |
+| `test_calibration_primary_gates.py` | `method=auto`→sigmoid；显式 isotonic 不切换；confluence 门控 |
 
 ### 18.1 闭环完整性诊断（`diagnostics/integrity.py`）
 
@@ -904,7 +1049,11 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - [x] 建模特征尺度无关；训练/实盘 CUSUM 事件对齐  
 - [x] 实盘特征 schema：缺训练列 → 补 0 + **强制 HOLD**（不推理开仓）  
 - [x] `synthetic_fallback` 主行情时辅周期强制从 main 重采样（禁止混真实高周期）  
-- [x] DeepTS 折内早停：`es_cutoff_time` 限制 val 不得用测试折之后样本；部署仍用最近 `val_frac`  
+- [x] DeepTS 折内早停：`es_cutoff_time` 限制 val 不得用测试折之后样本；**默认禁 post-cutoff 训练**（`oof_include_post_cutoff=false`）  
+- [x] 校准 `method=auto`：唯一台阶过少回退 sigmoid；单类阻塞回退；未知 method 拒绝  
+- [x] `backtest_deploy.not_for_go_live` + 看板「部署·偏乐观·勿拍板」  
+- [x] 新闻历史回填：满额切分、failed/pending/truncated 续跑补洞、UTC 秒去重键、PIT 校验脚本（§4.3.1；语料仍受 GDELT 429，corpus 待续跑）
+- [x] 宏观日历定点绑定：BLS+Fed 完整库(~900 事件) + surprise/PIT + 数值/讲话分流 + `as_feature=true`（§4.3.2）
 
 **防过拟合**
 

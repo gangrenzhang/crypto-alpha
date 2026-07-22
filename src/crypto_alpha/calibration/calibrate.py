@@ -14,6 +14,11 @@ class ProbabilityCalibrator:
         self.method = method
 
     def fit(self, prob: np.ndarray, y: np.ndarray):
+        if str(self.method).lower() == "auto":
+            raise ValueError(
+                "ProbabilityCalibrator 不接受 method='auto'; "
+                "请先 resolve_calibrator_method 或走 fit_deploy_calibrator_and_conformal"
+            )
         prob = np.asarray(prob, dtype=float)
         y = np.asarray(y, dtype=int)
         m = ~np.isnan(prob)
@@ -35,6 +40,62 @@ class ProbabilityCalibrator:
         if self.method == "isotonic":
             return self._m.predict(prob)
         return self._m.predict_proba(prob.reshape(-1, 1))[:, 1]
+
+
+def count_unique_prob_levels(prob: np.ndarray, decimals: int = 6) -> int:
+    """校准后概率的唯一台阶数(忽略 NaN)。"""
+    p = np.asarray(prob, dtype=float)
+    p = p[~np.isnan(p)]
+    if len(p) == 0:
+        return 0
+    return int(len(np.unique(np.round(p, int(decimals)))))
+
+
+def resolve_calibrator_method(
+    method: str,
+    prob: np.ndarray,
+    y: np.ndarray,
+    min_unique_levels: int = 20,
+) -> tuple[str, list[str]]:
+    """解析校准方法。``auto``: 先试 isotonic, 唯一台阶过少则回退 sigmoid。
+
+    单类标签无法拟合 Platt 时打 ``auto_fallback_blocked_single_class`` 并保留 isotonic。
+    显式 ``isotonic``/``sigmoid`` 不自动切换(即使台阶塌缩)。
+    """
+    tags: list[str] = []
+    m = str(method or "isotonic").strip().lower()
+    if m in ("", "isotonic", "sigmoid", "platt"):
+        resolved = "sigmoid" if m in ("sigmoid", "platt") else "isotonic"
+        tags.append(f"deploy_cal_method={resolved}")
+        return resolved, tags
+    if m != "auto":
+        raise ValueError(
+            f"未知 calibration.method={method!r}; 请用 auto / isotonic / sigmoid"
+        )
+
+    p = np.asarray(prob, dtype=float)
+    yy = np.asarray(y, dtype=int)
+    mask = ~np.isnan(p)
+    p, yy = p[mask], yy[mask]
+    n_uniq = 0
+    if len(p) > 0:
+        try:
+            cal_try = ProbabilityCalibrator("isotonic").fit(p, yy)
+            n_uniq = count_unique_prob_levels(cal_try.transform(p))
+        except Exception:
+            n_uniq = 0
+    thr = int(min_unique_levels)
+    if n_uniq >= thr:
+        tags.append("deploy_cal_method=isotonic")
+        tags.append(f"auto_kept_isotonic(n_unique={n_uniq})")
+        return "isotonic", tags
+    if len(np.unique(yy)) < 2:
+        tags.append("deploy_cal_method=isotonic")
+        tags.append("auto_fallback_blocked_single_class")
+        return "isotonic", tags
+    tags.append("deploy_cal_method=sigmoid")
+    tags.append(f"auto_fallback_sigmoid(n_unique={n_uniq}<{thr})")
+    return "sigmoid", tags
 
 
 class ConformalBinary:
@@ -74,18 +135,23 @@ class ConformalBinary:
 def cross_fitted_calibrated(
     prob: np.ndarray, y: np.ndarray, t1, method: str = "isotonic",
     n_splits: int = 5, embargo_pct: float = 0.01,
+    min_unique_levels: int = 20,
 ) -> np.ndarray:
     """交叉拟合校准: 用 Purged K-Fold 在训练折拟合校准器、在测试折 transform,
     得到**无泄漏**的校准概率, 供报告/回测评估(避免"拟合即评估"的乐观偏差)。
 
     prob 与 y、t1 一一对齐(prob 中的 NaN 表示该行无 OOF)。返回同长度数组,
     不可交叉拟合的位置为 NaN。部署用的最终校准器仍在全量上单独拟合。
+    ``method=auto`` 时按全量有效 OOF 探台阶后固定为 isotonic 或 sigmoid。
     """
     from ..validation.purged_kfold import PurgedKFold
     import pandas as pd
 
     prob = np.asarray(prob, dtype=float)
     yy = np.asarray(y, dtype=int)
+    method, _ = resolve_calibrator_method(
+        method, prob, yy, min_unique_levels=min_unique_levels,
+    )
     out = np.full(len(prob), np.nan)
     pos = np.where(~np.isnan(prob))[0]
     if len(pos) < n_splits * 2:
@@ -150,6 +216,7 @@ def cross_fitted_calibrated_and_conformal(
     n_splits: int = 5,
     embargo_pct: float = 0.01,
     min_margin: float = 0.0,
+    min_unique_levels: int = 20,
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     """同一 Purged 折内联合产出校准概率与保形旗标(主路径评估/回测用)。
 
@@ -174,6 +241,10 @@ def cross_fitted_calibrated_and_conformal(
     tags: list[str] = []
     prob = np.asarray(prob, dtype=float)
     yy = np.asarray(y, dtype=int)
+    method, method_tags = resolve_calibrator_method(
+        method, prob, yy, min_unique_levels=min_unique_levels,
+    )
+    tags.extend(method_tags)
     oof_cal = np.full(len(prob), np.nan)
     # 默认不自信: 仅在该折成功拟合保形器后写入 True。
     # 跳过折若保持 True 会让研究回测在无覆盖折上偏多开仓。
@@ -209,13 +280,15 @@ def fit_deploy_calibrator_and_conformal(
     prob: np.ndarray, y: np.ndarray, method: str = "isotonic",
     alpha: float = 0.1, conformal_frac: float = 0.3,
     min_margin: float = 0.0,
+    min_unique_levels: int = 20,
 ) -> tuple[ProbabilityCalibrator, ConformalBinary, list[str]]:
     """部署用校准器 + 保形器: **时间切分**独立保形集, 保证 split conformal 覆盖率语义。
 
     - 较早 (1-conformal_frac) 的有效 OOF 拟合校准器;
     - 较晚 conformal_frac 在**该校准器变换后**的概率上拟合保形器;
     - 返回的校准器即部署所用(与保形同一基), 不再在全量上重拟合以免破坏分割。
-    - 第三返回值: degradations 标签(如 ``n<40`` 同批回退)。
+    - 第三返回值: degradations 标签(如 ``n<40`` 同批回退、``auto_fallback_sigmoid``)。
+    - ``method=auto``: 见 ``resolve_calibrator_method``。
     """
     tags: list[str] = []
     prob = np.asarray(prob, dtype=float)
@@ -223,9 +296,15 @@ def fit_deploy_calibrator_and_conformal(
     m = ~np.isnan(prob)
     p, yy = prob[m], y[m]
     n = len(p)
+
+    resolved, method_tags = resolve_calibrator_method(
+        method, p, yy, min_unique_levels=min_unique_levels,
+    )
+    tags.extend(method_tags)
+
     if n < 40:
         tags.append(f"deploy_cal_conformal_fallback_insample(n={n})")
-        cal = ProbabilityCalibrator(method=method).fit(p, yy)
+        cal = ProbabilityCalibrator(method=resolved).fit(p, yy)
         conf = ConformalBinary(alpha=alpha, min_margin=min_margin).fit(
             cal.transform(p), yy,
         )
@@ -235,7 +314,20 @@ def fit_deploy_calibrator_and_conformal(
     n_conf = max(int(n * frac), 20)
     n_cal = n - n_conf
     # 假定 prob 与事件时间顺序一致(OOF 按 X.index 排列)
-    cal = ProbabilityCalibrator(method=method).fit(p[:n_cal], yy[:n_cal])
+    # auto 解析用全量有效 OOF 探台阶; 真正 fit 仍只用较早 n_cal 段
+    if str(method).strip().lower() == "auto":
+        resolved2, tags2 = resolve_calibrator_method(
+            "auto", p[:n_cal], yy[:n_cal], min_unique_levels=min_unique_levels,
+        )
+        # 用校准段重解析更贴合部署 fit; 替换首轮 tags 中的 method 相关
+        tags = [t for t in tags if not (
+            t.startswith("deploy_cal_method=")
+            or t.startswith("auto_kept_")
+            or t.startswith("auto_fallback_")
+        )]
+        tags.extend(tags2)
+        resolved = resolved2
+    cal = ProbabilityCalibrator(method=resolved).fit(p[:n_cal], yy[:n_cal])
     conf_p = cal.transform(p[n_cal:])
     conf = ConformalBinary(alpha=alpha, min_margin=min_margin).fit(
         conf_p, yy[n_cal:],

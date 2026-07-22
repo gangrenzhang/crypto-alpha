@@ -31,6 +31,7 @@ def resolve_early_stop_split(
     min_n_for_es: int = 40,
     min_pre_cutoff: int = 20,
     min_val: int = 5,
+    include_post_cutoff_in_train: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """划分 early-stopping 的 train/val **行位置**(相对传入的 X 行序)。
 
@@ -38,9 +39,10 @@ def resolve_early_stop_split(
     - ``es_cutoff_time is None``(全量部署 fit): val = 时间序末尾 ``val_frac``
       (最近样本), 与因果部署一致。
     - ``es_cutoff_time`` 有值(Purged OOF 折内): val **仅**从 ``index < cutoff``
-      的样本中取末尾 ``val_frac``; 训练 = 其余 pre-cutoff + 全部 post-cutoff。
-      这样不会用测试折**之后**的损失选 checkpoint, 同时仍允许 Purged 把
-      后段样本用于梯度更新。
+      的样本中取末尾 ``val_frac``。
+      ``include_post_cutoff_in_train=False``(默认): 训练只用 pre-cutoff 非 val 段,
+      禁止 post-cutoff 进梯度(防 lookback 吃到测试期行情)。
+      ``True``: 训练 = 其余 pre + 全部 post(旧行为, 仅消融)。
 
     样本不足或 ``patience<=0`` 时关闭早停: 返回 ``(所有行, None)``。
     """
@@ -77,7 +79,10 @@ def resolve_early_stop_split(
     va_pos = pre[-n_val:]
     pre_tr = pre[:-n_val]
     post = np.where(times >= cutoff)[0]
-    tr_pos = np.concatenate([pre_tr, post]) if len(post) else pre_tr
+    if include_post_cutoff_in_train and len(post):
+        tr_pos = np.concatenate([pre_tr, post])
+    else:
+        tr_pos = pre_tr
     # 保持稳定顺序(时间序), 便于复现
     tr_pos = np.sort(tr_pos)
     return tr_pos.astype(int), va_pos.astype(int)
@@ -167,8 +172,10 @@ class DeepTSExpert(BaseExpert):
         val_frac = float(p.get("val_frac", 0.15))
         patience = int(p.get("early_stop_patience", 3))
         es_cutoff = fit_params.get("es_cutoff_time", None)
+        include_post = bool(p.get("oof_include_post_cutoff", False))
         tr_pos, va_pos = resolve_early_stop_split(
             X.index, val_frac, patience, es_cutoff_time=es_cutoff,
+            include_post_cutoff_in_train=include_post,
         )
 
         # 标准化仅用训练段统计量(不含 early-stopping 验证段)

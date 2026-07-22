@@ -23,11 +23,19 @@ from .triple_barrier import (
 )
 
 
-def primary_signal(close: pd.Series, kind: str = "momentum", lookback: int = 24) -> pd.Series:
-    """生成方向信号 side ∈ {+1, -1}。
+def primary_signal(
+    close: pd.Series,
+    kind: str = "momentum",
+    lookback: int = 24,
+    confluence: pd.Series | None = None,
+    min_confluence: float = 0.0,
+) -> pd.Series:
+    """生成方向信号 side ∈ {+1, -1}(可选 confluence 门控 → 0)。
 
     momentum: 近 lookback 收益为正 => 做多, 否则做空。
     meanrev : 价格高于均值 => 做空(回归), 否则做多。
+    confluence / min_confluence: 可选; 低于阈值的 bar 将 side 置 0。
+    生产路径默认不传 confluence; 实验门控用。
     """
     if kind == "momentum":
         mom = close.pct_change(lookback)
@@ -37,6 +45,9 @@ def primary_signal(close: pd.Series, kind: str = "momentum", lookback: int = 24)
         side = -np.sign(close - ma).replace(0, 1)
     else:
         raise ValueError(f"未知主信号类型: {kind}")
+    if confluence is not None:
+        conf = confluence.reindex(side.index).fillna(0.0).astype(float)
+        side = side.where(conf >= float(min_confluence), other=0)
     return side.rename("side")
 
 

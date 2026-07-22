@@ -1,0 +1,193 @@
+{
+  "symbol": "BNB/USDT",
+  "mode": "walk_forward_train_then_test",
+  "evaluation_unit": "walk_forward",
+  "split_kind": "single_cut_holdout",
+  "note": "真外推(single-cut holdout, 非滚动再训练): 仅训练窗拟合; 测试窗 predict+deploy 门控; 阈值在全部训练 OOF 冻结, 禁止测试窗刷 thr。勿与 research OOF / train_and_validate.backtest_deploy 成交数直接对比。",
+  "data_source": "cache",
+  "panel_bars": 113831,
+  "panel_start": "2020-01-01 00:00:00+00:00",
+  "panel_end": "2026-06-30 23:30:00+00:00",
+  "train_start": "2020-01-01 00:00:00+00:00",
+  "train_end_exclusive": "2024-09-14 00:00:00+00:00",
+  "recompute_sample_weight_on_split": false,
+  "label_deadline": "2024-09-14 00:00:00+00:00",
+  "embargo_bars": 0,
+  "embargo_delta": "0 days 00:00:00",
+  "backtest_start": "2024-09-14 00:00:00+00:00",
+  "backtest_end": "2026-07-18 00:00:00+00:00",
+  "prob_threshold_effective": 0.55,
+  "n_train_events": 18428,
+  "n_test_events": 5937,
+  "n_opened_trades": 0,
+  "n_wins": 0,
+  "n_losses": 0,
+  "win_rate": 0.0,
+  "total_return": 0.0,
+  "max_drawdown": 0.0,
+  "initial_capital": 10000.0,
+  "final_capital": 10000.0,
+  "train_oof_report": {
+    "n": 18428,
+    "auc": 0.5176150851380581,
+    "brier": 0.24976993091881733,
+    "logloss": 0.6926883372044585,
+    "accuracy": 0.5137833731278489,
+    "base_rate": 0.48968960277838075
+  },
+  "test_report": {
+    "n": 5937,
+    "auc": 0.5067724916371825,
+    "brier": 0.250069156963831,
+    "logloss": 0.6932864208985263,
+    "accuracy": 0.5090112851608557,
+    "base_rate": 0.4921677614957049
+  },
+  "backtest_metrics": {
+    "n_events": 5937,
+    "n_trades": 0,
+    "n_halted": 0,
+    "total_return": 0.0,
+    "sharpe": 0.0,
+    "sharpe_annualized": 0.0,
+    "max_drawdown": 0.0,
+    "max_drawdown_realized": 0.0,
+    "mark_to_market": true,
+    "avg_uniqueness": 1.0,
+    "n_trades_effective": 0.0,
+    "win_rate": 0.0,
+    "avg_pnl": 0.0,
+    "portfolio_mode": "portfolio",
+    "sharpe_equity": 0.0,
+    "sharpe_equity_annualized": 0.0,
+    "sharpe_equity_mtm": 0.0,
+    "sharpe_equity_mtm_annualized": 0.0,
+    "n_skipped_capacity": 0,
+    "calmar": 0.0
+  },
+  "gate_diagnostics": {
+    "prob_threshold": 0.55,
+    "n_events": 5937,
+    "raw_proba": {
+      "mean": 0.48837964332282097,
+      "std": 0.011939822251589282,
+      "min": 0.4377785994043245,
+      "max": 0.5474280973787244,
+      "frac_ge_threshold": 0.0
+    },
+    "calibrated_proba": {
+      "mean": 0.4937438525303365,
+      "std": 0.01994563859219212,
+      "min": 0.4642576590730558,
+      "max": 0.5451263537906137,
+      "n_unique": 18,
+      "top_levels": [
+        {
+          "prob": 0.51341,
+          "n": 1617,
+          "frac": 0.27235977766548763
+        },
+        {
+          "prob": 0.484481,
+          "n": 1046,
+          "frac": 0.17618325753747685
+        },
+        {
+          "prob": 0.464258,
+          "n": 808,
+          "frac": 0.13609567121441807
+        },
+        {
+          "prob": 0.502839,
+          "n": 637,
+          "frac": 0.10729324574701027
+        },
+        {
+          "prob": 0.472119,
+          "n": 620,
+          "frac": 0.10442984672393464
+        },
+        {
+          "prob": 0.47973,
+          "n": 539,
+          "frac": 0.09078659255516254
+        },
+        {
+          "prob": 0.512953,
+          "n": 441,
+          "frac": 0.07427993936331481
+        },
+        {
+          "prob": 0.526471,
+          "n": 96,
+          "frac": 0.01616978271854472
+        },
+        {
+          "prob": 0.545126,
+          "n": 57,
+          "frac": 0.009600808489135927
+        },
+        {
+          "prob": 0.519685,
+          "n": 46,
+          "frac": 0.007748020885969345
+        },
+        {
+          "prob": 0.537736,
+          "n": 23,
+          "frac": 0.0038740104429846726
+        },
+        {
+          "prob": 0.509973,
+          "n": 1,
+          "frac": 0.0001684352366515075
+        }
+      ]
+    },
+    "gates": {
+      "n_prob_ge_threshold": 0,
+      "frac_prob_ge_threshold": 0.0,
+      "n_confident": 0,
+      "frac_confident": 0.0,
+      "n_prob_and_confident": 0,
+      "frac_prob_and_confident": 0.0,
+      "n_opened_size_gt_0": 0,
+      "frac_opened_size_gt_0": 0.0,
+      "n_pass_gate_but_size_0": 0
+    },
+    "conformal_qhat": 0.5278810408921932,
+    "conformal_min_margin": 0.05,
+    "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
+    "path": "walk_forward_deploy",
+    "threshold_tags": [
+      "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)"
+    ],
+    "health_tags": [
+      "calibration_low_unique_levels(n=18,min=20)"
+    ],
+    "split_tags": [
+      "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=0)",
+      "walkforward_purged_label_overlap(n=1)"
+    ]
+  },
+  "dropped_experts": [
+    [
+      "deep_ts",
+      0.49970249329614136
+    ]
+  ],
+  "degradations": [
+    "derivatives_oi_unavailable",
+    "derivatives_liquidations_unavailable",
+    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+    "calibration_low_unique_levels(n=18,min=20)",
+    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=0)",
+    "walkforward_purged_label_overlap(n=1)",
+    "deep_ts:dropped_low_auc(0.500)"
+  ],
+  "split_tags": [
+    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=0)",
+    "walkforward_purged_label_overlap(n=1)"
+  ],
+  "trades_csv": null
+}

@@ -1,0 +1,105 @@
+{
+  "prob_threshold": 0.6530612244897959,
+  "n_events": 5766,
+  "raw_proba": {
+    "mean": 0.48846619067323654,
+    "std": 0.027646586822407775,
+    "min": 0.405619878616179,
+    "max": 0.6012080796366903,
+    "frac_ge_threshold": 0.0
+  },
+  "calibrated_proba": {
+    "mean": 0.48875563221681473,
+    "std": 0.03487900241251935,
+    "min": 0.4428198433420366,
+    "max": 0.6530612244897959,
+    "n_unique": 21,
+    "top_levels": [
+      {
+        "prob": 0.510026,
+        "n": 935,
+        "frac": 0.1621574748525841
+      },
+      {
+        "prob": 0.44282,
+        "n": 858,
+        "frac": 0.14880332986472425
+      },
+      {
+        "prob": 0.490651,
+        "n": 856,
+        "frac": 0.14845646895594866
+      },
+      {
+        "prob": 0.488284,
+        "n": 849,
+        "frac": 0.14724245577523412
+      },
+      {
+        "prob": 0.46875,
+        "n": 517,
+        "frac": 0.08966354491848769
+      },
+      {
+        "prob": 0.476277,
+        "n": 479,
+        "frac": 0.08307318765175165
+      },
+      {
+        "prob": 0.481416,
+        "n": 452,
+        "frac": 0.0783905653832813
+      },
+      {
+        "prob": 0.527991,
+        "n": 298,
+        "frac": 0.05168227540756157
+      },
+      {
+        "prob": 0.585455,
+        "n": 165,
+        "frac": 0.02861602497398543
+      },
+      {
+        "prob": 0.447005,
+        "n": 154,
+        "frac": 0.026708289975719737
+      },
+      {
+        "prob": 0.653061,
+        "n": 57,
+        "frac": 0.009885535900104058
+      },
+      {
+        "prob": 0.572614,
+        "n": 55,
+        "frac": 0.009538674991328478
+      }
+    ]
+  },
+  "gates": {
+    "n_prob_ge_threshold": 57,
+    "frac_prob_ge_threshold": 0.009885535900104058,
+    "n_confident": 1150,
+    "frac_confident": 0.19944502254595908,
+    "n_prob_and_confident": 57,
+    "frac_prob_and_confident": 0.009885535900104058,
+    "n_opened_size_gt_0": 57,
+    "frac_opened_size_gt_0": 0.009885535900104058,
+    "n_pass_gate_but_size_0": 0
+  },
+  "conformal_qhat": 0.5538461538461539,
+  "conformal_min_margin": 0.05,
+  "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
+  "path": "walk_forward_deploy",
+  "threshold_tags": [
+    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5855)",
+    "deploy_calibration_inflates_pass_rate(raw=0.0056,cal=0.0753,ratio=13.42)",
+    "deploy_prob_threshold_raised_on_inflate(from=0.5855,to=0.6531,q=0.9900)"
+  ],
+  "health_tags": [],
+  "split_tags": [
+    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)",
+    "walkforward_purged_label_overlap(n=2)"
+  ]
+}

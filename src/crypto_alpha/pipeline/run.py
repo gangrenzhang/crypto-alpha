@@ -10,6 +10,7 @@ from ..config import Config, set_global_seed
 from ..data import load_symbol_data, refresh_market_data
 from ..features.build import build_feature_matrix, feature_columns
 from ..features.news_features import add_news_features
+from ..features.macro_calendar import add_macro_calendar_features
 from ..labeling.meta_labeling import (
     build_meta_labels,
     primary_signal,
@@ -98,7 +99,8 @@ def prepare_dataset(cfg: Config, symbol: str, *, for_decide: bool = False) -> Da
     feat["high"] = raw["high"] if "high" in raw.columns else raw["close"]
     feat["low"] = raw["low"] if "low" in raw.columns else raw["close"]
     feat = add_news_features(feat, cfg, symbol)  # 新闻数值特征并入(供所有专家共享)
-    # 新闻覆盖率告警等写入 feat.attrs.degradations, 汇入 Dataset(不改特征数值)
+    feat = add_macro_calendar_features(feat, cfg, symbol)  # 宏观日历定点绑定(默认开)
+    # 新闻/宏观覆盖率告警等写入 feat.attrs.degradations, 汇入 Dataset(不改特征数值)
     for d in list(getattr(feat, "attrs", {}).get("degradations") or []):
         if d not in degradations:
             degradations.append(d)
@@ -214,6 +216,7 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
     oof_cal, conf_flags, joint_tags = cross_fitted_calibrated_and_conformal(
         oof, ds.y, ds.t1, method=ccfg["method"], alpha=conf_alpha,
         n_splits=n_cal_splits, embargo_pct=embargo, min_margin=conf_margin,
+        min_unique_levels=int(ccfg.get("min_unique_levels", 20)),
     )
     for t in joint_tags:
         if t not in degradations:
@@ -228,7 +231,15 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
             f"[calibration] WARN: {tag}; 交叉拟合校准/保形不可用, "
             "退回同批 OOF fit+transform, 评估可能偏乐观"
         )
-        cal_tmp = ProbabilityCalibrator(method=ccfg["method"]).fit(oof[mask], ds.y[mask])
+        from ..calibration.calibrate import resolve_calibrator_method
+        _m, _mtags = resolve_calibrator_method(
+            ccfg["method"], oof[mask], ds.y[mask],
+            min_unique_levels=int(ccfg.get("min_unique_levels", 20)),
+        )
+        for t in _mtags:
+            if t not in degradations:
+                degradations.append(t)
+        cal_tmp = ProbabilityCalibrator(method=_m).fit(oof[mask], ds.y[mask])
         oof_cal = np.full_like(oof, np.nan)
         oof_cal[mask] = cal_tmp.transform(oof[mask])
         eval_mask = ~np.isnan(oof_cal)
@@ -246,6 +257,7 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
         alpha=conf_alpha,
         conformal_frac=float(ccfg.get("conformal_frac", 0.3)),
         min_margin=conf_margin,
+        min_unique_levels=int(ccfg.get("min_unique_levels", 20)),
     )
     for t in deploy_tags:
         if t not in degradations:
@@ -363,6 +375,13 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
         "成交数/胜率偏乐观; 实盘预期以 walk-forward / 滚动再训练为准。"
         "门控阈值=prob_threshold_effective(与 decide 同形)。"
     )
+    # D5: 部署路径 KPI 仅诊断, 禁止作 go-live 拍板
+    md = bt_deploy.setdefault("metrics", {})
+    if isinstance(md, dict):
+        md["not_for_go_live"] = True
+        md["kpi_role"] = "deploy_path_optimistic"
+    bt_deploy["not_for_go_live"] = True
+    bt_deploy["kpi_role"] = "deploy_path_optimistic"
 
     # 收集降级信息(含被剪枝专家; build_oof 已写入 ens.degradations)
     for e in ens.experts:

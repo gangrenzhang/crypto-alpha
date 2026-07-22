@@ -1,0 +1,190 @@
+{
+  "symbol": "BTC/USDT",
+  "mode": "walk_forward_train_then_test",
+  "evaluation_unit": "walk_forward",
+  "split_kind": "single_cut_holdout",
+  "note": "真外推(single-cut holdout, 非滚动再训练): 仅训练窗拟合; 测试窗 predict+deploy 门控; 阈值在全部训练 OOF 冻结, 禁止测试窗刷 thr。勿与 research OOF / train_and_validate.backtest_deploy 成交数直接对比。",
+  "data_source": "cache",
+  "panel_bars": 156208,
+  "panel_start": "2017-08-17 04:00:00+00:00",
+  "panel_end": "2026-07-21 05:00:00+00:00",
+  "train_start": "2020-01-01 00:00:00+00:00",
+  "train_end_exclusive": "2024-09-14 00:00:00+00:00",
+  "recompute_sample_weight_on_split": false,
+  "label_deadline": "2024-09-14 00:00:00+00:00",
+  "embargo_bars": 0,
+  "embargo_delta": "0 days 00:00:00",
+  "backtest_start": "2024-09-14 00:00:00+00:00",
+  "backtest_end": "2026-07-18 00:00:00+00:00",
+  "prob_threshold_effective": 0.6530612244897959,
+  "n_train_events": 16566,
+  "n_test_events": 5766,
+  "n_opened_trades": 57,
+  "n_wins": 31,
+  "n_losses": 26,
+  "win_rate": 0.543859649122807,
+  "total_return": -0.005130692442353202,
+  "max_drawdown": -0.01789185673625322,
+  "initial_capital": 10000.0,
+  "final_capital": 9948.693075576468,
+  "train_oof_report": {
+    "n": 16566,
+    "auc": 0.5345935300035844,
+    "brier": 0.24903882563522112,
+    "logloss": 0.6912233311809125,
+    "accuracy": 0.523119642641555,
+    "base_rate": 0.4966195822769528
+  },
+  "test_report": {
+    "n": 5766,
+    "auc": 0.5197615106292464,
+    "brier": 0.2505693400797842,
+    "logloss": 0.6943114762621616,
+    "accuracy": 0.5078043704474505,
+    "base_rate": 0.508324661810614
+  },
+  "backtest_metrics": {
+    "n_events": 5766,
+    "n_trades": 57,
+    "n_halted": 0,
+    "total_return": -0.005130692442353202,
+    "sharpe": -0.043771259858029904,
+    "sharpe_annualized": -0.22068887055975603,
+    "max_drawdown": -0.01789185673625322,
+    "max_drawdown_realized": -0.016985995633256257,
+    "mark_to_market": true,
+    "avg_uniqueness": 0.8199307622838489,
+    "n_trades_effective": 46.736053450179384,
+    "win_rate": 0.543859649122807,
+    "avg_pnl": -8.66435459582836e-05,
+    "portfolio_mode": "portfolio",
+    "sharpe_equity": -0.027417092827484606,
+    "sharpe_equity_annualized": -0.1493968107853371,
+    "sharpe_equity_mtm": -0.00236106482408774,
+    "sharpe_equity_mtm_annualized": -0.15701544322636776,
+    "n_skipped_capacity": 0,
+    "calmar": -0.2867613032690944
+  },
+  "gate_diagnostics": {
+    "prob_threshold": 0.6530612244897959,
+    "n_events": 5766,
+    "raw_proba": {
+      "mean": 0.48846619067323654,
+      "std": 0.027646586822407775,
+      "min": 0.405619878616179,
+      "max": 0.6012080796366903,
+      "frac_ge_threshold": 0.0
+    },
+    "calibrated_proba": {
+      "mean": 0.48875563221681473,
+      "std": 0.03487900241251935,
+      "min": 0.4428198433420366,
+      "max": 0.6530612244897959,
+      "n_unique": 21,
+      "top_levels": [
+        {
+          "prob": 0.510026,
+          "n": 935,
+          "frac": 0.1621574748525841
+        },
+        {
+          "prob": 0.44282,
+          "n": 858,
+          "frac": 0.14880332986472425
+        },
+        {
+          "prob": 0.490651,
+          "n": 856,
+          "frac": 0.14845646895594866
+        },
+        {
+          "prob": 0.488284,
+          "n": 849,
+          "frac": 0.14724245577523412
+        },
+        {
+          "prob": 0.46875,
+          "n": 517,
+          "frac": 0.08966354491848769
+        },
+        {
+          "prob": 0.476277,
+          "n": 479,
+          "frac": 0.08307318765175165
+        },
+        {
+          "prob": 0.481416,
+          "n": 452,
+          "frac": 0.0783905653832813
+        },
+        {
+          "prob": 0.527991,
+          "n": 298,
+          "frac": 0.05168227540756157
+        },
+        {
+          "prob": 0.585455,
+          "n": 165,
+          "frac": 0.02861602497398543
+        },
+        {
+          "prob": 0.447005,
+          "n": 154,
+          "frac": 0.026708289975719737
+        },
+        {
+          "prob": 0.653061,
+          "n": 57,
+          "frac": 0.009885535900104058
+        },
+        {
+          "prob": 0.572614,
+          "n": 55,
+          "frac": 0.009538674991328478
+        }
+      ]
+    },
+    "gates": {
+      "n_prob_ge_threshold": 57,
+      "frac_prob_ge_threshold": 0.009885535900104058,
+      "n_confident": 1150,
+      "frac_confident": 0.19944502254595908,
+      "n_prob_and_confident": 57,
+      "frac_prob_and_confident": 0.009885535900104058,
+      "n_opened_size_gt_0": 57,
+      "frac_opened_size_gt_0": 0.009885535900104058,
+      "n_pass_gate_but_size_0": 0
+    },
+    "conformal_qhat": 0.5538461538461539,
+    "conformal_min_margin": 0.05,
+    "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
+    "path": "walk_forward_deploy",
+    "threshold_tags": [
+      "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5855)",
+      "deploy_calibration_inflates_pass_rate(raw=0.0056,cal=0.0753,ratio=13.42)",
+      "deploy_prob_threshold_raised_on_inflate(from=0.5855,to=0.6531,q=0.9900)"
+    ],
+    "health_tags": [],
+    "split_tags": [
+      "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)",
+      "walkforward_purged_label_overlap(n=2)"
+    ]
+  },
+  "dropped_experts": [],
+  "degradations": [
+    "ohlcv_tip_exchange_fallback",
+    "derivatives_oi_unavailable",
+    "derivatives_liquidations_sparse(coverage=0.000)",
+    "deploy_cal_method=isotonic",
+    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5855)",
+    "deploy_calibration_inflates_pass_rate(raw=0.0056,cal=0.0753,ratio=13.42)",
+    "deploy_prob_threshold_raised_on_inflate(from=0.5855,to=0.6531,q=0.9900)",
+    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)",
+    "walkforward_purged_label_overlap(n=2)"
+  ],
+  "split_tags": [
+    "walkforward_train_start=2020-01-01T00:00:00+00:00(dropped_pre_train=7275)",
+    "walkforward_purged_label_overlap(n=2)"
+  ],
+  "trades_csv": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/wf_console_jobs/20260722T060212_790cf11e/trades.csv"
+}

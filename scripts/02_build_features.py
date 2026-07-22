@@ -5,6 +5,7 @@ from crypto_alpha.config import Config
 from crypto_alpha.data import load_symbol_data, save_parquet
 from crypto_alpha.features.build import build_feature_matrix, feature_columns, mtf_columns
 from crypto_alpha.features.news_features import add_news_features
+from crypto_alpha.features.macro_calendar import add_macro_calendar_features
 
 
 def main():
@@ -14,6 +15,7 @@ def main():
         feat = build_feature_matrix(raw, cfg, symbol=symbol)
         feat["close"] = raw["close"]
         feat = add_news_features(feat, cfg, symbol)
+        feat = add_macro_calendar_features(feat, cfg, symbol)
         fcols = feature_columns(feat)
         mcols = mtf_columns(feat)
         fname = symbol.replace("/", "_") + ".parquet"

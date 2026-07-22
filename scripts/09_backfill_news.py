@@ -14,7 +14,13 @@
     python scripts/09_backfill_news.py --providers gdelt cryptocompare
     python scripts/09_backfill_news.py --rebuild-panels        # 回填后重建面板(默认开启)
 
+推荐稳健入口(满额切分/续跑战役对齐/429长冷却/结束后校验):
+    PYTHONUNBUFFERED=1 PYTHONPATH=src python -u scripts/run_news_backfill_robust.py \\
+        --start 2020-01-01T00:00:00Z --providers gdelt
+    PYTHONPATH=src python scripts/validate_news_alignment.py
+
 回填后需把 news.use_history 设为 true(或本脚本自动重建的面板)供后续专家消费。
+校验通过后再开 news.as_feature。cryptocompare 需环境变量 CRYPTOCOMPARE_KEY。
 """
 import argparse
 

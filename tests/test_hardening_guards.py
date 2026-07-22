@@ -72,6 +72,19 @@ def test_env_guard_stacks_and_holds(tmp_path):
         threshold=50,
     )
     assert not hold4
+    # 宏观日历: 空库计入环境分; sparse 单独通常不足以 HOLD(阈值 50)
+    score_macro, keys_m = score_degradations([
+        "macro_calendar_unavailable",
+        "macro_features_sparse(coverage=0.01,threshold=0.05)",
+    ])
+    assert score_macro == 20 + 10
+    assert "macro_calendar_unavailable" in keys_m
+    assert "macro_features_sparse" in keys_m
+    hold_macro, _, _ = should_hold_for_environment(
+        ["macro_features_sparse(coverage=0.01,threshold=0.05)"],
+        threshold=50,
+    )
+    assert not hold_macro
 
 
 def test_experiment_log_raises_dsr_trials(tmp_path):

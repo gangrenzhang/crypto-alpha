@@ -1,0 +1,404 @@
+
+===== BNB/USDT main 30m =====
+[ok] BNBUSDT 30m 2020-01: 1488 rows
+[ok] BNBUSDT 30m 2020-02: 1379 rows
+[ok] BNBUSDT 30m 2020-03: 1484 rows
+[ok] BNBUSDT 30m 2020-04: 1435 rows
+[ok] BNBUSDT 30m 2020-05: 1488 rows
+[ok] BNBUSDT 30m 2020-06: 1433 rows
+[ok] BNBUSDT 30m 2020-07: 1488 rows
+[ok] BNBUSDT 30m 2020-08: 1488 rows
+[ok] BNBUSDT 30m 2020-09: 1440 rows
+[ok] BNBUSDT 30m 2020-10: 1488 rows
+[ok] BNBUSDT 30m 2020-11: 1438 rows
+[ok] BNBUSDT 30m 2020-12: 1479 rows
+[ok] BNBUSDT 30m 2021-01: 1488 rows
+[ok] BNBUSDT 30m 2021-02: 1342 rows
+[ok] BNBUSDT 30m 2021-03: 1485 rows
+[ok] BNBUSDT 30m 2021-04: 1427 rows
+[ok] BNBUSDT 30m 2021-05: 1488 rows
+[ok] BNBUSDT 30m 2021-06: 1440 rows
+[ok] BNBUSDT 30m 2021-07: 1488 rows
+[ok] BNBUSDT 30m 2021-08: 1479 rows
+[ok] BNBUSDT 30m 2021-09: 1436 rows
+[ok] BNBUSDT 30m 2021-10: 1488 rows
+[ok] BNBUSDT 30m 2021-11: 1440 rows
+[ok] BNBUSDT 30m 2021-12: 1488 rows
+[ok] BNBUSDT 30m 2022-01: 1488 rows
+[ok] BNBUSDT 30m 2022-02: 1344 rows
+[ok] BNBUSDT 30m 2022-03: 1488 rows
+[ok] BNBUSDT 30m 2022-04: 1440 rows
+[ok] BNBUSDT 30m 2022-05: 1488 rows
+[ok] BNBUSDT 30m 2022-06: 1440 rows
+[ok] BNBUSDT 30m 2022-07: 1488 rows
+[ok] BNBUSDT 30m 2022-08: 1488 rows
+[ok] BNBUSDT 30m 2022-09: 1440 rows
+[ok] BNBUSDT 30m 2022-10: 1488 rows
+[ok] BNBUSDT 30m 2022-11: 1440 rows
+[ok] BNBUSDT 30m 2022-12: 1488 rows
+[ok] BNBUSDT 30m 2023-01: 1488 rows
+[ok] BNBUSDT 30m 2023-02: 1344 rows
+[ok] BNBUSDT 30m 2023-03: 1486 rows
+[ok] BNBUSDT 30m 2023-04: 1440 rows
+[ok] BNBUSDT 30m 2023-05: 1488 rows
+[ok] BNBUSDT 30m 2023-06: 1440 rows
+[ok] BNBUSDT 30m 2023-07: 1488 rows
+[ok] BNBUSDT 30m 2023-08: 1488 rows
+[ok] BNBUSDT 30m 2023-09: 1440 rows
+[ok] BNBUSDT 30m 2023-10: 1488 rows
+[ok] BNBUSDT 30m 2023-11: 1440 rows
+[ok] BNBUSDT 30m 2023-12: 1488 rows
+[ok] BNBUSDT 30m 2024-01: 1488 rows
+[ok] BNBUSDT 30m 2024-02: 1392 rows
+[ok] BNBUSDT 30m 2024-03: 1488 rows
+[ok] BNBUSDT 30m 2024-04: 1440 rows
+[ok] BNBUSDT 30m 2024-05: 1488 rows
+[ok] BNBUSDT 30m 2024-06: 1440 rows
+[ok] BNBUSDT 30m 2024-07: 1488 rows
+[ok] BNBUSDT 30m 2024-08: 1488 rows
+[ok] BNBUSDT 30m 2024-09: 1440 rows
+[ok] BNBUSDT 30m 2024-10: 1488 rows
+[ok] BNBUSDT 30m 2024-11: 1440 rows
+[ok] BNBUSDT 30m 2024-12: 1488 rows
+[ok] BNBUSDT 30m 2025-01: 1488 rows
+[ok] BNBUSDT 30m 2025-02: 1344 rows
+[ok] BNBUSDT 30m 2025-03: 1488 rows
+[ok] BNBUSDT 30m 2025-04: 1440 rows
+[ok] BNBUSDT 30m 2025-05: 1488 rows
+[ok] BNBUSDT 30m 2025-06: 1440 rows
+[ok] BNBUSDT 30m 2025-07: 1488 rows
+[ok] BNBUSDT 30m 2025-08: 1488 rows
+[ok] BNBUSDT 30m 2025-09: 1440 rows
+[ok] BNBUSDT 30m 2025-10: 1488 rows
+[ok] BNBUSDT 30m 2025-11: 1440 rows
+[ok] BNBUSDT 30m 2025-12: 1488 rows
+[ok] BNBUSDT 30m 2026-01: 1488 rows
+[ok] BNBUSDT 30m 2026-02: 1344 rows
+[ok] BNBUSDT 30m 2026-03: 1488 rows
+[ok] BNBUSDT 30m 2026-04: 1440 rows
+[ok] BNBUSDT 30m 2026-05: 1488 rows
+[ok] BNBUSDT 30m 2026-06: 1440 rows
+[skip] BNBUSDT 30m 2026-07
+[ok] funding BNBUSDT 2020-02: 60
+[ok] funding BNBUSDT 2020-03: 94
+[ok] funding BNBUSDT 2020-04: 91
+[ok] funding BNBUSDT 2020-05: 94
+[ok] funding BNBUSDT 2020-06: 91
+[ok] funding BNBUSDT 2020-07: 94
+[ok] funding BNBUSDT 2020-08: 94
+[ok] funding BNBUSDT 2020-09: 91
+[ok] funding BNBUSDT 2020-10: 94
+[ok] funding BNBUSDT 2020-11: 91
+[ok] funding BNBUSDT 2020-12: 94
+[ok] funding BNBUSDT 2021-01: 94
+[ok] funding BNBUSDT 2021-02: 85
+[ok] funding BNBUSDT 2021-03: 94
+[ok] funding BNBUSDT 2021-04: 91
+[ok] funding BNBUSDT 2021-05: 94
+[ok] funding BNBUSDT 2021-06: 91
+[ok] funding BNBUSDT 2021-07: 94
+[ok] funding BNBUSDT 2021-08: 94
+[ok] funding BNBUSDT 2021-09: 91
+[ok] funding BNBUSDT 2021-10: 94
+[ok] funding BNBUSDT 2021-11: 91
+[ok] funding BNBUSDT 2021-12: 94
+[ok] funding BNBUSDT 2022-01: 94
+[ok] funding BNBUSDT 2022-02: 85
+[ok] funding BNBUSDT 2022-03: 94
+[ok] funding BNBUSDT 2022-04: 91
+[ok] funding BNBUSDT 2022-05: 94
+[ok] funding BNBUSDT 2022-06: 91
+[ok] funding BNBUSDT 2022-07: 94
+[ok] funding BNBUSDT 2022-08: 94
+[ok] funding BNBUSDT 2022-09: 91
+[ok] funding BNBUSDT 2022-10: 94
+[ok] funding BNBUSDT 2022-11: 91
+[ok] funding BNBUSDT 2022-12: 94
+[ok] funding BNBUSDT 2023-01: 94
+[ok] funding BNBUSDT 2023-02: 85
+[ok] funding BNBUSDT 2023-03: 94
+[ok] funding BNBUSDT 2023-04: 91
+[ok] funding BNBUSDT 2023-05: 94
+[ok] funding BNBUSDT 2023-06: 91
+[ok] funding BNBUSDT 2023-07: 94
+[ok] funding BNBUSDT 2023-08: 94
+[ok] funding BNBUSDT 2023-09: 91
+[ok] funding BNBUSDT 2023-10: 94
+[ok] funding BNBUSDT 2023-11: 91
+[ok] funding BNBUSDT 2023-12: 94
+[ok] funding BNBUSDT 2024-01: 94
+[ok] funding BNBUSDT 2024-02: 88
+[ok] funding BNBUSDT 2024-03: 94
+[ok] funding BNBUSDT 2024-04: 91
+[ok] funding BNBUSDT 2024-05: 94
+[ok] funding BNBUSDT 2024-06: 91
+[ok] funding BNBUSDT 2024-07: 94
+[ok] funding BNBUSDT 2024-08: 94
+[ok] funding BNBUSDT 2024-09: 91
+[ok] funding BNBUSDT 2024-10: 94
+[ok] funding BNBUSDT 2024-11: 91
+[ok] funding BNBUSDT 2024-12: 94
+[ok] funding BNBUSDT 2025-01: 94
+[ok] funding BNBUSDT 2025-02: 85
+[ok] funding BNBUSDT 2025-03: 94
+[ok] funding BNBUSDT 2025-04: 91
+[ok] funding BNBUSDT 2025-05: 94
+[ok] funding BNBUSDT 2025-06: 91
+[ok] funding BNBUSDT 2025-07: 94
+[ok] funding BNBUSDT 2025-08: 94
+[ok] funding BNBUSDT 2025-09: 91
+[ok] funding BNBUSDT 2025-10: 94
+[ok] funding BNBUSDT 2025-11: 91
+[ok] funding BNBUSDT 2025-12: 94
+[ok] funding BNBUSDT 2026-01: 94
+[ok] funding BNBUSDT 2026-02: 85
+[ok] funding BNBUSDT 2026-03: 94
+[ok] funding BNBUSDT 2026-04: 91
+[ok] funding BNBUSDT 2026-05: 94
+[ok] funding BNBUSDT 2026-06: 91
+[saved] /Users/zhanggangren/Desktop/pyro/crypto-alpha/data/raw/BNB_USDT__30m.parquet rows=113831 range=2020-01-01 00:00:00+00:00 -> 2026-06-30 23:30:00+00:00 close0=13.7 close1=546.5
+===== BNB/USDT aux 2h =====
+[ok] BNBUSDT 2h 2020-01: 372 rows
+[ok] BNBUSDT 2h 2020-02: 346 rows
+[ok] BNBUSDT 2h 2020-03: 372 rows
+[ok] BNBUSDT 2h 2020-04: 359 rows
+[ok] BNBUSDT 2h 2020-05: 372 rows
+[ok] BNBUSDT 2h 2020-06: 359 rows
+[ok] BNBUSDT 2h 2020-07: 372 rows
+[ok] BNBUSDT 2h 2020-08: 372 rows
+[ok] BNBUSDT 2h 2020-09: 360 rows
+[ok] BNBUSDT 2h 2020-10: 372 rows
+[ok] BNBUSDT 2h 2020-11: 360 rows
+[ok] BNBUSDT 2h 2020-12: 371 rows
+[ok] BNBUSDT 2h 2021-01: 372 rows
+[ok] BNBUSDT 2h 2021-02: 336 rows
+[ok] BNBUSDT 2h 2021-03: 372 rows
+[ok] BNBUSDT 2h 2021-04: 358 rows
+[ok] BNBUSDT 2h 2021-05: 372 rows
+[ok] BNBUSDT 2h 2021-06: 360 rows
+[ok] BNBUSDT 2h 2021-07: 372 rows
+[ok] BNBUSDT 2h 2021-08: 370 rows
+[ok] BNBUSDT 2h 2021-09: 360 rows
+[ok] BNBUSDT 2h 2021-10: 372 rows
+[ok] BNBUSDT 2h 2021-11: 360 rows
+[ok] BNBUSDT 2h 2021-12: 372 rows
+[ok] BNBUSDT 2h 2022-01: 372 rows
+[ok] BNBUSDT 2h 2022-02: 336 rows
+[ok] BNBUSDT 2h 2022-03: 372 rows
+[ok] BNBUSDT 2h 2022-04: 360 rows
+[ok] BNBUSDT 2h 2022-05: 372 rows
+[ok] BNBUSDT 2h 2022-06: 360 rows
+[ok] BNBUSDT 2h 2022-07: 372 rows
+[ok] BNBUSDT 2h 2022-08: 372 rows
+[ok] BNBUSDT 2h 2022-09: 360 rows
+[ok] BNBUSDT 2h 2022-10: 372 rows
+[ok] BNBUSDT 2h 2022-11: 360 rows
+[ok] BNBUSDT 2h 2022-12: 372 rows
+[ok] BNBUSDT 2h 2023-01: 372 rows
+[ok] BNBUSDT 2h 2023-02: 336 rows
+[ok] BNBUSDT 2h 2023-03: 372 rows
+[ok] BNBUSDT 2h 2023-04: 360 rows
+[ok] BNBUSDT 2h 2023-05: 372 rows
+[ok] BNBUSDT 2h 2023-06: 360 rows
+[ok] BNBUSDT 2h 2023-07: 372 rows
+[ok] BNBUSDT 2h 2023-08: 372 rows
+[ok] BNBUSDT 2h 2023-09: 360 rows
+[ok] BNBUSDT 2h 2023-10: 372 rows
+[ok] BNBUSDT 2h 2023-11: 360 rows
+[ok] BNBUSDT 2h 2023-12: 372 rows
+[ok] BNBUSDT 2h 2024-01: 372 rows
+[ok] BNBUSDT 2h 2024-02: 348 rows
+[ok] BNBUSDT 2h 2024-03: 372 rows
+[ok] BNBUSDT 2h 2024-04: 360 rows
+[ok] BNBUSDT 2h 2024-05: 372 rows
+[ok] BNBUSDT 2h 2024-06: 360 rows
+[ok] BNBUSDT 2h 2024-07: 372 rows
+[ok] BNBUSDT 2h 2024-08: 372 rows
+[ok] BNBUSDT 2h 2024-09: 360 rows
+[ok] BNBUSDT 2h 2024-10: 372 rows
+[ok] BNBUSDT 2h 2024-11: 360 rows
+[ok] BNBUSDT 2h 2024-12: 372 rows
+[ok] BNBUSDT 2h 2025-01: 372 rows
+[ok] BNBUSDT 2h 2025-02: 336 rows
+[ok] BNBUSDT 2h 2025-03: 372 rows
+[ok] BNBUSDT 2h 2025-04: 360 rows
+[ok] BNBUSDT 2h 2025-05: 372 rows
+[ok] BNBUSDT 2h 2025-06: 360 rows
+[ok] BNBUSDT 2h 2025-07: 372 rows
+[ok] BNBUSDT 2h 2025-08: 372 rows
+[ok] BNBUSDT 2h 2025-09: 360 rows
+[ok] BNBUSDT 2h 2025-10: 372 rows
+[ok] BNBUSDT 2h 2025-11: 360 rows
+[ok] BNBUSDT 2h 2025-12: 372 rows
+[ok] BNBUSDT 2h 2026-01: 372 rows
+[ok] BNBUSDT 2h 2026-02: 336 rows
+[ok] BNBUSDT 2h 2026-03: 372 rows
+[ok] BNBUSDT 2h 2026-04: 360 rows
+[ok] BNBUSDT 2h 2026-05: 372 rows
+[ok] BNBUSDT 2h 2026-06: 360 rows
+[skip] BNBUSDT 2h 2026-07
+[saved] /Users/zhanggangren/Desktop/pyro/crypto-alpha/data/raw/BNB_USDT__2h.parquet rows=28467
+===== BNB/USDT aux 4h =====
+[ok] BNBUSDT 4h 2020-01: 186 rows
+[ok] BNBUSDT 4h 2020-02: 173 rows
+[ok] BNBUSDT 4h 2020-03: 186 rows
+[ok] BNBUSDT 4h 2020-04: 180 rows
+[ok] BNBUSDT 4h 2020-05: 186 rows
+[ok] BNBUSDT 4h 2020-06: 180 rows
+[ok] BNBUSDT 4h 2020-07: 186 rows
+[ok] BNBUSDT 4h 2020-08: 186 rows
+[ok] BNBUSDT 4h 2020-09: 180 rows
+[ok] BNBUSDT 4h 2020-10: 186 rows
+[ok] BNBUSDT 4h 2020-11: 180 rows
+[ok] BNBUSDT 4h 2020-12: 186 rows
+[ok] BNBUSDT 4h 2021-01: 186 rows
+[ok] BNBUSDT 4h 2021-02: 168 rows
+[ok] BNBUSDT 4h 2021-03: 186 rows
+[ok] BNBUSDT 4h 2021-04: 180 rows
+[ok] BNBUSDT 4h 2021-05: 186 rows
+[ok] BNBUSDT 4h 2021-06: 180 rows
+[ok] BNBUSDT 4h 2021-07: 186 rows
+[ok] BNBUSDT 4h 2021-08: 186 rows
+[ok] BNBUSDT 4h 2021-09: 180 rows
+[ok] BNBUSDT 4h 2021-10: 186 rows
+[ok] BNBUSDT 4h 2021-11: 180 rows
+[ok] BNBUSDT 4h 2021-12: 186 rows
+[ok] BNBUSDT 4h 2022-01: 186 rows
+[ok] BNBUSDT 4h 2022-02: 168 rows
+[ok] BNBUSDT 4h 2022-03: 186 rows
+[ok] BNBUSDT 4h 2022-04: 180 rows
+[ok] BNBUSDT 4h 2022-05: 186 rows
+[ok] BNBUSDT 4h 2022-06: 180 rows
+[ok] BNBUSDT 4h 2022-07: 186 rows
+[ok] BNBUSDT 4h 2022-08: 186 rows
+[ok] BNBUSDT 4h 2022-09: 180 rows
+[ok] BNBUSDT 4h 2022-10: 186 rows
+[ok] BNBUSDT 4h 2022-11: 180 rows
+[ok] BNBUSDT 4h 2022-12: 186 rows
+[ok] BNBUSDT 4h 2023-01: 186 rows
+[ok] BNBUSDT 4h 2023-02: 168 rows
+[ok] BNBUSDT 4h 2023-03: 186 rows
+[ok] BNBUSDT 4h 2023-04: 180 rows
+[ok] BNBUSDT 4h 2023-05: 186 rows
+[ok] BNBUSDT 4h 2023-06: 180 rows
+[ok] BNBUSDT 4h 2023-07: 186 rows
+[ok] BNBUSDT 4h 2023-08: 186 rows
+[ok] BNBUSDT 4h 2023-09: 180 rows
+[ok] BNBUSDT 4h 2023-10: 186 rows
+[ok] BNBUSDT 4h 2023-11: 180 rows
+[ok] BNBUSDT 4h 2023-12: 186 rows
+[ok] BNBUSDT 4h 2024-01: 186 rows
+[ok] BNBUSDT 4h 2024-02: 174 rows
+[ok] BNBUSDT 4h 2024-03: 186 rows
+[ok] BNBUSDT 4h 2024-04: 180 rows
+[ok] BNBUSDT 4h 2024-05: 186 rows
+[ok] BNBUSDT 4h 2024-06: 180 rows
+[ok] BNBUSDT 4h 2024-07: 186 rows
+[ok] BNBUSDT 4h 2024-08: 186 rows
+[ok] BNBUSDT 4h 2024-09: 180 rows
+[ok] BNBUSDT 4h 2024-10: 186 rows
+[ok] BNBUSDT 4h 2024-11: 180 rows
+[ok] BNBUSDT 4h 2024-12: 186 rows
+[ok] BNBUSDT 4h 2025-01: 186 rows
+[ok] BNBUSDT 4h 2025-02: 168 rows
+[ok] BNBUSDT 4h 2025-03: 186 rows
+[ok] BNBUSDT 4h 2025-04: 180 rows
+[ok] BNBUSDT 4h 2025-05: 186 rows
+[ok] BNBUSDT 4h 2025-06: 180 rows
+[ok] BNBUSDT 4h 2025-07: 186 rows
+[ok] BNBUSDT 4h 2025-08: 186 rows
+[ok] BNBUSDT 4h 2025-09: 180 rows
+[ok] BNBUSDT 4h 2025-10: 186 rows
+[ok] BNBUSDT 4h 2025-11: 180 rows
+[ok] BNBUSDT 4h 2025-12: 186 rows
+[ok] BNBUSDT 4h 2026-01: 186 rows
+[ok] BNBUSDT 4h 2026-02: 168 rows
+[ok] BNBUSDT 4h 2026-03: 186 rows
+[ok] BNBUSDT 4h 2026-04: 180 rows
+[ok] BNBUSDT 4h 2026-05: 186 rows
+[ok] BNBUSDT 4h 2026-06: 180 rows
+[skip] BNBUSDT 4h 2026-07
+[saved] /Users/zhanggangren/Desktop/pyro/crypto-alpha/data/raw/BNB_USDT__4h.parquet rows=14237
+===== BNB/USDT aux 1d =====
+[ok] BNBUSDT 1d 2020-01: 31 rows
+[ok] BNBUSDT 1d 2020-02: 29 rows
+[ok] BNBUSDT 1d 2020-03: 31 rows
+[ok] BNBUSDT 1d 2020-04: 30 rows
+[ok] BNBUSDT 1d 2020-05: 31 rows
+[ok] BNBUSDT 1d 2020-06: 30 rows
+[ok] BNBUSDT 1d 2020-07: 31 rows
+[ok] BNBUSDT 1d 2020-08: 31 rows
+[ok] BNBUSDT 1d 2020-09: 30 rows
+[ok] BNBUSDT 1d 2020-10: 31 rows
+[ok] BNBUSDT 1d 2020-11: 30 rows
+[ok] BNBUSDT 1d 2020-12: 31 rows
+[ok] BNBUSDT 1d 2021-01: 31 rows
+[ok] BNBUSDT 1d 2021-02: 28 rows
+[ok] BNBUSDT 1d 2021-03: 31 rows
+[ok] BNBUSDT 1d 2021-04: 30 rows
+[ok] BNBUSDT 1d 2021-05: 31 rows
+[ok] BNBUSDT 1d 2021-06: 30 rows
+[ok] BNBUSDT 1d 2021-07: 31 rows
+[ok] BNBUSDT 1d 2021-08: 31 rows
+[ok] BNBUSDT 1d 2021-09: 30 rows
+[ok] BNBUSDT 1d 2021-10: 31 rows
+[ok] BNBUSDT 1d 2021-11: 30 rows
+[ok] BNBUSDT 1d 2021-12: 31 rows
+[ok] BNBUSDT 1d 2022-01: 31 rows
+[ok] BNBUSDT 1d 2022-02: 28 rows
+[ok] BNBUSDT 1d 2022-03: 31 rows
+[ok] BNBUSDT 1d 2022-04: 30 rows
+[ok] BNBUSDT 1d 2022-05: 31 rows
+[ok] BNBUSDT 1d 2022-06: 30 rows
+[ok] BNBUSDT 1d 2022-07: 31 rows
+[ok] BNBUSDT 1d 2022-08: 31 rows
+[ok] BNBUSDT 1d 2022-09: 30 rows
+[ok] BNBUSDT 1d 2022-10: 31 rows
+[ok] BNBUSDT 1d 2022-11: 30 rows
+[ok] BNBUSDT 1d 2022-12: 31 rows
+[ok] BNBUSDT 1d 2023-01: 31 rows
+[ok] BNBUSDT 1d 2023-02: 28 rows
+[ok] BNBUSDT 1d 2023-03: 31 rows
+[ok] BNBUSDT 1d 2023-04: 30 rows
+[ok] BNBUSDT 1d 2023-05: 31 rows
+[ok] BNBUSDT 1d 2023-06: 30 rows
+[ok] BNBUSDT 1d 2023-07: 31 rows
+[ok] BNBUSDT 1d 2023-08: 31 rows
+[ok] BNBUSDT 1d 2023-09: 30 rows
+[ok] BNBUSDT 1d 2023-10: 31 rows
+[ok] BNBUSDT 1d 2023-11: 30 rows
+[ok] BNBUSDT 1d 2023-12: 31 rows
+[ok] BNBUSDT 1d 2024-01: 31 rows
+[ok] BNBUSDT 1d 2024-02: 29 rows
+[ok] BNBUSDT 1d 2024-03: 31 rows
+[ok] BNBUSDT 1d 2024-04: 30 rows
+[ok] BNBUSDT 1d 2024-05: 31 rows
+[ok] BNBUSDT 1d 2024-06: 30 rows
+[ok] BNBUSDT 1d 2024-07: 31 rows
+[ok] BNBUSDT 1d 2024-08: 31 rows
+[ok] BNBUSDT 1d 2024-09: 30 rows
+[ok] BNBUSDT 1d 2024-10: 31 rows
+[ok] BNBUSDT 1d 2024-11: 30 rows
+[ok] BNBUSDT 1d 2024-12: 31 rows
+[ok] BNBUSDT 1d 2025-01: 31 rows
+[ok] BNBUSDT 1d 2025-02: 28 rows
+[ok] BNBUSDT 1d 2025-03: 31 rows
+[ok] BNBUSDT 1d 2025-04: 30 rows
+[ok] BNBUSDT 1d 2025-05: 31 rows
+[ok] BNBUSDT 1d 2025-06: 30 rows
+[ok] BNBUSDT 1d 2025-07: 31 rows
+[ok] BNBUSDT 1d 2025-08: 31 rows
+[ok] BNBUSDT 1d 2025-09: 30 rows
+[ok] BNBUSDT 1d 2025-10: 31 rows
+[ok] BNBUSDT 1d 2025-11: 30 rows
+[ok] BNBUSDT 1d 2025-12: 31 rows
+[ok] BNBUSDT 1d 2026-01: 31 rows
+[ok] BNBUSDT 1d 2026-02: 28 rows
+[ok] BNBUSDT 1d 2026-03: 31 rows
+[ok] BNBUSDT 1d 2026-04: 30 rows
+[ok] BNBUSDT 1d 2026-05: 31 rows
+[ok] BNBUSDT 1d 2026-06: 30 rows
+[skip] BNBUSDT 1d 2026-07
+[saved] /Users/zhanggangren/Desktop/pyro/crypto-alpha/data/raw/BNB_USDT__1d.parquet rows=2373
+
+[done] Binance Vision 回填完成。后续 04 将走 cache; REST 增量失败时仍用本缓存。

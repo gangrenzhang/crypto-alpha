@@ -1288,9 +1288,15 @@ def test_deep_ts_early_stop_split_respects_cutoff():
     assert va2 is not None
     # val 时刻必须全部 < cutoff
     assert (train_idx[va2] < cutoff).all()
-    # 后段(>=cutoff)只进 train, 不进 val
-    assert (train_idx[tr2] >= cutoff).any()
-    assert not (train_idx[va2] >= cutoff).any()
+    # 后段(>=cutoff)默认不进 train(D2); 显式 True 可恢复旧行为
+    assert not (train_idx[tr2] >= cutoff).any()
+    tr2b, va2b = resolve_early_stop_split(
+        train_idx, val_frac=0.15, patience=3, es_cutoff_time=cutoff,
+        include_post_cutoff_in_train=True,
+    )
+    assert va2b is not None
+    assert (train_idx[tr2b] >= cutoff).any()
+    assert not (train_idx[va2b] >= cutoff).any()
 
     # 第一折: 训练全在 cutoff 之后 → 关闭早停
     late = idx[60:]
