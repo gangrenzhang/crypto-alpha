@@ -1,8 +1,8 @@
 {
   "print_status": "missing_api_key",
-  "bls_schedule_rows": 164,
+  "bls_schedule_rows": 191,
   "ff_hist": 5546,
-  "n_events": 6274,
-  "official_schedule_share": 0.018329614281160343,
-  "first_print_share": 0.5699713101689512
+  "n_events": 6285,
+  "official_schedule_share": 0.020365950676213208,
+  "first_print_share": 0.5910898965791567
 }

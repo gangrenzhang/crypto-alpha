@@ -22,29 +22,14 @@ FRED_SERIES = {
 
 
 def _curl_bytes(url: str, timeout: float = 90.0) -> bytes:
-    import subprocess
+    """抓取 ALFRED/FRED; TLS 校验优先(见 data.http_curl)。"""
+    from .http_curl import curl_bytes
 
-    cmd = [
-        "curl", "-sL", "-A", "Mozilla/5.0 (crypto-alpha alfred)",
-        "--connect-timeout", "20", "--max-time", str(int(timeout)), "-k", url,
-    ]
-    proxy = (
-        os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-        or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    return curl_bytes(
+        url, timeout=timeout,
+        user_agent="Mozilla/5.0 (crypto-alpha alfred)",
+        label="alfred",
     )
-    if not proxy:
-        try:
-            from .news import _resolve_http_proxies
-            proxies = _resolve_http_proxies()
-            proxy = proxies.get("https") or proxies.get("http")
-        except Exception:
-            proxy = None
-    if proxy:
-        cmd = cmd[:-1] + ["-x", proxy, cmd[-1]]
-    proc = subprocess.run(cmd, capture_output=True, timeout=timeout + 5, check=False)
-    if proc.returncode != 0 or not proc.stdout:
-        raise RuntimeError(f"curl failed for FRED: {url[:80]}")
-    return proc.stdout
 
 
 def fred_api_key() -> str | None:

@@ -1,16 +1,21 @@
 {
-  "last_run": "2026-07-22T07:53:45.341606+00:00",
   "range": [
-    "2020-01-01T00:00:00+00:00",
-    "2026-07-22T07:17:48.590303+00:00"
+    "2026-01-01T00:00:00+00:00",
+    "2026-07-30T10:55:28.976652+00:00"
   ],
   "providers": [
     "gdelt"
   ],
-  "total": 0,
-  "note": "reset for full campaign from 2020-01-01",
-  "gdelt_cursor": "2020-01-06T06:00:00+00:00",
-  "gdelt_windows_done": 9,
-  "gdelt_fail_windows": 4,
-  "gdelt_split_windows": 5
+  "total": 262143,
+  "note": "GAL crypto-only campaign from 2020-01-01",
+  "gdelt_backend": "gal",
+  "gdelt_gal_cursor": "2026-01-01T02:00:00+00:00",
+  "last_run": "2026-08-04T01:05:28.752852+00:00",
+  "gdelt_gal_stats": {
+    "files": 120,
+    "ok": 10,
+    "missing_404": 110,
+    "err": 0,
+    "matched": 7
+  }
 }

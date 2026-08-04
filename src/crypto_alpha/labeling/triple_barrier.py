@@ -209,6 +209,13 @@ def get_events(
     events = pd.DataFrame(
         {"t1": vb, "trgt": trgt.reindex(t_events), "side": side.reindex(t_events)}
     ).dropna(subset=["trgt", "side", "t1"])  # 丢弃无法满足垂直持有期的截断样本
+    # side=0(中性/被 confluence 门控掉)会让 TP=SL=入场价, 同 bar 双触 → 保守判止损,
+    # 于是凭空产出一条「必亏」的假标签。生产 primary_signal 把 0 映射为 +1 故不可达,
+    # 但实验用的 confluence 门控会产生 0: 这类事件没有可执行方向, 直接不标注。
+    if len(events):
+        neutral = events["side"].astype(float) == 0.0
+        if bool(neutral.any()):
+            events = events.loc[~neutral.values]
 
     if len(events) == 0:
         return events

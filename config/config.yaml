@@ -73,9 +73,12 @@ news:
     providers: ["gdelt", "cryptocompare"]   # synthetic / cryptocompare / gdelt
     # 窗越宽越易满 250→切分爆炸→429; 2 天比 7 天稳。rate 同时是全进程最小请求间隔。
     window_days: 2
-    rate_limit_sec: 90.0       # 经系统代理后仍建议 ≥60–90s, 避免切分连打再 429
+    rate_limit_sec: 180.0      # 仅 gdelt_backend=doc 时生效; GAL 不受此限
     gdelt_http_retries: 1      # 单窗 HTTP 重试次数(宜小; 窗级会再排)
-    gdelt_429_cooldown_sec: 300.0  # 窗失败后基础冷却(连续 429 还会再拉长)
+    gdelt_429_cooldown_sec: 600.0  # 窗失败后基础冷却(连续 429 还会再拉长)
+    gdelt_backend: gal         # gal=静态分钟文件(推荐, 绕开 DOC 429); doc=DOC API
+    gdelt_gal_workers: 24      # GAL 并发下载数
+    gdelt_gal_flush_minutes: 180  # 每推进约 N 分钟进度刷盘一次
     max_windows: 8000          # 含满额自动切分后的请求上限; 不够可续跑
 
     max_pages: 400             # CryptoCompare 分页数安全上限
@@ -199,8 +202,9 @@ validation:
     test_start: "2022-09-14T00:00:00Z"
     test_end: "2026-07-18T00:00:00Z"  # null=用该币种面板末根
     embargo_bars: 0          # 额外标签禁运(主周期 bar); 0=仅要求 t1 < test_start
-    # false=全量 prepare 算权再切片(历史默认); true=仅训练子集重算 uniqueness×衰减
-    recompute_sample_weight_on_split: false
+    # true(默认)=仅用训练子集重算 uniqueness×|ret|×衰减, 权重归一化常数不含测试窗信息;
+    # false=全量 prepare 算权再切片(旧口径, 仅作对照)
+    recompute_sample_weight_on_split: true
     min_train_events: 200
     min_test_events: 50
     initial_capital: 10000.0

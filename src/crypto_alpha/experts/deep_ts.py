@@ -31,8 +31,10 @@ def resolve_early_stop_split(
     min_n_for_es: int = 40,
     min_pre_cutoff: int = 20,
     min_val: int = 5,
+    min_train: int = 20,
     include_post_cutoff_in_train: bool = False,
-) -> tuple[np.ndarray, np.ndarray | None]:
+    return_tags: bool = False,
+):
     """划分 early-stopping 的 train/val **行位置**(相对传入的 X 行序)。
 
     两种模式:
@@ -40,24 +42,39 @@ def resolve_early_stop_split(
       (最近样本), 与因果部署一致。
     - ``es_cutoff_time`` 有值(Purged OOF 折内): val **仅**从 ``index < cutoff``
       的样本中取末尾 ``val_frac``。
-      ``include_post_cutoff_in_train=False``(默认): 训练只用 pre-cutoff 非 val 段,
-      禁止 post-cutoff 进梯度(防 lookback 吃到测试期行情)。
+      ``include_post_cutoff_in_train=False``(默认): 训练只用 pre-cutoff 段,
+      禁止 post-cutoff 进梯度(防 lookback 窗口吃到测试期行情)。
       ``True``: 训练 = 其余 pre + 全部 post(旧行为, 仅消融)。
 
-    样本不足或 ``patience<=0`` 时关闭早停: 返回 ``(所有行, None)``。
+    回退分级(``include_post_cutoff_in_train=False`` 时):
+
+    1. pre 足够训 + 足够切 val → 正常早停, 训练仅 pre;
+    2. pre 足够训但切不出 val(``len(pre) < min_val+min_train``) → **仍只训 pre**,
+       关早停 → tag ``deep_ts_es_off_small_pre_cutoff``;
+    3. pre 不足以训练(如 PurgedKFold 首折训练集整体位于测试折之后) → 只能退回全样本,
+       tag ``deep_ts_train_includes_post_cutoff``。
+
+    旧实现在情形 2/3 都直接 ``return all_pos, None``, 等于静默把 post-cutoff 样本
+    喂进梯度, 使 ``oof_include_post_cutoff=false`` 的承诺在这些折上失效且不留痕。
+
+    ``return_tags=True`` 时返回 ``(tr_pos, va_pos, tags)``。
     """
     n = len(index)
     all_pos = np.arange(n, dtype=int)
-    if n < min_n_for_es or patience <= 0 or val_frac <= 0:
-        return all_pos, None
+    tags: list[str] = []
+
+    def _ret(tr, va):
+        return (tr, va, tags) if return_tags else (tr, va)
 
     if es_cutoff_time is None:
+        if n < min_n_for_es or patience <= 0 or val_frac <= 0:
+            return _ret(all_pos, None)
         n_val = max(int(n * float(val_frac)), min_val)
         n_val = min(n_val, n - 1)
         if n_val < min_val:
-            return all_pos, None
+            return _ret(all_pos, None)
         n_tr = n - n_val
-        return all_pos[:n_tr], all_pos[n_tr:]
+        return _ret(all_pos[:n_tr], all_pos[n_tr:])
 
     # 折内: 只允许 cutoff 之前的样本进入 val(相对测试折因果)
     times = pd.DatetimeIndex(pd.to_datetime(index))
@@ -67,25 +84,46 @@ def resolve_early_stop_split(
     elif times.tz is None and cutoff.tzinfo is not None:
         cutoff = cutoff.tz_localize(None)
     pre = np.where(times < cutoff)[0]
-    if len(pre) < min_pre_cutoff:
-        # 第一折等「训练全在测试后」的情形: 无法构造因果 val → 关早停
-        return all_pos, None
-
-    n_val = max(int(len(pre) * float(val_frac)), min_val)
-    n_val = min(n_val, len(pre) - 1)
-    if n_val < min_val or len(pre) - n_val < 1:
-        return all_pos, None
-
-    va_pos = pre[-n_val:]
-    pre_tr = pre[:-n_val]
     post = np.where(times >= cutoff)[0]
-    if include_post_cutoff_in_train and len(post):
-        tr_pos = np.concatenate([pre_tr, post])
-    else:
-        tr_pos = pre_tr
-    # 保持稳定顺序(时间序), 便于复现
-    tr_pos = np.sort(tr_pos)
-    return tr_pos.astype(int), va_pos.astype(int)
+
+    def _post_cutoff_fallback():
+        """唯一允许把 post-cutoff 喂进梯度的出口: 必须留下降级标签。"""
+        if len(post):
+            tags.append(
+                f"deep_ts_train_includes_post_cutoff(n_pre={len(pre)},n_post={len(post)})"
+            )
+        return _ret(all_pos, None)
+
+    if include_post_cutoff_in_train:
+        # 显式消融口径: 旧行为(pre 非 val 段 + 全部 post)
+        if n < min_n_for_es or patience <= 0 or val_frac <= 0 or len(pre) < min_pre_cutoff:
+            return _ret(all_pos, None)
+        n_val = min(max(int(len(pre) * float(val_frac)), min_val), len(pre) - 1)
+        if n_val < min_val or len(pre) - n_val < 1:
+            return _ret(all_pos, None)
+        tr_pos = np.sort(np.concatenate([pre[:-n_val], post])) if len(post) else pre[:-n_val]
+        return _ret(tr_pos.astype(int), pre[-n_val:].astype(int))
+
+    # 默认(诚实)口径: post-cutoff 不进梯度, 除非 pre 根本训不动
+    if len(pre) < max(min_train, 1):
+        return _post_cutoff_fallback()
+
+    es_off = (
+        n < min_n_for_es
+        or patience <= 0
+        or val_frac <= 0
+        or len(pre) < min_pre_cutoff
+        or len(pre) < min_val + min_train
+    )
+    if es_off:
+        tags.append(f"deep_ts_es_off_small_pre_cutoff(n_pre={len(pre)})")
+        return _ret(np.sort(pre).astype(int), None)
+
+    n_val = min(max(int(len(pre) * float(val_frac)), min_val), len(pre) - min_train)
+    if n_val < min_val:
+        tags.append(f"deep_ts_es_off_small_pre_cutoff(n_pre={len(pre)})")
+        return _ret(np.sort(pre).astype(int), None)
+    return _ret(np.sort(pre[:-n_val]).astype(int), pre[-n_val:].astype(int))
 
 
 class DeepTSExpert(BaseExpert):
@@ -173,10 +211,16 @@ class DeepTSExpert(BaseExpert):
         patience = int(p.get("early_stop_patience", 3))
         es_cutoff = fit_params.get("es_cutoff_time", None)
         include_post = bool(p.get("oof_include_post_cutoff", False))
-        tr_pos, va_pos = resolve_early_stop_split(
+        tr_pos, va_pos, es_tags = resolve_early_stop_split(
             X.index, val_frac, patience, es_cutoff_time=es_cutoff,
             include_post_cutoff_in_train=include_post,
+            return_tags=True,
         )
+        # 折内早停回退(尤其「post-cutoff 进了梯度」)必须可追踪 → stacking._sync_degraded
+        if es_tags:
+            self.degraded = True
+            self.degraded_reason = es_tags[0]
+            print(f"[deep_ts] WARN: {self.degraded_reason}", flush=True)
 
         # 标准化仅用训练段统计量(不含 early-stopping 验证段)
         tr_flat = Xw[tr_pos].reshape(-1, Xw.shape[-1])

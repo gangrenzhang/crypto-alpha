@@ -149,6 +149,7 @@ cryptoCurrency/
 | `fetch_ohlcv` | ccxt 分页拉取多年 K 线（单次 limit≈1000，循环至 `since`→今） |
 | `fetch_ohlcv_resilient` | 按交易所候选列表依次尝试；`for_tip=True` 时优先 `tip_exchange`/fallbacks |
 | `fetch_derivatives` | 资金费率 / OI / **可选清算**；分页 `_paginate_funding` / `_paginate_oi` / `_paginate_liquidations`；共用一个 exchange 实例，三路 **各自** try（一路失败不拖另一路）；清算主所空时可另试 `binance→binanceusdm`/`gate` 映射；成功且传入 `cfg` 时 **append** 事件库；失败→NaN 列 |
+| `_paginate_oi(..., timeframe=)` | **OI 拉取粒度跟随主周期**（`data.timeframe`，30m 主周期即请求 30m）；交易所不支持该粒度时自动回退 `1h` 并记住可用粒度，不中断主流程。硬编码 1h 时 30m 面板上每两根 bar 只有一个真实 OI 观测、另一根靠 ffill 复制，`oi_change` 在半数 bar 上退化为「陈旧值之差」 |
 | `ensure_liquidation_columns` | 旧缓存缺 `liq_long`/`liq_short` 时补 NaN 列（不改已有值） |
 | `data/liquidations.py` | 独立事件库 + `attach_liquidations_to_ohlcv` / `fetch_and_store_liquidations` / `import_liquidation_events_frame` |
 | `generate_synthetic_ohlcv` | GARCH 味 + regime 合成行情（CI / 离线）；含合成 funding/OI/**清算**列 |
@@ -347,7 +348,7 @@ PYTHONPATH=src python scripts/validate_news_alignment.py
 | `released_at` | actual 变为可得的时刻（UTC；讲话类常 = scheduled） |
 | `previous` / `forecast` / `actual` | 前值 / 预测 / 公布（**讲话可空，无利多/利空字段**） |
 | `print_kind` | `first_print` \| `current_vintage` \| `n/a`（首印 vs 现行修订） |
-| `schedule_source` | `bls_official` \| `forexfactory` \| `heuristic` \| `federalreserve` |
+| `schedule_source` | `bls_official` \| `forexfactory` \| `heuristic` \| `federalreserve` \| `federalreserve_historical` \| `centralbank_historical` |
 | `unit` / `source` / `event_id` | 单位、来源、稳定主键 |
 
 **如何构建完整库**
@@ -368,17 +369,23 @@ PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 | BLS 官方 schedule + Wayback | US | Employment / CPI **精确公布时刻** | `schedule_source=bls_official` |
 | BLS Public API | US | NFP / 失业率 / CPI 数值 | `print_kind=current_vintage` |
 | ALFRED `output_type=4` | US | 同上 **首印** | `print_kind=first_print`, `source=alfred_bls` |
-| Federal Reserve `calendar.json` | **仅 US** | FOMC / 讲话 / 纪要 | 无他国指标公布 |
+| Federal Reserve `calendar.json` | **仅 US** | FOMC / 讲话 / 纪要（前瞻） | 无他国指标公布 |
+| Fed 历史日程（手工） | US | 2023–2024 FOMC 会议/纪要/褐皮书 | `schedule_source=federalreserve_historical` |
+| 非美央行历史日程（手工） | EU/GB/JP | 2024–2026 ECB/BOE/BOJ 利率决议（2026 官方日程已核验） | `schedule_source=centralbank_historical` |
 | FF GitHub 归档 2020–2023 | **全球** | actual/forecast/previous | `forexfactory_hist` |
 | FF 本周 JSON | 全球近端 | 近一周中高影响 | 近端补强 |
 
 **首印 vs 修订**：特征默认 `prefer_first_print=true`，同公布窗优先 `first_print`；构建需 `FRED_API_KEY` 拉 ALFRED，否则 BLS 用现行修订版(warn)。
 
-**跨源去重**：`(country, canonical_name, release_hour)` 合并 BLS 与 FF 重复；优先级 `alfred_bls` > `bls` > `forexfactory_hist`。
+**跨源去重**：`(country, canonical_name, release_hour)` 合并 BLS 与 FF 重复；基础优先级 `alfred_bls` > `bls` > `forexfactory_hist`，并叠加**首印硬规则**（与特征层 `prefer_first_print` 语义对齐）：组内若存在 `first_print` 且带数值的行，则仅在 `first_print` 行中按得分选胜者——`current_vintage`（BLS 现行口径，其 forecast≡previous 无预测意义）不得覆盖 FF 首印；同为 `first_print` 时 ALFRED 仍高于 FF。canonical name 映射覆盖 FOMC 会议/纪要/褐皮书及 ECB/BOE/BOJ 利率决议，并统一 FF 命名差异（如 "Federal Funds Rate"/"FOMC Statement" → "FOMC Rate Decision"、"Main Refinancing Rate" → "ECB Rate Decision"、"Official Bank Rate" → "BOE Rate Decision"、"BOJ Monetary Policy Statement" → "BOJ Rate Decision"），避免同一决议多行并存。
 
-**美联储日历不含他国指标**：`calendar.json` 仅为联储/FOMC 日程；欧元区/英国等来自 **FF 历史归档**，非 Fed。
+**美联储日历不含他国指标**：`calendar.json` 仅为联储/FOMC 日程；欧元区/英国/日本央行利率决议来自**手工构建的历史日程**（2024–2026，仅利率决议，无 actual/forecast/previous），FF 归档仅覆盖 2020–2023。
 
-无官方日程时仍回退启发式(次月首周五就业 / 第二周三 CPI)，并标 `schedule_source=heuristic`。
+**BLS 日程硬编码补充**：直播月度表与 Wayback 快照均未覆盖的缺口（如 ref 2023-12、2025-06、2026-01/03/04 等 10 对 key/参考月）以人工核验的官方发布日期补齐（`schedule_source=bls_official`，`_BLS_SCHEDULE_SUPPLEMENT`），已存在的 key/参考月不覆盖。仍无官方日程时回退启发式(次月首周五就业 / 第二周三 CPI)，并标 `schedule_source=heuristic`。
+
+**FF 本周沉淀**：`ff_week` API 仅覆盖当周，每次全量重建会把上周及更早的 FF 周度数值整批丢弃（FF 归档 2023 年后停更，无法回补）。`build_and_save_macro_calendar` 在保存前将存量库中 `source=forexfactory_week` 行并入新构建结果统一去重（`merge_carryover_events`，幂等），实现周度数值逐周累积。
+
+**手工历史日程（已知局限）**：Fed 历史日程（2023–2024 FOMC 会议/纪要/褐皮书，各 8 场/年）与非美央行历史日程（2024–2026 ECB/BOE/BOJ 利率决议，各 8 场/年）为硬编码常量，`previous`/`forecast`/`actual` 全为 NaN → 仅贡献**注意力通道**（importance / hours_since / has_recent / hours_to_next），不贡献 **surprise 通道**（需 forecast+actual）。`scheduled_at == released_at`（利率决议发布时刻 ≈ 计划时刻），`macro_awaiting_release` 不触发。时区转换：ECB **14:15 CET**（2022-07-21 起由 13:45 改为 14:15，`Europe/Berlin`，自动 DST）、BOE 12:00 London（`Europe/London`，自动 DST）、BOJ 12:00 JST（`Asia/Tokyo`，无 DST）、Fed 14:00 ET（`America/New_York`，自动 DST）。
 
 **PIT 纪律（严谨）**
 
@@ -408,7 +415,9 @@ PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 
 **勿做**：把图中「利多/利空金银」标签原样当 BTC 方向；删掉 `events.parquet` 却保持 `as_feature=true`；用新闻 GDELT 标题冒充宏观日历；把 BLS naive forecast 当成调查中位数。
 
-**实现位置**：`data/macro_calendar.py` + `data/macro_calendar_sources.py` + `features/macro_calendar.py`；挂入 `prepare_dataset` / `decide_live` / `02_build_features.py`。
+**抓取安全（`data/http_curl.py`）**：BLS / Fed / ALFRED / ForexFactory 的数值会**直接变成特征与决策依据**，因此统一走 `curl_bytes`：① 默认**校验 TLS**；② 仅当失败原因明确是证书/TLS（curl 退出码 35/51/58/59/60/77/83 或 stderr 含 `certificate`/`SSL` 等）才用 `-k` 重试一次，并**按主机打印一次性告警**；③ 超时 / 404 / 代理不可达等**不做**不安全重试，原样抛出。`CRYPTO_ALPHA_ALLOW_INSECURE_TLS=0` 可完全禁止降级（证书失败即失败）。此前四个宏观源各自 `subprocess.run(["curl", "-k", ...])`，等于对这些源无条件接受任意证书——被中间人替换的 CPI/NFP 会静默进入训练与实盘且无任何痕迹。
+
+**实现位置**：`data/macro_calendar.py` + `data/macro_calendar_sources.py` + `data/http_curl.py` + `features/macro_calendar.py`；挂入 `prepare_dataset` / `decide_live` / `02_build_features.py`。
 
 ---
 
@@ -442,6 +451,10 @@ OHLCV(+衍生品: funding/OI/清算)
 
 **`oi_change` 墙钟**：回看 bar 数按主周期换算为约 **24h**（`24h / Δ_main`，30m→48、1h→24），避免主周期切换后「固定 24 根」语义漂移。
 
+**有界指标的中性值（`RSI_NEUTRAL` / `is_rsi_like` / `neutral_fill_value`）**：RSI 的「无信息」状态是 **50**，不是 0。
+- `_rsi` 在分子分母**同时**加 eps（`rs=(up+eps)/(down+eps)`）：平价段（`up=down=0`，合成/停牌/长时间 ffill 数据上可复现）得 `rs→1` → RSI=50。旧式 `up/(down+eps)` 在该段给出 `rs=0` → **RSI=0**，把「无涨跌」伪装成「极度超卖」。单边行情语义不变（只涨→≈100、只跌→≈0）。
+- 任何「整列缺失 / 冷启动」的填充都经 `neutral_fill_value(col)`：`rsi_*` 与 `tf*_rsi_*` 填 50，收益/动量/符号/共振类填 0。用于 `add_mtf_features` 的冷启动段与 `align_feature_schema` 的缺列补齐（后者虽随即 HOLD，但补值不该在任何路径上造出极端方向信号）。
+
 ### 5.2 多周期 MTF（方案 B，`features/mtf.py`）
 
 **不做**「每个周期各训一套模型」。主周期（默认 `30m`）负责事件、标注、训练索引；辅周期（`2h`/`4h`/`1d`）只提供**已收盘**高周期上下文。
@@ -453,6 +466,10 @@ OHLCV(+衍生品: funding/OI/清算)
 - 对齐：`merge_asof(backward)`，要求可用时刻 ≤ 决策时刻  
 
 辅特征示例：`tf4h_ret_*`、`tf4h_rsi_*`、`tf4h_vol_*`、`tf4h_macd_hist`、`tf4h_atr_norm`、`tf4h_trend`；可选 `mtf_confluence`。
+
+**冷启动填充按指标中性值**（不丢主样本）：对齐初期辅周期历史不足 → MTF 列填 `neutral_fill_value`（见 §5.1），即 `tf*_rsi_*` **填 50**、其余填 0。此前一律 `fillna(0.0)`，会在冷启动段与辅周期装配失败时凭空造出「辅周期极度超卖」的强方向信号。
+
+**共振主方向与主信号同口径**：`mtf_confluence` / `tf*_agree` 的主方向直接用 `close` 按 **`labeling.primary_lookback`** 算动量符号（`close` 缺失时退回 `mom_{lb}`）。旧实现按列名猜（`mom_{lb}` → `mom_28` → `mom_24` …），`features.windows` 一旦不含 `primary_lookback` 就会静默换成别的回看窗，共振特征与真正用于标注的 `side` 不同口径。
 
 配置：`mtf_enabled: true`，`mtf_lookbacks: [1,3,7]` 等。
 
@@ -503,6 +520,7 @@ OHLCV(+衍生品: funding/OI/清算)
 5. **无法满足垂直持有期的事件直接丢弃**（不再用最后一根 bar 截断打标）  
 6. `get_bins` → `ret`, `bin`, `side`, `t1`, `bars_held`  
 7. **训练↔实盘对齐**：`serve_require_cusum: true`（默认）时，`latest_decision` / `decide_live` 仅在 CUSUM 事件 bar 上开仓，否则 HOLD；全量回退时自动放宽  
+8. **`side=0` 事件直接不标注**：`side=0` 会使 `TP=SL=入场价`，同 bar 双触在悲观规则下判止损 → 凭空产出一条「必亏」的假标签。生产 `primary_signal` 把 0 映射为 ±1 故不可达，但实验用的 **confluence 门控**会产生 0，`get_events` 因此显式丢弃这类无可执行方向的事件  
 
 **实现性能（语义不变）**：`apply_pt_sl_on_t1` 将 high/low 对齐到 `close` 索引后用**整数下标**扫描（等价于 `high.loc[t0:t1].iloc[1:]`）；若某事件 t0/t1 不在索引上则回退 label 切片。触碰止盈/止损的持仓幅度由 `_barrier_log_returns(pt, sl, trgt)` 给出（**不接收 side**：多空幅度对称，方向只影响哪条价先触碰）。回归见 `tests/test_labeling_perf_parity.py`（与 pandas 慢路径对拍）。
 
@@ -510,7 +528,7 @@ OHLCV(+衍生品: funding/OI/清算)
 
 - 平均唯一性（重叠标签降权）× `|ret|` × 时间衰减  
 - `prepare_dataset` 中归一化到均值 1，传入专家与元学习器  
-- **实现**：`num_concurrent_events` 对闭区间 `[t0, t1]` 用差分数组 + `searchsorted`（与逐事件 `count.loc[t0:t1] += 1` 等价）；`average_uniqueness` 在同一套下标上对 `1/并发` 做段内 nanmean。畸形 `t1 < t0` 跳过（空区间，避免差分污染）。对拍测试同上。  
+- **实现**：`num_concurrent_events` 对闭区间 `[t0, t1]` 用差分数组 + `searchsorted`（与逐事件 `count.loc[t0:t1] += 1` 等价）；`average_uniqueness` 在同一套下标上对 `1/并发` 做段内 nanmean，段内均值用**前缀和 O(1)** 取（去掉 `O(事件数×持有期)` 的 Python 循环；代数等价，数值逐元素一致）。畸形 `t1 < t0` 跳过（空区间，避免差分污染）。对拍测试同上。  
 
 ---
 
@@ -522,6 +540,7 @@ OHLCV(+衍生品: funding/OI/清算)
 
 - **起点**：测试段标签最晚结束时刻 `max(t1)` **之后**的样本（AFML；不是折内最后一个样本下标）。  
 - **长度**：随后最多 `embargo` 根；不足则 **clamp 到样本末尾**（近末折不得整段跳过禁运）。  
+- **下限**（`resolve_embargo_size`，PurgedKFold 与 CPCV 共用）：`embargo = max(int(n×pct), 1) if pct>0 else 0`。旧式 `int(n×pct)` 截断会让小样本（如 `n=80, pct=0.01` → 0）在**配置写了禁运的情况下完全没有禁运**，且恰好发生在最容易过拟合的小样本上；大样本（`n×pct≥1`）行为不变。  
 
 用于：一层专家 OOF、二层元学习器 nested OOF、交叉拟合校准/保形。CPCV 各组禁运口径相同。
 
@@ -533,6 +552,8 @@ OHLCV(+衍生品: funding/OI/清算)
 - 组合内有效阈值：用**同一校准器**变换后的训练折 OOF（`cal.transform(oof_tr)`）作参考分，与测试折校准概率同尺度；**禁止**用原始 OOF 估 thr 再对校准后 `p` 开门控（尺度错配）。无校准器时才回退原始 OOF 并记 `cpcv_thr_reference_raw_oof(no_calibrator)`
 - 有效 OOF &lt; 40 时与部署相同：校准/保形同批回退，并写入 `degradations` / `caveats`（`deploy_cal_conformal_fallback_insample`）
 - OOF &lt; 20 或单类时跳过组合内校准：概率原样、`confident` 全 True，记 `cpcv_cal_conformal_skipped(...)`
+- 校准/保形**拟合抛异常**时（`cpcv_cal_conformal_error:*`）：该组合 `confident` 全置 **False**（不确定则弃权），与「保形跳过折弃权」同一纪律；此前置 True 等于在校准崩掉的组合上**放开全部开仓**，把最坏情形算成最乐观
+- 组合内滑点参考 `ref_trgt` 由**训练折**的 `trgt` 中位数冻结后传入 `backtest_events`（见 §11.1），不用被评估的测试折自己标定成本
 - 输出：组合夏普分布、**DSR**、**PBO**、`caveats`、`degradations`；摘要含 `conformal_time_split: true`  
 - DSR 用**经验偏度/峰度**（字段 `dsr_skew` / `dsr_kurt`）  
 - `dsr_n_trials` = `max(yaml, experiment_log 条数, 本轮配置数)`（`validation.log_experiments`）；日志在 `artifacts/experiment_log.jsonl`  
@@ -557,7 +578,8 @@ OHLCV(+衍生品: funding/OI/清算)
 | 训练 | `t0 < test_start` **且** `t1 < test_start − embargo_bars×Δ_main`；可选 `train_start` → 另要求 `t0 ≥ train_start` |
 | 净化带 | `t0` 在训练侧但 `t1` 越过 deadline → **两边都不进**，记 `walkforward_purged_label_overlap` |
 | 测试 | `test_start ≤ t0`；`test_end=null` 时用到面板末根（相对旧脚本固定截止日，覆盖更新） |
-| 样本权 | 默认全量 `prepare_dataset` 算权再切片；`recompute_sample_weight_on_split: true` 时仅训练子集重算（同 `combined_sample_weights`） |
+| 样本权 | **默认 `recompute_sample_weight_on_split: true`**：训练掩码确定后**仅用训练事件**重算 `uniqueness×\|ret\|×time_decay`（同 `combined_sample_weights`）。`prepare_dataset` 的权重在**全量事件**上归一（`w/w.mean()`、时间衰减按全样本秩），归一化常数含测试窗 `\|ret\|` 与事件个数——直接切片会把这点未来信息带进训练权重（量级小、近似全局缩放，但违反「训练只用训练窗信息」，而 WF 是唯一的真外推基线，不该有例外）。设 `false` 可复现旧口径，仅作对照 |
+| 滑点参考 | `slip_ref = median(trgt \| 训练窗)` 冻结后传入 `backtest_events(ref_trgt=…)`，与 `decide`/`serve` 同一个数；摘要含 `slip_ref_trgt` |
 | 阈值 | 仅在**全部**训练窗有限 OOF 上 `freeze_threshold_on_reference`（deploy 同形）；测试窗只告警不改 thr |
 | 出分 | 训练窗 `fit` → `fit_deploy_calibrator_and_conformal` → 测试窗 `predict→cal→conf→backtest` |
 | 数据 | 默认冷缓存（`for_decide=False`）；CLI 关 tip REST，避免「当下 tip」污染研究基线 |
@@ -602,6 +624,7 @@ OHLCV(+衍生品: funding/OI/清算)
 - `BCEWithLogitsLoss` 加权（反传与日志均为 `sum(loss·w)/sum(w)`）；**时间切分** `val_frac` + `early_stop_patience`  
 - **早停因果性**：全量部署 fit 用时间序**末尾** `val_frac`（最近样本）。Purged OOF / CPCV 折内由 `stacking` / `evaluate` 传入 `es_cutoff_time=测试折最早时刻`：验证集**只**从 cutoff **之前**的训练样本中取末尾 `val_frac`  
 - **OOF 训练样本（D2）**：默认 `experts.deep_ts.oof_include_post_cutoff: false` — 折内训练**不含** post-cutoff（防 lookback 吃到测试期行情导致 OOF 乐观）；设 `true` 仅作消融对照。部署全量 fit（无 cutoff）不受该开关影响  
+- **早停回退分级（`resolve_early_stop_split`，默认口径下）**：① pre 段够训且够切 val → 正常早停，梯度与验证都只用 pre；② pre 够训但切不出 val（`len(pre) < min_val+min_train`）→ **仍只训 pre** + 关早停，记 `deep_ts_es_off_small_pre_cutoff(n_pre=…)`；③ pre 根本训不动（如首折训练集整体位于测试折之后）→ 唯一允许含 post 的出口，记 `deep_ts_train_includes_post_cutoff(n_pre=…,n_post=…)`。旧实现在 ②③ 都直接返回全样本，等于**静默**把 post-cutoff 喂进梯度，使 `oof_include_post_cutoff=false` 的承诺在这些折上失效且不留痕。标签经 `fit` 汇入专家 `degraded_reason` → `degradations`  
 - 特征标准化 **仅用训练段**统计量（不含 early-stopping 验证段）  
 - `device: auto`；无 torch → 探测阶段跳过  
 
@@ -650,7 +673,7 @@ OHLCV(+衍生品: funding/OI/清算)
 | `cross_fitted_calibrated_and_conformal` | **主路径评估/回测**：同一 Purged 折内联合产出校准概率 + 保形旗标（先 `fit(cal\|train)` → 再 `fit(conf\|cal(train))` → 变换 test）。消除「先 CF 校准、再对结果 CF 保形」的二阶依赖 |
 | `cross_fitted_calibrated` / `cross_fitted_conformal_flags` | 单层 API（兼容/诊断）；**勿**串联用于主路径回测 |
 | `fit_deploy_calibrator_and_conformal` | 部署：**时间切分**，较早 OOF 拟合校准器、较晚 `conformal_frac` 拟合保形器（同基且独立分割）。返回 `(cal, conf, tags)`；**CPCV 组合内**亦复用。`n&lt;40` 同批回退时 tags 含 `deploy_cal_conformal_fallback_insample` |
-| `ConformalBinary` | 预测集恰好一类才 `confident`；可选 `min_margin`：另要求 `|p-0.5|≥margin`（默认配置 0.05；缺省/0=旧行为） |
+| `ConformalBinary` | 预测集恰好一类才 `confident`；可选 `min_margin`：另要求 `\|p-0.5\|≥margin`（默认配置 0.05；缺省/0=旧行为） |
 
 **校准基 + 独立保形集**：实盘 `decide` 用部署 `cal`；保形在 `cal` 变换后的**持出** OOF 上拟合。主路径**研究回测**用**联合交叉拟合**的 `oof_cal` + `confident`；另输出**部署口径回测**（`predict→cal.transform→conf`，与 `decide` 同形）。CPCV 组合内用训练折 OOF 的时间切分校准/保形。
 
@@ -665,6 +688,8 @@ OHLCV(+衍生品: funding/OI/清算)
 **勿**用 research OOF 成交数直接当 live 开仓频率；**勿**把研究 thr 用于 decide。
 
 联合交叉拟合样本过少、退回同批 OOF 校准+保形时，**warn + 写入 `degradations`**（`calib_cross_fit_fallback_insample`）；某折因单类/过少跳过保形时记 `conformal_cf_fold_skipped`，且该折测试样本 **`confident=False`**（不确定则弃权，不再默认 True）。校准健康：`assess_calibration_pass_health`（过线率灌水、唯一台阶过少）写入 `degradations`。
+
+**单类标签防御**：`ProbabilityCalibrator.fit` 在 `method≠isotonic` 且标签只有一类时回退 isotonic（退化为常数映射，语义明确：该折全 0/全 1 → 常数概率），记 `cal_single_class_fallback_isotonic` 并经 `cross_fitted_calibrated_and_conformal` 汇入 tags。此前 `LogisticRegression` 会直接抛 `ValueError`，让整条训练 / 该 CPCV 组合随之崩掉。
 
 **双阈值冻结（方案 B）**：研究与部署校准器尺度不同，**禁止共用一把 thr**。
 
@@ -714,10 +739,13 @@ OHLCV(+衍生品: funding/OI/清算)
 - 单笔 ≤ `max_position_pct`，合计 ≤ `max_gross_exposure`  
 - 可用资金不足（&lt; `min_position_pct`）→ 跳过（`n_skipped_capacity`）  
 - **加性记账**：`Δequity = entry_equity × pnl_frac`，避免重叠仓乘积复利虚高；`pnl` 列为相对入场权益的分数贡献，`entry_equity` 列供对账  
+- **敞口按名义额记账**：每仓名义 `= size × 入场时权益`，累加到 `locked_notional`；可用名义 `= max_gross × 当前盯市权益 − locked_notional`，再折回「相对入场权益」的 `size`。旧实现直接累加 `size`（各自相对**不同**的入场权益），权益漂移后 `Σsize` 既不是当下杠杆也不是入场杠杆，会随净值涨跌系统性放松/收紧闸门；分母取**盯市**权益（与 MDD / 日内熔断同基准），浮亏未了结时真实保证金已缩水，用已实现权益当分母会在回撤中偏松放仓  
 - 可选 `confident` 掩码：保形弃权与实盘 HOLD 对齐  
 - 成本：开平各一次 fee+slip；资金费 ≈ `funding_bps_per_bar × bars_held`（默认资金费为 0）  
-- **波动滑点**（`slippage_vol_scale: true`，默认开）：`slip = base × clip(trgt/median(trgt), 1, cap)`，其中 `trgt` 为事件相对 ATR。CUSUM 偏好高波动窗时抬高成本，避免常数 slip 低估；`decide` 用训练期 `slip_ref_trgt`（事件 trgt 中位数）同形缩放。  
+- **成本单一来源**：`_cost(size, bars, roundtrip_cost, funding)` 收的 `roundtrip_cost` 必须来自 `resolve_roundtrip_cost`——与 Kelly 压仓、`decide` 用的是**同一个数**（每仓在开仓时把 `rt_cost` 记进持仓，出场按它扣）。旧实现在此处硬算 `2*(fee+slip)`，只在 `risk.roundtrip_cost_frac` 为 `null`（默认）时与 Kelly 口径巧合一致；一旦显式配置该值，就会出现「按高成本压缩仓位、按低成本扣 PnL」的偏乐观组合  
+- **波动滑点**（`slippage_vol_scale: true`，默认开）：`slip = base × clip(trgt/slip_ref, 1, cap)`，其中 `trgt` 为事件相对 ATR。CUSUM 偏好高波动窗时抬高成本，避免常数 slip 低估。参考值 `slip_ref` 支持**注入**（`backtest_events(..., ref_trgt=…)`）：`train_and_validate` / WF / CPCV 均传入**训练窗**冻结的中位数，与 `decide`/`serve` 的 `slip_ref_trgt` 同一个数；不传才回退本次样本中位数（等于让被评估区间自己标定成本）。⚠️ 修正一处**变量遮蔽**：组合路径内循环的盯市权益参考曾与波动参考同名 `ref`，导致 `trgt/权益(≈1.0)` 恒被 clip 成 1 → **组合模式下波动放大滑点静默失效**（成本被系统性低估）；现分别为 `slip_ref` 与 `mark_ref`  
 - **盯市（mark-to-market）**：传入 `prices` 且含 `side` 时，按入场权益计浮动盈亏，供 MDD / 日内熔断。浮动与标签/已实现**同形**：`size × side × (P_t/P_entry − 1)`（入场名义简单收益）；**禁止** `(P_t/P_entry)^side − 1`（空头几何口径会偏离）。浮动不按障碍价封顶、不含开平成本（指示性；成本仅出场扣）。  
+- **盯市性能**：把求和拆成代数恒等式 `Σwᵢ(P/P₀ᵢ−1) = P·Σ(wᵢ/P₀ᵢ) − Σwᵢ`，两个和在开/平仓时增量维护 → 每个时间线节点 **O(1)**（原为 O(并发仓数)，2N 个节点各遍历一次持仓，`vertical_barrier_bars=48` 的 CUSUM 事件流常有数十仓并发）。数值同形，回归对拍见 §18。  
 
 ### 11.2 独立复利（`portfolio_mode: false`）
 
@@ -732,6 +760,8 @@ OHLCV(+衍生品: funding/OI/清算)
 | `sharpe_equity_mtm` / `sharpe_equity_mtm_annualized` | 盯市权益曲线同上；无盯市时与已实现字段相同 | 与 MDD 所用曲线一致时更贴近浮盈回撤 |
 
 另有：`max_drawdown`（盯市优先）、`max_drawdown_realized`、`avg_uniqueness`、`n_trades_effective`、Calmar、胜率；以及 `deflated_sharpe_ratio`、`probability_of_backtest_overfitting`。
+
+`max_drawdown` 对 `peak ≤ 0`（权益被打穿到 0/负的极端路径）把该段回撤记为 **-1（全损）**，而不是让 `(eq−peak)/peak` 产生 `inf`/`nan` 静默污染 metrics 与 Calmar。
 
 DSR：方差项在开方前 **clamp ≥ 0**（极端偏度/夏普下公式括号可为负）；clamp 后标准差为 0 则返回 `nan`，避免污染报告。DSR 的 observed SR 仍取自每笔口径（与 CPCV `combo_sharpes` 一致），**不**自动切换为权益夏普。
 
@@ -758,9 +788,11 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 
 `latest_decision` / `decide_live`：最新特征完整 bar + 保形弃权 +（默认）CUSUM 事件门控；每轮刷新 LLM `set_news`（含 `decision_delta`）；传入 `fee`/`slip` 供成本回退。**不使用**集成剪枝的 `prune_eval_mask_`（该掩码仅约束研究报表/回测窗）。
 
-**特征 schema 护栏（实盘）**：`align_feature_schema` 将训练期 `feature_cols` 中缺失列补 `0.0`（防 KeyError，与 MTF 冷启动填 0 语义一致），但若存在缺失列则 **`hold_for_schema_mismatch` 强制 HOLD**——记 `degradations`（`feature_schema_mismatch(...)`），**不调用**集成/校准推理，避免辅周期偶发失败时在错误特征分布上开仓。`decide_live` 与 `latest_decision` 共用此纪律。
+**特征 schema 护栏（实盘）**：`align_feature_schema` 将训练期 `feature_cols` 中缺失列补**中性值**（`neutral_fill_value`：`rsi_*` → 50，其余 → 0；防 KeyError，与 MTF 冷启动同口径），但若存在缺失列则 **`hold_for_schema_mismatch` 强制 HOLD**——记 `degradations`（`feature_schema_mismatch(...)`），**不调用**集成/校准推理，避免辅周期偶发失败时在错误特征分布上开仓。`decide_live` 与 `latest_decision` 共用此纪律。
 
 **降级环境护栏（实盘）**：`diagnostics/env_guard.py` 仅对**本次推理数据面**标签（合成降级、tip 跨所、新闻/宏观稀疏或空库、衍生品/清算不可用或 sparse、schema mismatch 等）累计严重度；训练期校准/剪枝/nested-OOF 等质量标签**不计分**（否则会永久 HOLD）。`risk.env_degradation_hold_score`（默认 50，≤0 关闭）达标时强制 `low_confidence_environment` HOLD。研究回测不套用。决策 JSON 仍可展示全部 degradations。
+
+**面板时效标注**：`latest_decision` 用的最后一根 bar 若落后墙钟超过 `data.max_closed_bar_lag` 根，追加 `decision_panel_stale(lag_bars=…>…)` 到 `degradations`（`_stale_panel_tag`，只标注、**不改任何数值**）。`04` 末尾的「最新决策」默认读冷缓存，此前无从卡面看出这条信号用的是几天前的 bar；`06_decide`/`serve` 路径另有 `require_fresh_for_decide` fail-fast，两者互补。
 
 **决策可复盘快照**：`latest_decision` / `decide_live` 写入 `audit`（`config_fingerprint`、`data_window_hash`、特征列哈希、冻结阈值、degradations 等），便于事后核对「那次信号用了哪段数据/哪套旋钮」，无需落盘完整权重。
 
@@ -770,7 +802,8 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 
 | 能力 | 实现 |
 |------|------|
-| 实时循环 | `DecisionService.run_forever`：轮询 `poll_seconds`，每 `retrain_every_cycles` 重训 |
+| 实时循环 | `DecisionService.run_forever`：轮询 `poll_seconds`，每 `retrain_every_cycles` 重训。**异常隔离**：单币种 `decide_live` 失败只记该币错误并继续其它币；单轮 `run_once` 或周期性 `train_all` 抛错只打日志并**沿用上一版模型**继续下一轮（首次 `train_all` 仍 fail-fast——没模型不该假装在跑）。长驻服务不因一次网络抖动/单币数据缺口整体退出 |
+| 无有效特征行 | `decide_live` 返回**结构化 HOLD**（含 `reason` 与 `degradations`），不再返回 `None`。返回 `None` 会让调用方静默 `continue`：既不播报也不落审计，「没决策」与「决策是不开仓」在日志上无法区分 |
 | 播报 | Telegram（env token/chat）或控制台；HOLD 按 `reason` 文案区分（CUSUM / schema / 保形弃权 / 低于阈值等），**不一律写「低于阈值」**；同信号去重 |
 | 特征 schema | 重建特征后若缺训练列 → 补 0 + **强制 HOLD**（见 §12）；不静默推理 |
 | HTML 面板 | `10_run_all` → `artifacts/dashboard.html` + `run_all_summary.json`；页首 **研究口径说明**；净值曲线默认 **盯市 `equity_mtm`**（与最大回撤 KPI 对齐）；逐币种渲染 **Degradations**；伪 OOF 专家不标 best AUC |
@@ -790,11 +823,11 @@ decide(prob, side, entry, atr, risk_cfg, pt_sl=..., fee=..., slip=...)
 | `project` | seed=42 | 数据/产物目录 |
 | `data` | `use_synthetic=false`，`allow_synthetic_fallback=false`，**30m**+2h/4h/1d，`max_closed_bar_lag=4`，`tip_exchange=gate`，`fetch_liquidations=false`（有清算全史后再开），`liquidations.auto_attach/fetch_on_tip=true`，`exchanges=[gate]` | 真实优先；降级可追踪；衍生品失败 → 特征填 0 + degradations；清算关时列 NaN→特征 0 + unavailable |
 | `news` | `use_synthetic=false`，**`as_feature=false`**（未回填历史前勿开），`use_history=false`，`auto_build_panel=true`，`history.start=2020-01-01`，`providers=[gdelt,cryptocompare]`，`window_days=2`，`rate_limit_sec=90`，`gdelt_429_cooldown_sec=300`，`min_coverage_warn=0.05` | 见 §4.3.1；GDELT 全进程闸门+429 熔断；满额切分 + failed/pending/truncated 续跑补洞 |
-| `macro_calendar` | **`as_feature=true`**，`prefer_first_print=true`，`store_dir=data/macro_calendar`，`buffer_minutes=5`，`feature_ttl_hours=72`，`min_importance=3` | §4.3.2；BLS 官方日程+ALFRED 首印+FF 全球历史；Fed 仅 US |
+| `macro_calendar` | **`as_feature=true`**，`prefer_first_print=true`，`store_dir=data/macro_calendar`，`buffer_minutes=5`，`feature_ttl_hours=72`，`min_importance=3` | §4.3.2；BLS 官方日程(含硬编码补充)+ALFRED 首印+FF 全球历史+FF 本周沉淀+Fed/非美央行手工历史日程(至 2026)；Fed 仅 US |
 | `features` | FFD d=0.4，`mtf_enabled=true` | MTF 方案 B |
 | `labeling` | ATR 障碍，`serve_require_cusum=true` | 与 decide / 实盘事件对齐；`barrier_vol=rv` 时 Config.load 告警（decide 仍用 atr） |
 | `validation` | N=6,k=2，embargo=1%，`dsr_n_trials=50`，`log_experiments=true`；**`walkforward`** 见下 | 禁运从 `max(t1)` 起算；CPCV 组合评估；WF single-cut 真外推基线 |
-| `validation.walkforward` | `enabled_in_run_all=false`，`require_in_run_all=false`，`test_start=2022-09-14`，`test_end=null`，`embargo_bars=0`，min 事件 200/50 | 联跑/发布闸；`test_end=null`=面板末；`require_in_run_all` 未跑 WF 则 fail-fast |
+| `validation.walkforward` | `enabled_in_run_all=false`，`require_in_run_all=false`，`test_start=2022-09-14`，`test_end=null`，`embargo_bars=0`，**`recompute_sample_weight_on_split=true`**，min 事件 200/50 | 联跑/发布闸；`test_end=null`=面板末；`require_in_run_all` 未跑 WF 则 fail-fast；权重仅用训练子集重算（见 §7.3） |
 | `experts` | **enabled=[gbdt, deep_ts]** | tsfm/llm 可选 |
 | `experts.deep_ts` | `oof_include_post_cutoff=false` | D2：折内默认禁 post-cutoff 训练 |
 | `ensemble` | logistic，`min_expert_auc=0.5`，`exclude_pseudo_oof_from_meta=true` | 前半选型 / 后半报告回测；伪 OOF 不进 meta |
@@ -1024,8 +1057,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | `test_hardening_guards.py` | 环境 HOLD、实验日志抬 DSR、波动滑点、单专家报告后半窗、保形跳过→不自信、oi 墙钟、决策 audit |
 | `test_gdelt_backfill_coverage.py` | GDELT 满额切分覆盖窗前半；HTTP 429 长冷却 |
 | `test_macro_calendar.py` | surprise 分流；TTL；awaiting；`as_feature` 读盘；PIT |
-| `test_macro_calendar_rigor.py` | BLS 日程 HTML 解析；跨源去重；首印过滤 |
+| `test_macro_calendar_rigor.py` | BLS 日程 HTML 解析；跨源去重（首印硬规则/canonical 别名）；首印过滤；BLS 补充表；ECB 14:15 CET 与 2026 央行日程；ff_week 沉淀合并 |
 | `test_calibration_primary_gates.py` | `method=auto`→sigmoid；显式 isotonic 不切换；confluence 门控 |
+| `test_review_fixes_2608.py` | 逐行复审修正项的语义不变量：**RSI 平价=50**、`neutral_fill_value` 覆盖主/辅面板、**MTF 冷启动 RSI 填 50**、`align_feature_schema` 中性补值、**共振主方向随 `primary_lookback`**、**`side=0` 事件被丢弃**、`average_uniqueness` 前缀和与慢路径对拍、**embargo 下限 ≥1**、**DeepTS 早停三级回退不静默含 post-cutoff**、**校准器单类回退**、**`_cost` 用解析后的 roundtrip cost**、**滑点参考可冻结注入**、**名义敞口按盯市权益封顶**、`max_drawdown` 非正 peak、盯市增量与重算一致、**curl 先校验 TLS 且仅证书失败才降级**、**OI 拉取跟随主周期并回退 1h**、面板陈旧标签 |
 
 ### 18.1 闭环完整性诊断（`diagnostics/integrity.py`）
 
@@ -1037,16 +1071,16 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 |----|------|------|
 | 标注 oracle | 人工构造价格 → 三重障碍唯一确定结果（止盈/止损/同 bar 平局判损/垂直到期/做空对称）；**现已纳入在线 `12_audit`**（此前仅 pytest） | 标注函数方向、平局、到期口径 |
 | CV 不变量 | PurgedKFold / CPCV 训练×测试标签区间**零重叠**、禁运有间隔 | 净化/禁运是否真生效 |
-| 空对照(AUC) | 纯随机游走喂满全链路 → OOF AUC ≈ 0.5 | 特征/标注是否制造假信号 |
-| 空对照(MTF) | 同上但 **mtf_enabled=true**（辅周期 resample；新闻仍关）→ AUC≈0.5 且含 MTF 列 | 生产默认特征面是否在无信号下造假 |
+| 空对照(AUC) | 纯随机游走喂满全链路 → OOF AUC ≈ 0.5；**显式关闭 `macro_calendar.as_feature`** 使基线不依赖本地宏观事件库（否则同一份代码在有/无 `events.parquet` 的机器上闸门口径不同，无法复现） | 特征/标注是否制造假信号 |
+| 空对照(生产特征面) | 同上但 **MTF + `macro_calendar.as_feature` 全开**（辅周期 resample；新闻仍关）→ AUC≈0.5 且含 MTF 列 | 生产默认特征面是否在无信号下造假 |
 | 空对照(收益) | **多种子**随机游走 → 回测收益**均值 ≤ 阈值**（成本下应 ≈0/为负；单次幸运不计） | 回测/决策层是否在无信号下凭空造利润 |
 | 置换基线 | 打乱标签重训 → AUC 塌回 ≈ 0.5 | 堆叠/校准/回测是否偷看测试集 |
 | 正对照 | "仅含过去信息即可预测"的构造数据 → AUC 明显 > 0.5 | 排除"永远随机"的假阴性 |
 | 时移不变 | 整体平移时间戳 → OOF 逐位相等 | 逻辑是否误依赖绝对时间 |
-| 回测对账 | 末端权益 = 逐笔 pnl 累计复利；并发敞口 ≤ 上限；成本单调；组合 ≤ 独立复利 | 回测记账/资金占用/成本口径 |
+| 回测对账 | 末端权益 = 逐笔 pnl 累计复利；**并发名义敞口**（`max_concurrent_gross`：`Σ size×entry_equity` 相对当时权益参考）≤ 上限；成本单调；组合 ≤ 独立复利 | 回测记账/资金占用/成本口径 |
 | 复现性 | 同 seed 两次训练 OOF 完全一致 | 随机性是否被固定 |
 
-用法：正式训练前先 `python scripts/12_audit.py`，全 PASS 再跑 `04_train_and_backtest.py`。除精简面空对照外，另含 **MTF 开启**空对照（新闻仍关，对齐现行 `as_feature=false`）；项数随检查扩展，以脚本输出为准。
+用法：正式训练前先 `python scripts/12_audit.py`，全 PASS 再跑 `04_train_and_backtest.py`。除精简面空对照外，另含 **MTF + 宏观日历开启**的生产特征面空对照（新闻仍关，对齐现行 `news.as_feature=false`）；项数随检查扩展，以脚本输出为准。
 
 ---
 
@@ -1062,13 +1096,19 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - [x] **研究/部署双回测 + 双阈值冻结**（`prob_threshold_research`=CF；`prob_threshold_effective`=deploy cal×raw OOF ref，与 decide/WF 同形）；参考窗时间半段回退；灌过线可抬 thr；CPCV thr 用 `cal.transform(train OOF)`；看板并列双成交/双阈值；`conformal_min_margin`；校准灌过线/低唯一台阶 degradations  
 - [x] 三重障碍 high/low、**下一根扫描**（t0 当根极值不触发）；**多空**加性障碍与 `decide` 对齐；`ret=log1p(仓位简单收益)` 与回测 `expm1` 互逆；CUSUM 因果阈值  
 - [x] 建模特征尺度无关；训练/实盘 CUSUM 事件对齐  
-- [x] 实盘特征 schema：缺训练列 → 补 0 + **强制 HOLD**（不推理开仓）  
+- [x] 实盘特征 schema：缺训练列 → 补**中性值** + **强制 HOLD**（不推理开仓）  
+- [x] **WF 样本权重默认仅用训练子集重算**（`recompute_sample_weight_on_split=true`）：全量归一化常数含测试窗 `|ret|`/事件数，不得切片带入  
+- [x] **禁运下限 ≥1 根**（`resolve_embargo_size`）：小样本上 `int(n×pct)` 截断不得让禁运静默失效  
+- [x] **回测滑点参考冻结自训练窗**（`backtest_events(ref_trgt=…)`，研究/WF/CPCV 三路一致），不用被评估区间自己标定成本  
+- [x] MTF 共振主方向严格取 `labeling.primary_lookback`（不按列名猜回看窗）  
+- [x] `side=0` 事件不进标注（避免 TP=SL=入场价的「必亏」假标签）  
 - [x] `synthetic_fallback` 主行情时辅周期强制从 main 重采样（禁止混真实高周期）  
-- [x] DeepTS 折内早停：`es_cutoff_time` 限制 val 不得用测试折之后样本；**默认禁 post-cutoff 训练**（`oof_include_post_cutoff=false`）  
-- [x] 校准 `method=auto`：唯一台阶过少回退 sigmoid；单类阻塞回退；未知 method 拒绝  
+- [x] DeepTS 折内早停：`es_cutoff_time` 限制 val 不得用测试折之后样本；**默认禁 post-cutoff 训练**（`oof_include_post_cutoff=false`）；pre 段切不出 val 时**关早停也只训 pre**，唯一含 post 的出口必须留 `deep_ts_train_includes_post_cutoff` 标签  
+- [x] 校准 `method=auto`：唯一台阶过少回退 sigmoid；单类阻塞回退（`cal_single_class_fallback_isotonic`，不再抛错炸折）；未知 method 拒绝  
+- [x] CPCV 组合内校准/保形**拟合异常 → 全组合弃权**（`confident=False`），不确定不开仓  
 - [x] `backtest_deploy.not_for_go_live` + 看板「部署·偏乐观·勿拍板」  
 - [x] 新闻历史回填：满额切分、failed/pending/truncated 续跑补洞、UTC 秒去重键、PIT 校验脚本（§4.3.1；语料仍受 GDELT 429，corpus 待续跑）
-- [x] 宏观日历：BLS 官方日程+ALFRED 首印+FF 全球历史(~6k) + 跨源去重 + surprise 分流 + `as_feature=true`（§4.3.2）
+- [x] 宏观日历：BLS 官方日程(含硬编码补充)+ALFRED 首印+FF 全球历史+FF 本周沉淀+Fed/非美央行手工历史日程(至 2026，ECB 14:15 CET)(~6.3k) + 跨源去重(首印硬规则) + surprise 分流 + `as_feature=true`（§4.3.2）
 
 **防过拟合**
 
@@ -1081,7 +1121,10 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 
 **回测真实性**
 
-- [x] 默认组合级 + **入场名义加性记账**  
+- [x] 默认组合级 + **入场名义加性记账**；并发上限按**名义额 / 盯市权益**封顶（非 `Σsize`）  
+- [x] 成本单一来源：`_cost` 用 `resolve_roundtrip_cost` 的同一个数（显式配 `roundtrip_cost_frac` 时不再「高成本压仓、低成本扣 PnL」）  
+- [x] 波动放大滑点在组合模式下确实生效（修正 `slip_ref` 被盯市权益 `ref` 遮蔽的 bug）  
+- [x] `max_drawdown` 在 `peak≤0` 时记 -1，不产生 `inf/nan` 污染 Calmar  
 - [x] 回测接入保形 `confident` 掩码（全 False → 零开仓有测）  
 - [x] 标签与 decide 共用 ATR × `pt_sl`（多空加性；`ret`↔`expm1` 入场名义；Kelly 成本 `null→2*(fee+slip)` 回测/实盘一致）  
 - [x] 盯市 MDD/日内熔断（浮动=`size×side×(P_t/P_entry−1)`，与标签/已实现同形）；每笔年化夏普按唯一性折算；**并行**权益/盯市权益夏普  
@@ -1115,6 +1158,8 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 真实数据依赖网络 | 失败可降级，但 **`data_source`/看板会标「合成(降级)」**；可关 `allow_synthetic_fallback`；缺新闻面板时 `auto_build_panel` 也可能联网 | ★★★ 预拉缓存 + 新闻历史库 |
 | 决策 tip 跨所拼接 | 历史常为 Binance Vision，tip 可能来自 Gate 等；重叠 bar `keep=last`，接缝处可有微观价差；已标 `ohlcv_tip_exchange_fallback` | ★★ 同所 tip 或接缝平滑/告警阈值 |
 | tip 衍生品 | 默认不重拉；**状态量** funding/OI ffill；**流量**清算不 ffill（新 tip NaN→特征 0） | ★ 可选 `fetch_derivatives_on_tip` |
+| OI 历史粒度 | 已跟随主周期请求（30m 主周期→30m OI）；交易所不支持该粒度时回退 1h，此时 30m 面板上仍有半数 bar 为 ffill 复制值 | ★ 换支持细粒度 OI 的源，或把 `oi_change` 明确按可用粒度计算 |
+| 宏观源 TLS | 默认校验证书；证书失败才 `-k` 且**打印告警**；`CRYPTO_ALPHA_ALLOW_INSECURE_TLS=0` 可禁降级 | ★ 修好本机证书链后设 0，彻底关掉降级口 |
 | 清算历史覆盖 | **现状缺口**：管道已通，但公开源（Gate tip / Binance REST 停维护 / UM Vision 空）**盖不住**典型 train/test 窗；回填 `ok` 常= tip 入库；WF 多见 `derivatives_liquidations_unavailable`；特征填 0 ≠ 已学清算 alpha。HF/GitHub 无多年 Binance USDT 全库 | ★★★ 付费聚合/CSV import（历史 WF）+ Binance WS 常驻（同所未来） |
 | 微观结构 | funding/OI/清算已分页接入；失败填 0；无 CVD/链上 | ★★ CVD / 链上 |
 | `06_decide` 每次全量重训 | 决策 JSON 已含 audit 指纹；仍无模型权重落盘，延迟高 | ★★ 持久化部署模型（serve 路径已训一次复用） |
@@ -1136,7 +1181,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | 新闻空特征研究效度 | 默认 `require_min_coverage=false` 仅 warn；多年回测请 `use_history=true` 或打开 fail-fast | ★★ 严肃研究打开 `require_min_coverage` |
 | `barrier_vol=rv` | 标签可用 RV；decide 仍用 `atr_14`；`Config.load` 告警 | ★ 实盘保持 `atr` |
 | 障碍缺口 | 触达按理论挂单价记账，跳空时相对可交易 PnL 偏乐观 | ★ 按实际穿越价记账（可选） |
-| 实盘特征 schema | 缺列已强制 HOLD + `degradations`；不在坏分布上推理 | —（已落地） |
+| 实盘特征 schema | 缺列已强制 HOLD + `degradations`（补值为中性值）；不在坏分布上推理 | —（已落地） |
+| 长驻服务健壮性 | 单币异常 / 单轮异常 / 周期重训异常均隔离，沿用上一版模型继续；首次 `train_all` 仍 fail-fast | ★ 加连续失败计数与告警上报 |
+| `04` 最新决策时效 | 训练读冷缓存时决策卡追加 `decision_panel_stale(...)`；数值不变 | —（已落地；要新鲜请走 `06_decide`/`serve`） |
 | 仓位 / 执行 | Kelly 启发式；`null` 成本已与回测统一；**仅 `close_fill` 已实现**（未实现取值报错） | ★ 实现后再开放 `next_open` |
 | 执行 | 只决策播报，不下单 | 刻意为之 |
 
@@ -1177,6 +1224,12 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | walk-forward / `run_walkforward` | single-cut 真外推基线：仅过去窗拟合 → 未来窗部署门控；`split_kind=single_cut_holdout` |
 | prob_threshold_effective（WF） | 在**全部**训练窗 OOF 上冻结（与联跑内半窗参考可有数值差；对测试窗无泄漏） |
 | walkforward_purged_label_overlap | t0 在测试起点前但 t1 越过 label_deadline 的事件，训练/测试都不收录 |
+| `slip_ref_trgt` / `ref_trgt` | 波动放大滑点的**参考波动**（训练窗事件 `trgt` 中位数），研究/WF/CPCV 与 `decide`/`serve` 共用同一个数 |
+| `locked_notional` | 组合回测中未平仓的**名义额**合计（`Σ size×entry_equity`），并发上限按它与盯市权益比较 |
+| `neutral_fill_value` | 整列缺失/冷启动时的中性填充：`rsi_*`→50、其余→0（`RSI_NEUTRAL` / `is_rsi_like`） |
+| `decision_panel_stale` | 决策所用 bar 落后墙钟超过 `max_closed_bar_lag` 根的时效标签（只标注不改数值） |
+| `deep_ts_es_off_small_pre_cutoff` / `deep_ts_train_includes_post_cutoff` | DeepTS 早停回退标签：② 只训 pre 但关早停；③ pre 训不动才含 post（唯一允许，必须留痕） |
+| `cal_single_class_fallback_isotonic` | 单类标签下 Platt 回退 isotonic 常数映射（此前直接抛错） |
 
 ---
 

@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import time
+import traceback
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 
 from ..config import Config
 from ..data import load_symbol_data, refresh_market_data
@@ -92,7 +94,7 @@ class DecisionService:
             self.train(s)
 
     # ---------------- 实时推理 ----------------
-    def decide_live(self, symbol: str) -> dict | None:
+    def decide_live(self, symbol: str) -> dict:
         bundle = self.models[symbol]
         fcols = bundle.feature_cols
 
@@ -172,8 +174,32 @@ class DecisionService:
 
         valid = feat[fcols].notna().all(axis=1)
         if not valid.any():
-            print(f"[warn] {symbol}: 无有效特征行, 跳过。")
-            return None
+            # 与 latest_decision 同形返回结构化 HOLD: 旧实现返回 None, 上游 run_once
+            # 直接 continue —— 于是「装配坏到出不了决策」在播报与决策审计里完全不可见。
+            print(f"[warn] {symbol}: 无有效特征行 → HOLD(no_valid_feature_bar)。")
+            from ..risk.sizing import resolve_execution_assumption
+
+            _ts = feat.index[-1] if len(feat) else None
+            _close = (
+                float(feat["close"].iloc[-1])
+                if len(feat) and "close" in feat.columns and pd.notna(feat["close"].iloc[-1])
+                else None
+            )
+            return _audit({
+                "signal": "HOLD",
+                "symbol": symbol,
+                "timestamp": str(_ts) if _ts is not None else None,
+                "close": _close,
+                "reason": "no_valid_feature_bar",
+                "win_probability": None,
+                "suggested_position_pct": 0.0,
+                "stop_loss": None,
+                "take_profit": None,
+                "confident": False,
+                "execution_assumption": resolve_execution_assumption(self.cfg["risk"]),
+                "data_source": data_source,
+                "degradations": deg_all,
+            })
         ts = feat.index[valid][-1]  # 最新一根特征完整的 bar
         bar_close = float(feat["close"].loc[ts])
 
@@ -259,11 +285,26 @@ class DecisionService:
         return True
 
     def run_once(self) -> list[dict]:
+        """跑一轮全部币种。
+
+        **按币种隔离异常**: 单个币种的临时故障(REST 超时、装配失败)不得让整轮
+        (以及 ``run_forever`` 的整个进程)挂掉——那会让实时服务在一次网络抖动后
+        彻底静默。失败币种记 error 并继续下一个。
+        """
         out = []
         for s in self._symbols:
-            if s not in self.models:
-                self.train(s)
-            d = self.decide_live(s)
+            try:
+                if s not in self.models:
+                    self.train(s)
+                d = self.decide_live(s)
+            except Exception as e:
+                print(
+                    f"[serve] ERROR {s}: 本轮决策失败({type(e).__name__}: {e}); "
+                    "跳过该币种, 不影响其他币种",
+                    flush=True,
+                )
+                traceback.print_exc()
+                continue
             if d is None:
                 continue
             out.append(d)
@@ -274,6 +315,12 @@ class DecisionService:
 
     # ---------------- 循环调度 ----------------
     def run_forever(self) -> None:
+        """常驻轮询。
+
+        - 首轮 ``train_all`` 失败直接抛出(没有模型谈不上服务, 应 fail-fast);
+        - 之后每轮的决策与周期重训都包异常: 一次失败只跳过本轮, 下一轮继续重试,
+          避免「跑了三天后因为一次 429 静默退出」。
+        """
         scfg = self.cfg["serve"]
         poll = int(scfg.get("poll_seconds", 3600))
         retrain_every = int(scfg.get("retrain_every_cycles", 24))
@@ -284,5 +331,13 @@ class DecisionService:
             cycle += 1
             if retrain_every > 0 and cycle % retrain_every == 0:
                 print("[serve] 周期重训…")
-                self.train_all()
+                try:
+                    self.train_all()
+                except Exception as e:
+                    print(
+                        f"[serve] ERROR 周期重训失败({type(e).__name__}: {e}); "
+                        "继续用上一版模型, 下个周期再试",
+                        flush=True,
+                    )
+                    traceback.print_exc()
             time.sleep(poll)

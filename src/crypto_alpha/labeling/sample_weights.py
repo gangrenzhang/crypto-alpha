@@ -84,13 +84,15 @@ def average_uniqueness(bar_index: pd.DatetimeIndex, t1: pd.Series) -> pd.Series:
     left = np.searchsorted(bars, starts, side="left")
     right = np.searchsorted(bars, ends, side="right")
 
-    out = np.full(len(t1_valid), np.nan, dtype=float)
-    for i in range(len(t1_valid)):
-        lo, hi = int(left[i]), int(right[i])
-        if hi <= lo:
-            out[i] = np.nan
-            continue
-        out[i] = float(np.nanmean(inv[lo:hi]))
+    # 段内 nanmean 用前缀和 O(1) 取: 逐事件 slice 是 O(事件×持有期), 长面板上是热点。
+    finite = np.isfinite(inv)
+    csum = np.concatenate([[0.0], np.cumsum(np.where(finite, inv, 0.0))])
+    ccnt = np.concatenate([[0.0], np.cumsum(finite.astype(float))])
+    lo = np.clip(left, 0, len(inv))
+    hi = np.clip(right, 0, len(inv))
+    cnt = ccnt[hi] - ccnt[lo]
+    tot = csum[hi] - csum[lo]
+    out = np.divide(tot, cnt, out=np.full(len(t1_valid), np.nan), where=cnt > 0)
 
     return pd.Series(out, index=t1_valid.index, dtype=float).reindex(t1.index)
 

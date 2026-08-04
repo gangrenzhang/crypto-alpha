@@ -40,9 +40,20 @@ _CANONICAL = (
     (re.compile(r"unemployment rate", re.I), "Unemployment Rate"),
     (re.compile(r"^cpi\s*y/?y$|^cpi\s*yoy$|consumer price index.*y/?y", re.I), "CPI YoY"),
     (re.compile(r"core cpi", re.I), "Core CPI YoY"),
+    # minutes 必须先于 meeting 命中: "FOMC Meeting Minutes" 含 "meeting",
+    # 顺序颠倒会把纪要误标为 Rate Decision(且与 fed 手工 Minutes 无法去重)
+    (re.compile(r"fomc.*minutes", re.I), "FOMC Minutes"),
     (re.compile(r"fomc.*meeting|fomc rate decision", re.I), "FOMC Rate Decision"),
-    (re.compile(r"fomc minutes", re.I), "FOMC Minutes"),
+    # FF 命名: 决议同刻公布的声明/利率行 → 与 Fed 官网 FOMC Rate Decision 合并
+    (re.compile(r"^federal funds rate$|^fomc statement$", re.I), "FOMC Rate Decision"),
     (re.compile(r"beige book", re.I), "Beige Book"),
+    # 非美央行利率决议: 统一 FF 与手工日程的命名差异
+    (re.compile(r"ecb.*rate|ecb.*interest rate|ecb.*refinancing", re.I), "ECB Rate Decision"),
+    (re.compile(r"^main refinancing rate$|^minimum bid rate$|^deposit facility rate$", re.I), "ECB Rate Decision"),
+    (re.compile(r"boe.*rate|boe.*interest rate|boe.*bank rate", re.I), "BOE Rate Decision"),
+    (re.compile(r"^official bank rate$", re.I), "BOE Rate Decision"),
+    (re.compile(r"boj.*rate|boj.*interest rate|boj.*policy rate", re.I), "BOJ Rate Decision"),
+    (re.compile(r"^boj monetary policy statement$|^boj policy rate$", re.I), "BOJ Rate Decision"),
 )
 
 
@@ -86,7 +97,13 @@ def _dedupe_key(row) -> tuple:
 
 
 def dedupe_cross_source_events(df: pd.DataFrame) -> pd.DataFrame:
-    """合并多源重复事件; 每组保留综合得分最高的一行。"""
+    """合并多源重复事件; 每组保留综合得分最高的一行。
+
+    硬规则(与 filter_events_for_features 语义对齐): 组内若存在
+    print_kind=first_print 且带数值的行, 则仅在 first_print 行中按得分
+    选胜者 —— current_vintage(BLS 现行口径, forecast≡previous 无意义)
+    不得覆盖首印; 同为 first_print 时 ALFRED(100) 仍自然高于 FF(55)。
+    """
     if df is None or len(df) == 0:
         return pd.DataFrame(columns=EVENT_COLUMNS)
     out = normalize_macro_events(df)
@@ -96,6 +113,13 @@ def dedupe_cross_source_events(df: pd.DataFrame) -> pd.DataFrame:
         r["_key"] = _dedupe_key(r)
         rows.append(r)
     tmp = pd.DataFrame(rows)
+    is_fp = tmp["print_kind"].astype(str).eq("first_print")
+    has_num = tmp[["previous", "forecast", "actual"]].apply(
+        pd.to_numeric, errors="coerce",
+    ).notna().any(axis=1)
+    grp_has_fp_num = (is_fp & has_num).groupby(tmp["_key"]).transform("max")
+    # 组内有首印数值行 → 淘汰全部非首印行, 首印行间再按得分竞争
+    tmp = tmp.loc[~(grp_has_fp_num & ~is_fp)]
     tmp = tmp.sort_values(["_key", "_score"], ascending=[True, False])
     tmp = tmp.drop_duplicates(subset=["_key"], keep="first")
     tmp = tmp.drop(columns=["_score", "_key"], errors="ignore")

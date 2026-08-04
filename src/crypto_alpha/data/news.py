@@ -36,7 +36,12 @@ _GDELT_GATE: dict = {
 
 
 def _is_gdelt_url(url: str) -> bool:
-    return "gdeltproject.org" in str(url).lower()
+    """仅 DOC/Context API 走节流闸门; data.gdeltproject.org 静态文件不受此限。"""
+    u = str(url).lower()
+    return "api.gdeltproject.org" in u
+
+
+_GAL_BASE = "http://data.gdeltproject.org/gdeltv3/gal/{stamp}.gal.json.gz"
 
 
 def _gdelt_gate_wait(min_interval_sec: float) -> None:
@@ -119,6 +124,18 @@ def _resolve_http_proxies() -> dict[str, str]:
     return resolved
 
 
+def _is_gdelt_rate_limit_body(payload: bytes | None) -> bool:
+    """GDELT 有时用 200/429 + 纯文本限流提示, 而非 JSON。"""
+    if not payload:
+        return False
+    head = payload[:240].decode("utf-8", errors="replace").lower()
+    return (
+        "please limit requests" in head
+        or "one every 5 seconds" in head
+        or "high-traffic users" in head
+    )
+
+
 def _http_get(
     url: str,
     timeout: float = 30.0,
@@ -137,6 +154,7 @@ def _http_get(
     自动使用环境变量 / macOS 系统 HTTP(S) 代理。
     """
     import urllib.error
+    import subprocess
 
     is_gdelt = _is_gdelt_url(url)
     # GDELT: 默认少重试(窗级会再排), 避免单窗连打 3 次把 IP 打进长黑名单
@@ -153,6 +171,51 @@ def _http_get(
     else:
         open_url = urllib.request.urlopen
 
+    def _curl_get_fallback(target_url: str, target_timeout: float) -> tuple[bytes | None, int | None]:
+        """仅在 urllib SSL 证书链问题时兜底; 返回 (body, http_code)。"""
+        cmd = [
+            "curl", "-sL", "-A", _UA.get("User-Agent", "Mozilla/5.0"),
+            "--connect-timeout", str(max(5, int(target_timeout // 2) or 5)),
+            "--max-time", str(max(10, int(target_timeout))),
+            "-k",
+            "-w", "\n__HTTP_CODE__%{http_code}",
+        ]
+        pxy = proxies.get("https") or proxies.get("http")
+        if pxy:
+            cmd.extend(["-x", str(pxy)])
+        cmd.append(str(target_url))
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=max(15.0, target_timeout + 5), check=False)
+        except Exception as e:
+            print(f"[warn] curl 兜底异常 {target_url[:60]}...: {e}", flush=True)
+            return None, None
+        if proc.returncode != 0 or not proc.stdout:
+            err = (proc.stderr or b"").decode("utf-8", errors="replace")
+            print(f"[warn] curl 兜底失败 rc={proc.returncode} {target_url[:60]}...: {err[:160]}", flush=True)
+            return None, None
+        out = proc.stdout
+        code = None
+        marker = b"\n__HTTP_CODE__"
+        if marker in out:
+            body, code_b = out.rsplit(marker, 1)
+            out = body
+            try:
+                code = int(code_b.decode("utf-8", errors="replace").strip())
+            except Exception:
+                code = None
+        return out, code
+
+    def _sleep_on_429(attempt_i: int) -> None:
+        streak = int(_GDELT_GATE.get("consec_429") or 1)
+        sleep_s = max(180.0, float(base_backoff_sec) * (attempt_i + 2), 120.0 * streak)
+        sleep_s = min(sleep_s, 900.0)
+        print(
+            f"[warn] GDELT 限流冷却 sleep={sleep_s:.1f}s "
+            f"attempt={attempt_i + 1}/{max_retries} consec_429={streak} {url[:60]}...",
+            flush=True,
+        )
+        time.sleep(sleep_s)
+
     last_err: Exception | None = None
     for attempt in range(int(max_retries) + 1):
         if interval is not None:
@@ -161,6 +224,13 @@ def _http_get(
             req = urllib.request.Request(url, headers=_UA)
             with open_url(req, timeout=timeout) as r:
                 raw = r.read()
+            if is_gdelt and _is_gdelt_rate_limit_body(raw):
+                _gdelt_note_result(ok=False)
+                if attempt >= int(max_retries):
+                    print(f"[warn] GDELT 限流文本响应(最终失败) {url[:60]}...", flush=True)
+                    return None
+                _sleep_on_429(attempt)
+                continue
             if is_gdelt:
                 _gdelt_note_result(ok=True)
             return raw
@@ -184,24 +254,50 @@ def _http_get(
             try:
                 if ra is not None:
                     sleep_s = float(ra)
+                    sleep_s = min(max(sleep_s, 1.0), 900.0)
+                    print(
+                        f"[warn] HTTP {e.code} 重试 {attempt + 1}/{max_retries} "
+                        f"sleep={sleep_s:.1f}s (Retry-After) {url[:60]}...",
+                        flush=True,
+                    )
+                    time.sleep(sleep_s)
                 elif e.code == 429:
-                    streak = int(_GDELT_GATE.get("consec_429") or 1)
-                    # 429: 长冷却; 连续越多越久(上限 15min)
-                    sleep_s = max(120.0, float(base_backoff_sec) * (attempt + 2), 90.0 * streak)
+                    _sleep_on_429(attempt)
                 else:
-                    sleep_s = base_backoff_sec * (1.5 ** attempt)
+                    sleep_s = min(base_backoff_sec * (1.5 ** attempt), 90.0)
+                    print(
+                        f"[warn] HTTP {e.code} 重试 {attempt + 1}/{max_retries} "
+                        f"sleep={sleep_s:.1f}s {url[:60]}...",
+                        flush=True,
+                    )
+                    time.sleep(sleep_s)
             except Exception:
-                sleep_s = 120.0 if e.code == 429 else base_backoff_sec
-            sleep_s = min(max(sleep_s, 1.0), 900.0)
-            print(
-                f"[warn] HTTP {e.code} 重试 {attempt + 1}/{max_retries} "
-                f"sleep={sleep_s:.1f}s consec_429={_GDELT_GATE.get('consec_429', 0)} "
-                f"{url[:60]}...",
-                flush=True,
-            )
-            time.sleep(sleep_s)
+                time.sleep(180.0 if e.code == 429 else base_backoff_sec)
         except Exception as e:
             last_err = e
+            msg = str(e)
+            # macOS + 本地代理常见: urllib SSL 证书链失败; 对 GDELT 改用 curl -k 兜底
+            if (
+                is_gdelt
+                and (
+                    "CERTIFICATE_VERIFY_FAILED" in msg
+                    or "certificate verify failed" in msg.lower()
+                )
+            ):
+                raw, code = _curl_get_fallback(url, timeout)
+                if raw is not None:
+                    if (code == 429) or _is_gdelt_rate_limit_body(raw):
+                        _gdelt_note_result(ok=False)
+                        if attempt >= int(max_retries):
+                            print(f"[warn] curl 兜底遇限流(最终失败) {url[:60]}...", flush=True)
+                            return None
+                        _sleep_on_429(attempt)
+                        continue
+                    if code is not None and code >= 400:
+                        print(f"[warn] curl 兜底 HTTP {code} {url[:60]}...", flush=True)
+                        return None
+                    _gdelt_note_result(ok=True)
+                    return raw
             if attempt >= int(max_retries):
                 print(f"[warn] 抓取失败 {url[:60]}...: {e}", flush=True)
                 return None
@@ -263,11 +359,27 @@ def _score_sentiment(text: str) -> float:
     return (pos - neg) / (pos + neg)
 
 
-def _relevant_symbols(text: str) -> list[str]:
+def _keyword_hit(text_lower: str, keyword: str) -> bool:
+    """ASCII 单词按词边界匹配; 短语/中文用子串。"""
+    w = str(keyword).lower()
+    if (" " in w) or ("-" in w) or not re.fullmatch(r"[a-z0-9]+", w):
+        return w in text_lower
+    return re.search(rf"(?<![a-z0-9]){re.escape(w)}(?![a-z0-9])", text_lower) is not None
+
+
+def _relevant_symbols(text: str, *, crypto_only: bool = False) -> list[str]:
+    """从标题/正文推断相关交易对。
+
+    ``crypto_only=True`` 时只用币种关键词(适合 GAL 全量火hose),
+    避免 fed/sec/cpi 等宏观词把无关新闻灌进语料。
+    """
     t = text.lower()
-    hit = [s for s, kws in _SYMBOL_KEYWORDS.items() if any(k in t for k in kws)]
-    if not hit and any(k in t for k in _MARKET_KEYWORDS):
-        hit = list(_SYMBOL_KEYWORDS.keys())  # 市场级新闻对两币都相关
+    hit = [
+        s for s, kws in _SYMBOL_KEYWORDS.items()
+        if any(_keyword_hit(t, k) for k in kws)
+    ]
+    if not hit and (not crypto_only) and any(_keyword_hit(t, k) for k in _MARKET_KEYWORDS):
+        hit = list(_SYMBOL_KEYWORDS.keys())
     return hit
 
 
@@ -762,6 +874,10 @@ def _history_cfg(cfg) -> dict:
     h.setdefault("gdelt_query", "(bitcoin OR ethereum)")
     h.setdefault("gdelt_http_retries", 1)
     h.setdefault("gdelt_429_cooldown_sec", 300.0)
+    # gal=静态分钟文件(绕开 DOC 429); doc=DOC API 分窗
+    h.setdefault("gdelt_backend", "gal")
+    h.setdefault("gdelt_gal_workers", 24)
+    h.setdefault("gdelt_gal_flush_minutes", 180)
     h.setdefault("synthetic_per_day", 8)
     return h
 
@@ -990,6 +1106,12 @@ def fetch_gdelt_history(name, tier, start, end, window_days=7,
             min_interval_sec=float(rate_limit_sec),
         )
         if raw is None:
+            return [], -1
+        # 限流有时以 200 + 纯文本返回; 记为失败以便外层走 429 冷却
+        if _is_gdelt_rate_limit_body(raw):
+            _gdelt_note_result(ok=False)
+            text = raw[:160].decode("utf-8", errors="replace")
+            print(f"[warn] GDELT 限流文本窗 {w0.date()}~{w1.date()}: {text}")
             return [], -1
         text = raw.decode("utf-8", errors="replace").strip()
         if not text.startswith("{") and not text.startswith("["):
@@ -1355,16 +1477,26 @@ def backfill_news(cfg, start=None, end=None, providers=None) -> dict:
             ckpt = json.loads(cp.read_text(encoding="utf-8"))
         except Exception:
             ckpt = {}
-    gdelt_resume = _parse_dt(ckpt.get("gdelt_cursor"))
-    ckpt_range_start = _parse_dt((ckpt.get("range") or [None])[0])
-    # 仅当「同一战役起点」时续跑, 避免旧试点 cursor 把 2020 全量跳到 2024
-    resume_same_campaign = (
-        gdelt_resume is not None
-        and ckpt_range_start is not None
-        and ckpt_range_start == start
-        and start <= gdelt_resume < end
-        and "gdelt" in (ckpt.get("providers") or [])
+    gdelt_backend = str(hcfg.get("gdelt_backend", "gal")).lower()
+    gdelt_resume = _parse_dt(
+        ckpt.get("gdelt_gal_cursor") if gdelt_backend == "gal" else ckpt.get("gdelt_cursor")
     )
+    ckpt_range_start = _parse_dt((ckpt.get("range") or [None])[0])
+    # DOC: 要求同一战役起点才续跑, 避免旧试点 cursor 跳段
+    # GAL: cursor 本身是权威进度, 只要落在 [start,end) 即可续跑(支持按年分片)
+    if gdelt_backend == "gal":
+        resume_same_campaign = (
+            gdelt_resume is not None
+            and start <= gdelt_resume < end
+        )
+    else:
+        resume_same_campaign = (
+            gdelt_resume is not None
+            and ckpt_range_start is not None
+            and ckpt_range_start == start
+            and start <= gdelt_resume < end
+            and "gdelt" in (ckpt.get("providers") or [])
+        )
 
     stats: dict = {}
     for p in providers:
@@ -1392,15 +1524,26 @@ def backfill_news(cfg, start=None, end=None, providers=None) -> dict:
             elif p == "gdelt":
                 s = src_by_type.get("gdelt", {})
                 # 已增量写入 store, 这里不再二次 append
-                items = fetch_gdelt_history(
-                    s.get("name", "GDELT"), int(s.get("tier", 2)),
-                    start, end, int(hcfg["window_days"]), rate,
-                    int(hcfg["max_windows"]), hcfg["gdelt_query"],
-                    cfg=cfg,
-                    resume_from=gdelt_resume if resume_same_campaign else None,
-                    http_retries=int(hcfg.get("gdelt_http_retries", 1)),
-                    cooldown_429_sec=float(hcfg.get("gdelt_429_cooldown_sec", 300.0)),
-                )
+                if gdelt_backend == "gal":
+                    from .news_gdelt_gal import fetch_gdelt_gal_history
+                    items = fetch_gdelt_gal_history(
+                        s.get("name", "GDELT"), int(s.get("tier", 2)),
+                        start, end,
+                        cfg=cfg,
+                        resume_from=gdelt_resume if resume_same_campaign else None,
+                        workers=int(hcfg.get("gdelt_gal_workers", 24)),
+                        flush_every_minutes=int(hcfg.get("gdelt_gal_flush_minutes", 180)),
+                    )
+                else:
+                    items = fetch_gdelt_history(
+                        s.get("name", "GDELT"), int(s.get("tier", 2)),
+                        start, end, int(hcfg["window_days"]), rate,
+                        int(hcfg["max_windows"]), hcfg["gdelt_query"],
+                        cfg=cfg,
+                        resume_from=gdelt_resume if resume_same_campaign else None,
+                        http_retries=int(hcfg.get("gdelt_http_retries", 1)),
+                        cooldown_429_sec=float(hcfg.get("gdelt_429_cooldown_sec", 300.0)),
+                    )
                 stats[p] = len(items)
             else:
                 print(f"[warn] 未知 history provider: {p}")

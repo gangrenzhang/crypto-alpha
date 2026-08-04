@@ -1,17 +1,43 @@
 """技术指标与波动率特征。全部严格因果(仅用 t 时刻及之前信息)。"""
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 
 from .safe_rolling import rolling_mean, rolling_std
 
 
+#: RSI 无涨跌信息时的中性值(50 = 多空力量相等)。
+RSI_NEUTRAL: float = 50.0
+#: 主面板 ``rsi_14`` 与多周期 ``tf4h_rsi_14`` 统一识别(有界指标缺失不得填 0)。
+_RSI_COL_RE = re.compile(r"(?:^|_)rsi_[0-9]+$")
+
+
+def is_rsi_like(col: str) -> bool:
+    """列名是否为 RSI 类有界指标(缺失时须填 ``RSI_NEUTRAL`` 而非 0)。"""
+    return bool(_RSI_COL_RE.search(str(col)))
+
+
+def neutral_fill_value(col: str) -> float:
+    """整列缺失/冷启动时的中性填充值: RSI 类填 50, 其余(收益/动量/符号类)填 0。"""
+    return RSI_NEUTRAL if is_rsi_like(col) else 0.0
+
+
 def _rsi(close: pd.Series, window: int) -> pd.Series:
+    """Wilder RSI。
+
+    平价段(up=down=0)必须回到中性 50: 分子分母同时加 eps 使 rs→1。
+    旧式 ``up/(down+eps)`` 在 up=down=0 时得 rs=0 → RSI=0, 会把「无涨跌」
+    伪装成「极度超卖」(合成/停牌/长时间 ffill 数据上可复现)。
+    单边行情语义不变: 只涨 → rs→∞ → RSI≈100; 只跌 → rs→0 → RSI≈0。
+    """
     delta = close.diff()
     up = delta.clip(lower=0).ewm(alpha=1 / window, adjust=False).mean()
     down = (-delta.clip(upper=0)).ewm(alpha=1 / window, adjust=False).mean()
-    rs = up / (down + 1e-12)
+    eps = 1e-12
+    rs = (up + eps) / (down + eps)
     return 100 - 100 / (1 + rs)
 
 

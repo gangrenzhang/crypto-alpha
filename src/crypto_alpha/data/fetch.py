@@ -229,15 +229,36 @@ def _paginate_funding(ex, symbol: str, start_ms: int, end_ms: int, max_pages: in
     return rows
 
 
-def _paginate_oi(ex, symbol: str, start_ms: int, end_ms: int, max_pages: int = 500) -> list:
-    """分页拉取持仓量历史。"""
+def _paginate_oi(
+    ex, symbol: str, start_ms: int, end_ms: int, max_pages: int = 500,
+    timeframe: str = "1h",
+) -> list:
+    """分页拉取持仓量历史。
+
+    ``timeframe`` 应传主周期: 硬编码 1h 时 30m 主周期上每两根 bar 只有一个真实 OI 观测,
+    另一根靠 ffill 复制, oi_change 因此在半数 bar 上是「陈旧值之差」。
+    交易所不支持该粒度时(TypeError/BadRequest 等)自动回退 1h, 不阻断主流程。
+    """
     rows, since, pages = [], int(start_ms), 0
+    tf = str(timeframe or "1h")
+    resolved = tf == "1h"  # 粒度一旦确定就不再换, 避免分页中途混用两种粒度
     while pages < max_pages and since <= end_ms:
-        kwargs = {"symbol": symbol, "timeframe": "1h", "since": since, "limit": 1000}
-        try:
-            batch = ex.fetch_open_interest_history(**kwargs)
-        except TypeError:
-            batch = ex.fetch_open_interest_history(symbol, "1h", since, 1000)
+        batch = None
+        for tf_try in (tf,) if resolved else (tf, "1h"):
+            kwargs = {"symbol": symbol, "timeframe": tf_try, "since": since, "limit": 1000}
+            try:
+                batch = ex.fetch_open_interest_history(**kwargs)
+            except TypeError:
+                try:
+                    batch = ex.fetch_open_interest_history(symbol, tf_try, since, 1000)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            tf, resolved = tf_try, True
+            break
+        if batch is None:
+            break
         pages += 1
         if not batch:
             break
@@ -537,9 +558,18 @@ def fetch_derivatives(
     except Exception:
         pass  # 衍生品缺失不阻断主流程
 
+    # OI 拉取粒度对齐主周期(不可用则内部回退 1h), 避免半数 bar 只有 ffill 的陈旧 OI
+    oi_tf = "1h"
+    try:
+        raw_tf = str((cfg or {})["data"]["timeframe"]) if cfg is not None else None
+        if raw_tf in _TF_MS:
+            oi_tf = raw_tf
+    except Exception:
+        oi_tf = "1h"
+
     try:
         if ex.has.get("fetchOpenInterestHistory"):
-            oi = _paginate_oi(ex, symbol, start_ms, end_ms)
+            oi = _paginate_oi(ex, symbol, start_ms, end_ms, timeframe=oi_tf)
             if oi:
                 def _oi_val(r):
                     return r.get("openInterestAmount") or r.get("openInterestValue") or (

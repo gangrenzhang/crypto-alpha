@@ -10,8 +10,15 @@ import numpy as np
 
 
 class ProbabilityCalibrator:
+    """概率校准器。
+
+    ``degradations``: fit 期间发生的口径回退(如单类标签下 Platt 不可拟合 → isotonic)。
+    调用方应把它并入 degradations 供看板/审计, 不要让回退静默发生。
+    """
+
     def __init__(self, method: str = "isotonic"):
         self.method = method
+        self.degradations: list[str] = []
 
     def fit(self, prob: np.ndarray, y: np.ndarray):
         if str(self.method).lower() == "auto":
@@ -23,6 +30,12 @@ class ProbabilityCalibrator:
         y = np.asarray(y, dtype=int)
         m = ~np.isnan(prob)
         prob, y = prob[m], y[m]
+        self.degradations = []
+        # 单类标签: LogisticRegression 直接抛 ValueError(整条训练/CPCV 组合随之崩)。
+        # Isotonic 在单类上退化为常数映射, 可用且语义明确(该折全 0/全 1 → 常数概率)。
+        if self.method != "isotonic" and len(np.unique(y)) < 2:
+            self.degradations.append("cal_single_class_fallback_isotonic")
+            self.method = "isotonic"
         if self.method == "isotonic":
             from sklearn.isotonic import IsotonicRegression
 
@@ -262,6 +275,9 @@ def cross_fitted_calibrated_and_conformal(
     n_conf_skip = 0
     for tr, te in pkf.split(Xdummy):
         cal = ProbabilityCalibrator(method).fit(prob[pos[tr]], yy[pos[tr]])
+        for t in cal.degradations:
+            if t not in tags:
+                tags.append(t)
         p_tr = cal.transform(prob[pos[tr]])
         p_te = cal.transform(prob[pos[te]])
         oof_cal[pos[te]] = p_te

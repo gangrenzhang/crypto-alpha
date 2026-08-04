@@ -37,24 +37,36 @@ def backtest_events(
     payoff: float = 1.0,
     prices: pd.Series | None = None,
     confident: np.ndarray | None = None,
+    ref_trgt: float | None = None,
 ) -> dict:
     """events 需含: ret(含方向的对数收益), t1。prob 为校准后概率(与 events 对齐)。
 
     prices: 可选收盘价序列(索引=bar 时间)。传入且 events 含 side 时, 组合模式启用盯市
     权益曲线(MDD/日内熔断更真实); 独立复利模式忽略之。
     confident: 可选布尔数组(与 events 对齐); False 视为保形弃权, 不开仓(与实盘 HOLD 对齐)。
+    ref_trgt: 可选的波动滑点参考(相对 ATR 中位数)。调用方应传入**训练窗**冻结值,
+    使成本模型与 decide/serve 同口径; 省略则退回本次样本中位数(见 _ref_trgt_from_events)。
     """
     if bool(bt_cfg.get("portfolio_mode", True)):
         return _backtest_portfolio(
             events, prob, bt_cfg, risk_cfg, payoff, prices, confident=confident,
+            ref_trgt=ref_trgt,
         )
     return _backtest_independent(
         events, prob, bt_cfg, risk_cfg, payoff, confident=confident,
+        ref_trgt=ref_trgt,
     )
 
 
-def _cost(size: float, bars: float, fee: float, slip: float, funding: float) -> float:
-    return size * (2 * (fee + slip) + funding * bars)
+def _cost(size: float, bars: float, roundtrip_cost: float, funding: float) -> float:
+    """成交总成本(相对入场名义的分数) = 往返成本 + 持有期资金费。
+
+    ``roundtrip_cost`` 必须来自 ``resolve_roundtrip_cost``, 与 Kelly 扣成本、
+    ``decide`` 用的是**同一个数**。旧实现在这里硬算 ``2*(fee+slip)``, 只在
+    ``risk.roundtrip_cost_frac`` 为 null(默认)时与 Kelly 口径巧合一致; 一旦显式配置
+    该值, 就会出现「按高成本压缩仓位、按低成本扣 PnL」的偏乐观组合。
+    """
+    return size * (float(roundtrip_cost) + funding * bars)
 
 
 def resolve_event_slippage(
@@ -79,8 +91,18 @@ def resolve_event_slippage(
     return float(base_slip * scale)
 
 
-def _ref_trgt_from_events(df: pd.DataFrame) -> float:
-    """回测样本上相对波动的中位数参考(用于 vol-scale slip)。"""
+def _ref_trgt_from_events(df: pd.DataFrame, ref_trgt: float | None = None) -> float:
+    """相对波动的中位数参考(用于 vol-scale slip)。
+
+    ``ref_trgt`` 有值(有限正数)时直接采用: 研究/WF 回测应传入**训练窗**冻结的参考值,
+    与 ``decide``/``serve`` 用的 ``trained["slip_ref_trgt"]`` 同一个数。
+    否则回退到本次回测样本的中位数——这在评估窗上是「用被评估区间自身的统计量定成本」,
+    虽不能被用来预测方向, 但会让研究回测与部署的成本模型不同口径。
+    """
+    if ref_trgt is not None:
+        v = float(ref_trgt)
+        if np.isfinite(v) and v > 0:
+            return v
     if "trgt" not in df.columns:
         return float("nan")
     v = pd.to_numeric(df["trgt"], errors="coerce").to_numpy(dtype=float)
@@ -97,6 +119,7 @@ def _backtest_independent(
     risk_cfg: dict,
     payoff: float,
     confident: np.ndarray | None = None,
+    ref_trgt: float | None = None,
 ) -> dict:
     """旧口径: 每笔独立对全权益复利(会高估收益)。仅作对照。"""
     df = events.copy()
@@ -113,7 +136,7 @@ def _backtest_independent(
     maxp = float(risk_cfg.get("max_position_pct", 0.3))
     daily_max_dd = float(risk_cfg.get("daily_max_drawdown", 0.0) or 0.0)
     has_conf = "confident" in df.columns
-    ref_trgt = _ref_trgt_from_events(df)
+    slip_ref = _ref_trgt_from_events(df, ref_trgt)
 
     has_bars = "bars_held" in df.columns
     equity_run = 1.0
@@ -139,7 +162,7 @@ def _backtest_independent(
             halted_flags.append(bool(halted_today))
             continue
         trgt_i = float(r["trgt"]) if "trgt" in r.index and pd.notna(r["trgt"]) else None
-        slip_i = resolve_event_slippage(slip, trgt_i, ref_trgt, bt_cfg)
+        slip_i = resolve_event_slippage(slip, trgt_i, slip_ref, bt_cfg)
         rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip_i)
         min_edge = float(risk_cfg.get("min_kelly_edge", 0.0) or 0.0)
         if min_edge > 0.0 and kelly_fraction(float(r["prob"]), payoff, cost=rt_cost) < min_edge:
@@ -149,7 +172,7 @@ def _backtest_independent(
             continue
         size = position_size(r["prob"], payoff, kf, maxp, cost=rt_cost)
         bars = float(r["bars_held"]) if has_bars else 1.0
-        cost = _cost(size, bars, fee, slip_i, funding)
+        cost = _cost(size, bars, rt_cost, funding)
         pnl = size * (np.exp(r["ret"]) - 1.0) - cost
         equity_run *= (1.0 + pnl)
         sizes.append(size)
@@ -171,6 +194,7 @@ def _backtest_portfolio(
     payoff: float,
     prices: pd.Series | None = None,
     confident: np.ndarray | None = None,
+    ref_trgt: float | None = None,
 ) -> dict:
     """组合级: 锁定并发仓位, 平仓释放后再开。
 
@@ -178,6 +202,9 @@ def _backtest_portfolio(
       Δequity = entry_equity × (size×(e^ret-1) - cost), 避免重叠仓乘积复利虚高。
     - pnl 列仍为相对入场权益的分数贡献(供夏普/胜率); entry_equity 列供对账。
     - 盯市权益(mark)在每个时间线节点按收盘价重估持仓浮盈亏, 用于 MDD 与日内熔断。
+    - 并发上限按**名义额**记账: 每仓名义 = size × 入场时权益, 上限 =
+      max_gross_exposure × 当前权益。旧实现直接累加 ``size``(各自相对不同的入场权益),
+      权益漂移后 Σsize 既不是当下杠杆也不是入场杠杆, 会随净值涨跌系统性放松/收紧闸门。
     """
     df = events.copy()
     df["prob"] = np.asarray(prob, dtype=float)
@@ -204,7 +231,10 @@ def _backtest_portfolio(
     daily_max_dd = float(risk_cfg.get("daily_max_drawdown", 0.0) or 0.0)
     has_bars = "bars_held" in df.columns
     has_conf = "confident" in df.columns
-    ref_trgt = _ref_trgt_from_events(df)
+    # 名字必须与循环内的**盯市权益**参考区分开: 两者曾同叫 ``ref``, 循环里的
+    # ``ref = _mark(ts)`` 会覆盖波动参考, 使 vol-scale 滑点按 trgt/权益(≈1.0) 算
+    # 倍数 → clip 后恒为 1, 组合模式下的波动放大滑点静默失效(成本被系统性低估)。
+    slip_ref = _ref_trgt_from_events(df, ref_trgt)
 
     # 盯市: 需要收盘价 + 事件方向 side(用于按收盘价重估持仓浮盈亏)
     mtm_enabled = prices is not None and "side" in df.columns
@@ -232,13 +262,16 @@ def _backtest_portfolio(
     timeline = sorted(entries + exits, key=lambda x: (x[0], x[1]))
 
     equity = 1.0          # 已实现权益(加性记账)
-    locked = 0.0
+    locked_notional = 0.0  # 未平仓名义额合计(单位=初始权益)
     open_pos: dict[int, dict] = {}
     day_key = None
     day_start_ref = 1.0   # 当日起始参考权益(盯市优先, 否则已实现)
     halted_today = False
     equity_pts: list[tuple[pd.Timestamp, float]] = []
     mtm_pts: list[tuple[pd.Timestamp, float]] = []
+    # 盯市浮动的增量累加器(见 _mark): floating(P) = P·mtm_a − mtm_b
+    mtm_a = 0.0           # Σ wᵢ / P_entryᵢ
+    mtm_b = 0.0           # Σ wᵢ,   wᵢ = entry_equityᵢ × sizeᵢ × sideᵢ
 
     def _mark(ts) -> float:
         """当前盯市权益 = 已实现权益 + 各仓按入场权益计的浮动盈亏。
@@ -247,35 +280,34 @@ def _backtest_portfolio(
         ``frac = size × side × (P_t / P_entry − 1)``。
         旧实现 ``size × ((P_t/P_entry)^side − 1)`` 多头巧合一致、空头系统性偏离
         (下跌浮盈偏高、上涨浮亏偏低), 会扭曲 MDD / 日内熔断。
+
+        实现上把求和拆开(代数恒等, 数值同形)::
+
+            Σ wᵢ(P/P₀ᵢ − 1) = P·Σ(wᵢ/P₀ᵢ) − Σwᵢ
+
+        两个和在开/平仓时增量维护, 于是每个时间线节点是 O(1) 而不是 O(并发仓数);
+        原实现在 2N 个节点上各遍历一次持仓, 重叠越重越慢(vertical_barrier_bars=48 的
+        CUSUM 事件流并发常有数十仓)。
         """
         if not mtm_enabled:
             return equity
         pt = _px_at(ts)
         if pt is None:
             return equity
-        floating = 0.0
-        for pos in open_pos.values():
-            p0 = pos.get("entry_px")
-            if p0 is None or p0 <= 0:
-                continue
-            # 与 labeling._position_log_return 同一简单收益; 不引入成本(成本仅出场扣)
-            pos_simple = float(pos["side"]) * (pt / p0 - 1.0)
-            frac = float(pos["size"]) * pos_simple
-            floating += float(pos["entry_equity"]) * frac
-        return equity + floating
+        return equity + (pt * mtm_a - mtm_b)
 
     for ts, kind, i in timeline:
         d = ts.date() if hasattr(ts, "date") else None
         # 先按当前持仓的盯市权益判定熔断(捕捉并发持仓的浮动回撤)
-        ref = _mark(ts)
+        mark_ref = _mark(ts)
         if d != day_key:
             day_key = d
-            day_start_ref = ref
+            day_start_ref = mark_ref
             halted_today = False
         if daily_max_dd > 0 and not halted_today:
-            if ref <= day_start_ref * (1.0 - daily_max_dd):
+            if mark_ref <= day_start_ref * (1.0 - daily_max_dd):
                 halted_today = True
-        mtm_pts.append((ts, ref))
+        mtm_pts.append((ts, mark_ref))
 
         if kind == 0:  # exit
             if i not in open_pos:
@@ -285,11 +317,12 @@ def _backtest_portfolio(
             bars = pos["bars"]
             ret = pos["ret"]
             entry_eq = pos["entry_equity"]
-            slip_i = float(pos.get("slip", slip))
-            cost = _cost(size, bars, fee, slip_i, funding)
+            cost = _cost(size, bars, pos["rt_cost"], funding)
             pnl_frac = size * (np.exp(ret) - 1.0) - cost
             equity += entry_eq * pnl_frac
-            locked = max(0.0, locked - size)
+            locked_notional = max(0.0, locked_notional - size * entry_eq)
+            mtm_a -= pos.get("mtm_a", 0.0)
+            mtm_b -= pos.get("mtm_b", 0.0)
             pnls[i] = pnl_frac
             entry_equities[i] = entry_eq
             equity_pts.append((ts, equity))
@@ -303,7 +336,7 @@ def _backtest_portfolio(
             halted_flags[i] = bool(halted_today)
             continue
         trgt_i = float(row["trgt"]) if "trgt" in row.index and pd.notna(row["trgt"]) else None
-        slip_i = resolve_event_slippage(slip, trgt_i, ref_trgt, bt_cfg)
+        slip_i = resolve_event_slippage(slip, trgt_i, slip_ref, bt_cfg)
         rt_cost = resolve_roundtrip_cost(risk_cfg, fee=fee, slip=slip_i)
         min_edge = float(risk_cfg.get("min_kelly_edge", 0.0) or 0.0)
         if min_edge > 0.0 and kelly_fraction(
@@ -311,18 +344,25 @@ def _backtest_portfolio(
         ) < min_edge:
             continue
         want = position_size(float(row["prob"]), payoff, kf, maxp, cost=rt_cost)
-        avail = max(0.0, max_gross - locked)
+        # 名义额口径: 可用名义 = max_gross×当前权益 − 已锁定名义, 再折回「相对入场权益」。
+        # 分母用**盯市**权益 mark_ref(无价格序列时即已实现权益), 与 MDD/日内熔断同一基准:
+        # 浮亏未了结时真实保证金已经缩水, 用已实现权益当分母会在回撤中偏松放仓。
+        entry_eq = float(equity)
+        avail_notional = max(0.0, max_gross * float(mark_ref) - locked_notional)
+        avail = avail_notional / max(entry_eq, 1e-12)
         size = min(want, avail)
         if size < min_size:
             skipped_cap[i] = True
             continue
         bars = float(row["bars_held"]) if has_bars else 1.0
         sizes[i] = size
-        locked += size
+        locked_notional += size * entry_eq
         pos = {
             "size": size, "bars": bars, "ret": float(row["ret"]),
-            "entry_equity": float(equity),
+            "entry_equity": entry_eq,
             "slip": slip_i,
+            "rt_cost": rt_cost,
+            "mtm_a": 0.0, "mtm_b": 0.0,
         }
         if mtm_enabled:
             pos["side"] = float(row["side"])
@@ -331,19 +371,26 @@ def _backtest_portfolio(
             pos["mtm"] = ep is not None
             if ep is None:
                 pos["side"] = 0.0  # 无入场价 => 浮动恒 0, 不污染 mark
+            elif ep > 0:
+                w = entry_eq * size * pos["side"]
+                pos["mtm_a"] = w / ep
+                pos["mtm_b"] = w
+                mtm_a += pos["mtm_a"]
+                mtm_b += pos["mtm_b"]
         open_pos[i] = pos
 
     # 若回测窗口结束仍有未平仓(t1 超出样本), 按标签收益强制了结(记账在实际了结时刻)
     for i, pos in list(open_pos.items()):
         size = pos["size"]
         entry_eq = pos["entry_equity"]
-        slip_i = float(pos.get("slip", slip))
-        cost = _cost(size, pos["bars"], fee, slip_i, funding)
+        cost = _cost(size, pos["bars"], pos["rt_cost"], funding)
         pnl_frac = size * (np.exp(pos["ret"]) - 1.0) - cost
         equity += entry_eq * pnl_frac
         pnls[i] = pnl_frac
         entry_equities[i] = entry_eq
-        locked = max(0.0, locked - size)
+        locked_notional = max(0.0, locked_notional - size * entry_eq)
+        mtm_a -= pos.get("mtm_a", 0.0)
+        mtm_b -= pos.get("mtm_b", 0.0)
         close_ts = pd.Timestamp(df["t1"].iloc[i])
         equity_pts.append((close_ts, equity))
         mtm_pts.append((close_ts, equity))
@@ -451,11 +498,14 @@ def _avg_uniqueness_from_intervals(traded: pd.DataFrame) -> float:
     np.add.at(diff, right, -1.0)
     conc = np.cumsum(diff)[:-1]                                # 每段并发数
     inv = np.divide(1.0, conc, out=np.zeros_like(conc, dtype=float), where=conc > 0)
-    uniq = np.empty(m, dtype=float)
-    for i in range(m):
-        lo, hi = left[i], right[i]
-        dur = seg_len[lo:hi].sum()
-        uniq[i] = (inv[lo:hi] * seg_len[lo:hi]).sum() / dur if dur > 0 else 1.0
+    # 时间加权段内均值用前缀和 O(1) 取(等价于逐仓 slice 求和, 去掉 O(成交数×段数) 循环)
+    c_dur = np.concatenate([[0.0], np.cumsum(seg_len)])
+    c_wsum = np.concatenate([[0.0], np.cumsum(inv * seg_len)])
+    lo = np.clip(left, 0, len(seg_len))
+    hi = np.clip(right, 0, len(seg_len))
+    dur = c_dur[hi] - c_dur[lo]
+    wsum = c_wsum[hi] - c_wsum[lo]
+    uniq = np.divide(wsum, dur, out=np.ones(m, dtype=float), where=dur > 0)
     u = float(np.mean(uniq))
     return u if np.isfinite(u) and u > 0 else 1.0
 
@@ -554,11 +604,21 @@ def equity_curve_sharpe(equity: pd.Series | np.ndarray) -> dict:
 
 
 def max_drawdown(equity: np.ndarray) -> float:
+    """最大回撤(负数)。
+
+    ``peak<=0``(权益被打穿到 0 以下的极端路径)时该段回撤记为 -1(全损), 而不是让
+    ``(eq-peak)/peak`` 产生 inf/nan 静默污染 metrics 与 calmar。
+    """
     eq = np.asarray(equity, dtype=float)
+    eq = eq[np.isfinite(eq)]
     if len(eq) == 0:
         return 0.0
     peak = np.maximum.accumulate(eq)
-    dd = (eq - peak) / peak
+    dd = np.divide(
+        eq - peak, peak,
+        out=np.where(eq < peak, -1.0, 0.0),
+        where=peak > 0,
+    )
     return float(dd.min())
 
 

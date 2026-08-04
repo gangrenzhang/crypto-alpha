@@ -43,7 +43,7 @@ from ..diagnostics.gates import (
 )
 from ..ensemble import StackingEnsemble
 from ..labeling.sample_weights import combined_sample_weights
-from .run import Dataset, build_experts, prepare_dataset
+from .run import Dataset, _median_trgt, build_experts, prepare_dataset
 
 
 @dataclass(frozen=True)
@@ -292,10 +292,15 @@ def run_walkforward(
     train_start :
         可选训练起点(含); 仅丢掉更早的**事件**, 不截断 OHLCV 特征回看。
     recompute_sample_weight :
-        若 True: 在训练掩码确定后, 仅用训练事件重算 sample_weight
+        若 True(默认): 在训练掩码确定后, 仅用训练事件重算 sample_weight
         (uniqueness×|ret|×time_decay, 与 prepare_dataset 同公式)。
-        None: 读 ``validation.walkforward.recompute_sample_weight_on_split``(默认 false,
-        保持历史「全量算权再切片」行为, 不影响未开开关的路径)。
+        None: 读 ``validation.walkforward.recompute_sample_weight_on_split``(默认 true)。
+
+        为何默认打开: ``prepare_dataset`` 的权重在**全量事件**上归一
+        (``w/w.mean()``、时间衰减按全样本秩), 归一化常数含测试窗 ``|ret|`` 与事件个数。
+        直接切片会把这点未来信息带进训练权重——量级小(近似全局缩放)但违反
+        「训练只用训练窗信息」的铁律, 且 WF 是唯一的真外推基线, 不该有例外。
+        设 False 可复现旧口径(仅作对照)。
     """
     split = resolve_walkforward_split(
         cfg, test_start=test_start, test_end=test_end, train_start=train_start,
@@ -304,7 +309,7 @@ def run_walkforward(
     wf_sec = walkforward_section(cfg)
     if recompute_sample_weight is None:
         recompute_sample_weight = bool(
-            wf_sec.get("recompute_sample_weight_on_split", False)
+            wf_sec.get("recompute_sample_weight_on_split", True)
         )
 
     if ds is None:
@@ -416,9 +421,13 @@ def run_walkforward(
 
     payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
     prices = panel["close"] if "close" in panel.columns else None
+    # 波动滑点参考只在**训练窗**估计: 用测试窗自身的 trgt 中位数定成本, 等于让被评估
+    # 区间参与了成本模型标定(与 decide 的冻结参考也不同口径)。
+    slip_ref = _median_trgt(events.loc[train_index])
     bt = backtest_events(
         events_te, prob_te, bt_cfg, cfg["risk"],
         payoff=payoff, prices=prices, confident=confident,
+        ref_trgt=slip_ref,
     )
     detail: pd.DataFrame = bt["detail"]
     equity: pd.Series = bt["equity"]
@@ -482,6 +491,7 @@ def run_walkforward(
         "backtest_start": str(split.test_start),
         "backtest_end": str(split.test_end) if split.test_end is not None else None,
         "prob_threshold_effective": float(thr_eff),
+        "slip_ref_trgt": (float(slip_ref) if np.isfinite(slip_ref) else None),
         "n_train_events": n_train,
         "n_test_events": n_test,
         "n_opened_trades": int(len(traded)),

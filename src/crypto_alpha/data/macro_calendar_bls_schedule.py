@@ -40,31 +40,14 @@ PIECE_RE = re.compile(
 
 
 def _curl_bytes(url: str, timeout: float = 90.0) -> bytes:
-    import os
-    import subprocess
+    """抓取 BLS 发布日程; TLS 校验优先(见 data.http_curl)。"""
+    from .http_curl import curl_bytes
 
-    cmd = [
-        "curl", "-sL", "-A", "Mozilla/5.0 (crypto-alpha bls schedule)",
-        "--connect-timeout", "20", "--max-time", str(int(timeout)), "-k",
-    ]
-    proxy = (
-        os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-        or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    return curl_bytes(
+        url, timeout=timeout,
+        user_agent="Mozilla/5.0 (crypto-alpha bls schedule)",
+        label="bls_schedule",
     )
-    if not proxy:
-        try:
-            from .news import _resolve_http_proxies
-            proxies = _resolve_http_proxies()
-            proxy = proxies.get("https") or proxies.get("http")
-        except Exception:
-            proxy = None
-    if proxy:
-        cmd.extend(["-x", proxy])
-    cmd.append(url)
-    proc = subprocess.run(cmd, capture_output=True, timeout=timeout + 5, check=False)
-    if proc.returncode != 0 or not proc.stdout:
-        raise RuntimeError(f"curl failed {proc.returncode}: {url}")
-    return proc.stdout
 
 
 def _parse_et(y: int, m: int, d: int, time_str: str) -> pd.Timestamp:
@@ -105,6 +88,10 @@ def parse_bls_month_schedule_html(html: str, calendar_year: int, calendar_month:
                 continue
             ref_month = MONTHS[piece.group("ref_month").lower()]
             ref_year = int(piece.group("ref_year"))
+            # 页面底部"下月预告"块: ref 年月 >= 页面年月时, 发布日属于下个月,
+            # 按当月 calendar 解析会把 07-03 错标成 06-03 → 拒绝(下月页面会正确覆盖)
+            if (ref_year, ref_month) >= (calendar_year, calendar_month):
+                continue
             try:
                 ts = _parse_et(calendar_year, calendar_month, day, piece.group("time"))
             except ValueError:
@@ -233,15 +220,88 @@ def build_bls_official_release_calendar(
     return df
 
 
+# --- BLS 官方日程硬编码补充(人工核验, 优先级高于一切自动源) ---
+# 覆盖两类问题: ①直播/Wayback 均未覆盖的缺口; ②自动解析错误行(下月预告块误标、
+# 2025 停摆后原定日期未更新)。日期按 BLS 已发布新闻稿/前瞻表/停摆修订日程核验。
+# (release_key, ref_year, ref_month, 发布日期, 均为 08:30 ET)
+# 注意: --refresh-bls-schedule 仅在 BLS 直播/Wayback 可达时使用;
+# 不可达时 refresh 会用空表覆盖好缓存, 而本表仅在加载时合并, 无法救回丢失行。
+_BLS_SCHEDULE_SUPPLEMENT: list[tuple[str, int, int, str]] = [
+    ("employment_situation", 2023, 12, "2024-01-05"),
+    ("cpi", 2023, 12, "2024-01-11"),
+    ("employment_situation", 2024, 3, "2024-04-05"),
+    ("cpi", 2024, 3, "2024-04-10"),
+    # 2025 年停摆(10/1-11/12)修订日程: bls.gov/bls/2025-lapse-revised-release-dates.htm
+    ("employment_situation", 2025, 6, "2025-07-03"),   # 独立日前移(原定 07-04 周五)
+    ("cpi", 2025, 6, "2025-07-15"),
+    ("cpi", 2025, 9, "2025-10-24"),                   # 停摆延迟(原定 10-15)
+    ("employment_situation", 2025, 9, "2025-11-20"),   # 停摆延迟 6 周(原定 10-03)
+    ("employment_situation", 2025, 10, "2025-12-16"),  # 与 11 月合并发布
+    ("employment_situation", 2025, 11, "2025-12-16"),
+    ("cpi", 2025, 11, "2025-12-18"),                  # 停摆延迟(原定 12-10)
+    ("employment_situation", 2026, 1, "2026-02-11"),   # 停摆修订(原定 02-06)
+    ("cpi", 2026, 1, "2026-02-13"),                   # 停摆修订(原定 02-11)
+    ("employment_situation", 2026, 3, "2026-04-03"),   # 首周五(覆盖预告块误标 03-03)
+    ("cpi", 2026, 3, "2026-04-10"),
+    ("employment_situation", 2026, 4, "2026-05-01"),
+    ("cpi", 2026, 4, "2026-05-12"),
+]
+
+# 已确认取消发布(2025 停摆期间未采集): 从日程表删除对应自动解析行
+_BLS_SCHEDULE_CANCELLED: list[tuple[str, int, int]] = [
+    ("cpi", 2025, 10),
+]
+
+_SUPPLEMENT_NAMES = {
+    "employment_situation": "Employment Situation",
+    "cpi": "Consumer Price Index",
+}
+
+
+def _supplement_schedule_rows() -> list[dict]:
+    rows: list[dict] = []
+    for key, ref_y, ref_m, date_s in _BLS_SCHEDULE_SUPPLEMENT:
+        y, m, d = (int(x) for x in date_s.split("-"))
+        rows.append({
+            "release_key": key,
+            "release_name": _SUPPLEMENT_NAMES[key],
+            "ref_year": ref_y,
+            "ref_month": ref_m,
+            "released_at": _parse_et(y, m, d, "08:30 AM"),
+            "schedule_source": "bls_official",
+        })
+    return rows
+
+
+def _merge_supplement(df: pd.DataFrame) -> pd.DataFrame:
+    """把硬编码补充行并入官方日程。人工核验优先级最高:
+    与补充表同 (key, ref) 的自动解析行一律被覆盖; 取消发布的行一律删除。"""
+    sup = pd.DataFrame(_supplement_schedule_rows())
+    if df is None or df.empty:
+        return sup
+    cancelled = set(_BLS_SCHEDULE_CANCELLED)
+    override = {
+        (str(r["release_key"]), int(r["ref_year"]), int(r["ref_month"]))
+        for r in sup.to_dict("records")
+    }
+    def _drop(r) -> bool:
+        key = (str(r["release_key"]), int(r["ref_year"]), int(r["ref_month"]))
+        return key in cancelled or key in override
+    keep = df.loc[[not _drop(r) for r in df.to_dict("records")]]
+    out = pd.concat([keep, sup], ignore_index=True)
+    return out.sort_values("released_at").reset_index(drop=True)
+
+
 def load_or_build_bls_schedule(store_dir: Path, *, refresh: bool = False) -> pd.DataFrame:
     path = Path(store_dir) / "bls_official_releases.parquet"
     if path.exists() and not refresh:
-        return pd.read_parquet(path, engine="pyarrow")
+        df = pd.read_parquet(path, engine="pyarrow")
+        return _merge_supplement(df)
     df = build_bls_official_release_calendar()
     path.parent.mkdir(parents=True, exist_ok=True)
     if len(df):
         df.to_parquet(path, engine="pyarrow", index=False)
-    return df
+    return _merge_supplement(df)
 
 
 def enrich_schedule_from_ff_hist(schedule: pd.DataFrame, ff_events: list[dict]) -> pd.DataFrame:
@@ -256,6 +316,10 @@ def enrich_schedule_from_ff_hist(schedule: pd.DataFrame, ff_events: list[dict]) 
             continue
         name = str(ev.get("name") or "")
         low = name.lower()
+        # ADP 非农 ≠ BLS 就业报告: 不排除会被 "non-farm employment change" 子串误命中,
+        # 导致就业日程被 ADP 时刻(早 2 天, 13:15 UTC)抢占
+        if low.startswith("adp"):
+            continue
         ts = pd.Timestamp(ev["released_at"])
         # 参考月 ≈ 发布时间所在月的上一个月
         ref_y, ref_m = _add_month(int(ts.year), int(ts.month), -1)

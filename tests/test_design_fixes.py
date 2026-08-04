@@ -657,7 +657,9 @@ def test_cpcv_cal_conformal_time_split_differs_from_same_batch():
     cal_dep, conf_dep, dep_tags = fit_deploy_calibrator_and_conformal(
         oof, y, method="isotonic", alpha=0.15, conformal_frac=0.3,
     )
-    assert dep_tags == []  # n=120 足够时间切分, 无同批回退
+    # n=120 足够时间切分 → 不得出现同批/单类等回退标签; 方法标签(deploy_cal_method=…)
+    # 是常态记录而非降级, 不参与此断言。
+    assert [t for t in dep_tags if not t.startswith("deploy_cal_method=")] == []
     # _apply 与 fit_deploy 同口径(本回归的硬约束)
     assert np.allclose(p_split, cal_dep.transform(p_te))
     assert np.array_equal(flags_split, conf_dep.predict_set(p_split)["confident"])
@@ -1123,7 +1125,7 @@ def test_dashboard_renders_degradations():
     assert "Degradations" in html_out
     assert "derivatives_funding_unavailable" in html_out
     assert "交易数(研究OOF)" in html_out
-    assert "交易数(部署路径)" in html_out
+    assert "交易数(部署·偏乐观·勿拍板)" in html_out
     assert "成交数/阈值口径" in html_out
     assert "阈值(研究CF)" in html_out
     assert "阈值(部署/decide)" in html_out

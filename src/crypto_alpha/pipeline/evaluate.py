@@ -97,7 +97,14 @@ def _apply_deploy_cal_conformal(
     """用训练折 OOF 按部署口径时间切分拟合校准+保形, 变换测试折概率。
 
     返回 (校准后测试概率, confident 掩码, degradations 标签, 校准器或 None)。
-    OOF 不足或单类时: 概率原样返回, confident 全 True, calibrator=None, 并写入 skipped 标签。
+
+    - OOF 不足或单类(``n_oof<min_oof``): 概率原样返回, confident 全 True,
+      calibrator=None, 写入 ``cpcv_cal_conformal_skipped``。这是**已知的乐观口径**,
+      由 caveats 承担: 这些组合本就没有可用的校准参考。
+    - 校准/保形**拟合异常**: confident 全 **False**(弃权)。异常意味着门控口径未知,
+      此时放行全部成交会把「校准失败」变成一条可能虚高的夏普喂进 DSR/PBO;
+      与 ``cross_fitted_calibrated_and_conformal`` 跳过折的处理(不确定则弃权)一致。
+
     调用方须用 ``cal.transform(train_oof)`` 估计 thr(与测试折同尺度), 禁止用原始 OOF。
     """
     tags: list[str] = []
@@ -120,7 +127,12 @@ def _apply_deploy_cal_conformal(
         return p_cal, conf_mask, tags, cal
     except Exception as ex:
         tags.append(f"cpcv_cal_conformal_error:{type(ex).__name__}")
-        return p_test, conf_mask, tags, None
+        print(
+            f"[cpcv] WARN: 校准/保形拟合失败({type(ex).__name__}: {ex}); "
+            "该组合全部弃权(不确定则不开仓)",
+            flush=True,
+        )
+        return p_test, np.zeros(len(p_test), dtype=bool), tags, None
 
 
 def cpcv_report(cfg, ds, build_experts_fn) -> dict:
@@ -130,6 +142,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
     """
     from ..ensemble import StackingEnsemble
     from ..diagnostics.gates import freeze_threshold_on_reference
+    from .run import _median_trgt
 
     vcfg = cfg["validation"]
     ccfg = cfg["calibration"]
@@ -186,6 +199,9 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         wtr = ds.sample_weight[tr]
         t1tr = ds.t1.iloc[tr]
 
+        # 波动滑点参考: 只用该组合的训练折估计(测试折不参与成本标定)
+        slip_ref = _median_trgt(ds.events.iloc[tr])
+
         experts = build_experts_fn(cfg, ds)
         if not pseudo_expert_names:
             pseudo_expert_names = [
@@ -210,7 +226,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
             bt_cfg_e["prob_threshold"] = float(thr_e)
             bt = backtest_events(
                 ds.events.iloc[te], p, bt_cfg_e, cfg["risk"], payoff, prices,
-                confident=conf_mask,
+                confident=conf_mask, ref_trgt=slip_ref,
             )
             col_perf[e.name] = bt["metrics"]["sharpe"]
 
@@ -231,7 +247,7 @@ def cpcv_report(cfg, ds, build_experts_fn) -> dict:
         bt_cfg_ens["prob_threshold"] = float(thr_ens)
         bte = backtest_events(
             ds.events.iloc[te], pe, bt_cfg_ens, cfg["risk"], payoff, prices,
-            confident=conf_e,
+            confident=conf_e, ref_trgt=slip_ref,
         )
         col_perf["ensemble"] = bte["metrics"]["sharpe"]
         combo_sharpes.append(bte["metrics"]["sharpe"])

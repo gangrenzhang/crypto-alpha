@@ -23,7 +23,7 @@ import pandas as pd
 
 from ..data.fetch import timeframe_delta, timeframe_to_prefix
 from .safe_rolling import rolling_mean, rolling_std
-from .technical import _rsi, atr
+from .technical import _rsi, atr, neutral_fill_value
 
 
 # 并入主面板后的多周期特征列名前缀匹配(供测试/诊断)
@@ -167,18 +167,15 @@ def add_mtf_features(
             aligned_trend_cols.append(trend_c)
 
     if mcfg["include_confluence"] and aligned_trend_cols:
-        # 与主信号同口径的动量方向做共振: 优先 labeling.primary_lookback 对应列
-        main_side = None
+        # 与主信号严格同口径: 直接用 close 按 labeling.primary_lookback 算动量方向。
+        # 旧实现按列名猜(mom_{lb} → mom_28 → mom_24 …), features.windows 一旦不含
+        # primary_lookback 就会静默换成别的回看窗, 共振特征与真正的 side 不同口径。
         lb = int((cfg.get("labeling") or {}).get("primary_lookback", 24))
-        candidates = [
-            f"mom_{lb}", f"ret_{lb}",
-            "mom_28", "mom_14", "ret_28", "ret_14",
-            "mom_24", "ret_24",  # 兼容旧 1h 配置
-        ]
-        for cand in candidates:
-            if cand in out.columns:
-                main_side = np.sign(out[cand]).replace(0.0, 0.0)
-                break
+        main_side = None
+        if "close" in out.columns and lb > 0:
+            main_side = np.sign(out["close"].astype(float).pct_change(lb)).fillna(0.0)
+        elif f"mom_{lb}" in out.columns:
+            main_side = np.sign(out[f"mom_{lb}"]).fillna(0.0)
         if main_side is not None:
             votes = []
             for tc in aligned_trend_cols:
@@ -192,10 +189,12 @@ def add_mtf_features(
             if votes:
                 out["mtf_confluence"] = sum(votes) / len(votes)
 
-    # 对齐初期无高周期历史 → 填 0/中性, 与新闻特征策略一致, 不丢主样本
+    # 对齐初期无高周期历史 → 填**该指标自身的中性值**, 与新闻特征策略一致, 不丢主样本。
+    # RSI 的中性值是 50 而非 0: 填 0 等于宣称「极度超卖」, 会在冷启动段(辅周期
+    # rsi_window 根未就绪)与辅周期装配失败时凭空造出强烈方向信号。
     mtf_cols = [c for c in out.columns if MTF_COL_RE.match(c) or c == "mtf_confluence"]
     for c in mtf_cols:
-        out[c] = out[c].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        out[c] = out[c].replace([np.inf, -np.inf], np.nan).fillna(neutral_fill_value(c))
     return out
 
 

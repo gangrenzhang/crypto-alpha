@@ -158,6 +158,50 @@ def prepare_dataset(cfg: Config, symbol: str, *, for_decide: bool = False) -> Da
     )
 
 
+def _median_trgt(events: pd.DataFrame, mask: np.ndarray | None = None) -> float:
+    """事件相对波动(trgt=atr/close)的中位数; 供波动滑点参考(与回测同口径)。
+
+    ``mask`` 限定在**参考窗**上估计, 使研究回测/部署回测/decide 共用同一个冻结常数,
+    而不是各自用自己评估区间的中位数。
+    """
+    if "trgt" not in getattr(events, "columns", []) or not len(events):
+        return float("nan")
+    v = pd.to_numeric(events["trgt"], errors="coerce").to_numpy(dtype=float)
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        if len(m) == len(v):
+            v = v[m]
+    v = v[np.isfinite(v) & (v > 0)]
+    return float(np.median(v)) if len(v) else float("nan")
+
+
+def _stale_panel_tag(cfg: Config, ts, now=None) -> str | None:
+    """决策所用 bar 落后墙钟超过 ``data.max_closed_bar_lag`` 根时返回告警标签。
+
+    返回 None 表示新鲜(或无法判定)。仅用于诚实标注决策卡的时效, 不改任何数值。
+    """
+    try:
+        from ..data.fetch import timeframe_delta
+
+        delta = timeframe_delta(str(cfg["data"]["timeframe"]))
+        max_lag = int(cfg["data"].get("max_closed_bar_lag", 4) or 0)
+        if max_lag <= 0 or delta <= pd.Timedelta(0):
+            return None
+        t = pd.Timestamp(ts)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        now_ts = pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz="UTC")
+        if now_ts.tzinfo is None:
+            now_ts = now_ts.tz_localize("UTC")
+        # bar 时间戳=开盘 ⇒ 该 bar 收盘于 t+delta
+        lag_bars = int((now_ts - (t + delta)) / delta)
+        if lag_bars > max_lag:
+            return f"decision_panel_stale(lag_bars={lag_bars}>{max_lag})"
+    except Exception:
+        return None
+    return None
+
+
 def _attach_news_to_llm(cfg: Config, symbol: str, experts: list) -> None:
     """为 LLM 专家注入/刷新新闻面板(决策时刻与数值新闻特征对齐)。"""
     for e in experts:
@@ -334,9 +378,14 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
     payoff = float(cfg["labeling"]["pt_sl"][0]) / float(cfg["labeling"]["pt_sl"][1])
     prices = ds.panel["close"] if "close" in ds.panel.columns else None
     events_rep = ds.events.loc[report_mask]
+    # 波动滑点参考: 在**阈值参考窗**上冻结(与 decide/serve 同一个数), 不用评估窗自身中位数
+    slip_ref_trgt = _median_trgt(ds.events, mask=ref_mask)
+    if not np.isfinite(slip_ref_trgt):
+        slip_ref_trgt = _median_trgt(ds.events)
     bt = backtest_events(
         events_rep, oof_cal[report_mask], bt_cfg_research, cfg["risk"],
         payoff=payoff, prices=prices, confident=conf_flags[report_mask],
+        ref_trgt=slip_ref_trgt,
     )
     gate_research = gate_diagnostics(
         events_rep.index, oof[report_mask], oof_cal[report_mask],
@@ -363,6 +412,7 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
     bt_deploy = backtest_events(
         events_rep, prob_dep, bt_cfg_deploy, cfg["risk"],
         payoff=payoff, prices=prices, confident=conf_dep,
+        ref_trgt=slip_ref_trgt,
     )
     gate_deploy = gate_diagnostics(
         events_rep.index, raw_dep, prob_dep, conf_dep,
@@ -408,14 +458,6 @@ def train_and_validate(cfg: Config, ds: Dataset) -> dict:
             br["pseudo_oof"] = True
             br["note"] = "frozen_adapter_not_cross_validated_excluded_from_meta"
             base_report[name] = br
-
-    # 波动滑点参考: 事件相对 ATR 中位数(与 backtest resolve_event_slippage 同口径)
-    slip_ref_trgt = float("nan")
-    if "trgt" in ds.events.columns and len(ds.events):
-        _tv = pd.to_numeric(ds.events["trgt"], errors="coerce").to_numpy(dtype=float)
-        _tv = _tv[np.isfinite(_tv) & (_tv > 0)]
-        if len(_tv):
-            slip_ref_trgt = float(np.median(_tv))
 
     # 正式研究路径可写实验日志, 抬高后续 DSR n_trials 下限(诊断/冒烟应关)
     if bool(cfg["validation"].get("log_experiments", True)):
@@ -464,18 +506,23 @@ def _is_tradable_event(cfg: Config, panel: pd.DataFrame, ts, full_sampling: bool
 def align_feature_schema(
     feat: pd.DataFrame, feature_cols: list[str],
 ) -> tuple[pd.DataFrame, list[str]]:
-    """对齐训练期特征列 schema: 缺失列以 0.0 补齐, 返回 (面板, 缺失列名)。
+    """对齐训练期特征列 schema: 缺失列以**中性值**补齐, 返回 (面板, 缺失列名)。
 
     仅做**列存在性**对齐, 不改已有列数值。调用方若发现 missing 非空, 应强制 HOLD
-    (勿在分布偏移的特征上继续推理开仓)——与 MTF 冷启动填 0 的训练语义一致, 但实盘
+    (勿在分布偏移的特征上继续推理开仓)——与 MTF 冷启动填中性值的训练语义一致, 但实盘
     「整列缺失」意味着辅周期/新闻装配失败, 与训练完整面板不同分布。
+
+    RSI 类有界指标填 50 而非 0(0 = 极度超卖), 与 ``add_mtf_features`` 同口径:
+    虽然 missing 非空时上层会 HOLD, 但补值不该在任何路径上凭空造出极端方向信号。
     """
+    from ..features.technical import neutral_fill_value
+
     missing = [c for c in feature_cols if c not in feat.columns]
     if not missing:
         return feat, []
     out = feat.copy()
     for c in missing:
-        out[c] = 0.0
+        out[c] = neutral_fill_value(c)
     return out, missing
 
 
@@ -592,6 +639,15 @@ def latest_decision(cfg: Config, ds: Dataset, trained: dict) -> dict:
         })
     ts = panel.index[valid][-1]
     bar_close = float(panel["close"].loc[ts])
+
+    # 面板 tip 陈旧告警: 10_run_all 走 prepare_dataset(for_decide=False)(研究口径,
+    # 刻意不打 REST), 于是「最新决策」可能建立在几天前的冷缓存上。06_decide / serve
+    # 会先刷新到已收盘 tip, 因此正常不会命中此标签。仅告知, 不参与环境 HOLD 计分:
+    # 研究联跑不该因为缓存旧就拒绝出卡, 但看板必须能看出这张卡有多旧。
+    lag_tag = _stale_panel_tag(cfg, ts)
+    if lag_tag and lag_tag not in deg_all:
+        deg_all.append(lag_tag)
+        print(f"[warn] {ds.symbol}: {lag_tag}")
 
     # 多降级叠加: 只对本次数据集/装配环境计分(不计训练期校准/剪枝标签)
     env_thr = cfg["risk"].get("env_degradation_hold_score", 50)

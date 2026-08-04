@@ -13,6 +13,8 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from .purged_kfold import resolve_embargo_size
+
 
 class CombinatorialPurgedCV:
     def __init__(self, n_splits: int, n_test_groups: int, t1: pd.Series, embargo_pct: float = 0.0):
@@ -37,7 +39,7 @@ class CombinatorialPurgedCV:
             raise ValueError("X 与 t1 的索引必须一致")
         n = X.shape[0]
         groups = self._group_indices(n)
-        embargo = int(n * self.embargo_pct)
+        embargo = resolve_embargo_size(n, self.embargo_pct)
         times = self.t1.index
 
         for combo in combinations(range(self.N), self.k):

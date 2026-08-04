@@ -346,27 +346,39 @@ def backtest_reconciliation(bt: dict, tol: float = 1e-6) -> dict:
 
 
 def max_concurrent_gross(bt: dict) -> float:
-    """从回测明细重建时间线, 计算任意时刻的最大并发锁定敞口(应 <= max_gross_exposure)。"""
+    """最大并发**名义**敞口(相对入场时权益), 应 <= max_gross_exposure。
+
+    每仓名义 = ``size × entry_equity``; 峰值再除以当时的权益基准。``size`` 是相对
+    各自入场权益的分数, 直接累加 ``Σsize`` 会混用不同分母——权益上涨后 Σsize 可以
+    合法地略超 1 而真实杠杆并未超限(见 backtest.engine 的名义额闸门)。
+    缺少 ``entry_equity`` 列(旧产物/独立复利模式)时退回 ``Σsize``。
+    """
     detail = bt["detail"]
     if "size" not in detail.columns or len(detail) == 0:
         return 0.0
+    has_eq = "entry_equity" in detail.columns
     events = []
     for ts, row in detail.iterrows():
         size = float(row["size"])
         if size <= 0:
             continue
+        eq = float(row["entry_equity"]) if has_eq else 1.0
+        if not np.isfinite(eq) or eq <= 0:
+            eq = 1.0
+        notional = size * eq
         exit_ts = pd.Timestamp(row["t1"]) if "t1" in detail.columns else ts
-        events.append((ts, +size))
-        events.append((exit_ts, -size))
+        events.append((ts, +notional, eq))
+        events.append((exit_ts, -notional, eq))
     if not events:
         return 0.0
     # 同一时刻先释放(-)再占用(+): 与回测引擎口径一致
     events.sort(key=lambda x: (x[0], 0 if x[1] < 0 else 1))
     cur = 0.0
     peak = 0.0
-    for _, delta in events:
+    for _, delta, eq in events:
         cur += delta
-        peak = max(peak, cur)
+        if delta > 0:  # 只在开仓时刻检查杠杆(与引擎闸门同一时点)
+            peak = max(peak, cur / max(eq, 1e-12))
     return float(peak)
 
 
@@ -439,13 +451,21 @@ def run_full_pipeline_with_prices(cfg, raw_df: pd.DataFrame, symbol: str = "BTC/
 
 
 def _cpu_cfg(cfg, n_splits: int = 5):
-    """把配置收敛到 CPU 友好、单一 GBDT、无外部依赖的诊断模式(原地修改 raw)。"""
+    """把配置收敛到 CPU 友好、单一 GBDT、无外部依赖的诊断模式(原地修改 raw)。
+
+    宏观日历也显式关闭: 生产默认 ``macro_calendar.as_feature=true``, 若不关, 空对照的
+    特征面就取决于本机 ``data/macro_calendar/events.parquet`` 在不在, 同一份代码在有/无
+    日历库的机器上跑出不同列数与 AUC —— 基线必须与外部数据资产无关。
+    生产特征面(MTF+宏观)的空对照见 ``_cpu_cfg_production_surface``。
+    """
     cfg.raw["experts"]["enabled"] = ["gbdt"]
     cfg.raw["experts"]["gbdt"] = dict(_DIAG_GBDT)
     cfg.raw.setdefault("features", {})
     cfg.raw["features"]["mtf_enabled"] = False
     cfg.raw["news"]["as_feature"] = False
     cfg.raw["news"]["use_synthetic"] = True
+    cfg.raw.setdefault("macro_calendar", {})
+    cfg.raw["macro_calendar"]["as_feature"] = False
     cfg.raw["data"]["use_synthetic"] = True
     cfg.raw["validation"]["n_splits"] = n_splits
     cfg.raw["validation"]["log_experiments"] = False  # 诊断勿污染 DSR 实验日志
@@ -455,17 +475,23 @@ def _cpu_cfg(cfg, n_splits: int = 5):
     return cfg
 
 
-def _cpu_cfg_mtf(cfg, n_splits: int = 5):
-    """与 ``_cpu_cfg`` 相同, 但打开 MTF(辅周期从合成主面板重采样)。
+def _cpu_cfg_production_surface(cfg, n_splits: int = 5):
+    """生产特征面空对照: 打开 MTF + 宏观日历(新闻仍关, 与现行 ``as_feature=false`` 对齐)。
 
-    用于覆盖生产默认 ``mtf_enabled=true`` 的空对照; 新闻仍关
-    (现行仓库默认 ``news.as_feature=false``)。
+    覆盖 ``mtf_enabled=true`` / ``macro_calendar.as_feature=true`` 这两个生产默认值:
+    随机游走价格 + 真实日历特征下 OOF AUC 仍须≈0.5, 否则说明这些特征面把
+    「时间/日历结构」泄漏成了可预测性。日历库缺失时该面自动退化(仅少几列, 不报错)。
     """
     cfg = _cpu_cfg(cfg, n_splits=n_splits)
     cfg.raw["features"]["mtf_enabled"] = True
+    cfg.raw["macro_calendar"]["as_feature"] = True
     # 保证辅周期强制 resample, 不打 REST
     cfg.raw["data"]["use_synthetic"] = True
     return cfg
+
+
+# 兼容旧名(外部脚本/测试可能引用)
+_cpu_cfg_mtf = _cpu_cfg_production_surface
 
 
 def _walk_freq(cfg) -> str:
@@ -605,34 +631,38 @@ def audit_pipeline(
         results.append(CheckResult("全链路空对照: 收益闸门", None, {"error": repr(e)},
                                    note="跳过(可能缺依赖或数据)"))
 
-    # 5c) 生产特征面空对照: MTF 开启(新闻仍关, 对齐现行默认 as_feature=false)
+    # 5c) 生产特征面空对照: MTF + 宏观日历开启(新闻仍关, 对齐现行默认 as_feature=false)
     try:
-        cfg_mtf = _cpu_cfg_mtf(copy.deepcopy(cfg), n_splits=5)
-        freq = _walk_freq(cfg_mtf)
+        cfg_prod = _cpu_cfg_production_surface(copy.deepcopy(cfg), n_splits=5)
+        freq = _walk_freq(cfg_prod)
         raw_m = make_random_walk_ohlcv(n=max(n_bars, 6000), seed=seed + 17, freq=freq)
         raw_m.attrs["data_source"] = "synthetic"
-        ds_m, tr_m = run_full_pipeline_with_prices(cfg_mtf, raw_m, symbol)
+        ds_m, tr_m = run_full_pipeline_with_prices(cfg_prod, raw_m, symbol)
         mtf_cols = [
             c for c in ds_m.feature_cols
             if c.startswith("tf") or c == "mtf_confluence"
         ]
+        macro_cols = [c for c in ds_m.feature_cols if c.startswith("macro_")]
         auc_m = float(tr_m["report"].get("auc", float("nan")))
         ok_m = (not np.isfinite(auc_m)) or (auc_m <= null_auc_max)
         results.append(CheckResult(
-            "全链路空对照(MTF开): 特征含多周期列",
+            "全链路空对照(生产特征面): 特征含多周期列",
             len(mtf_cols) > 0,
-            {"n_mtf_cols": len(mtf_cols), "sample": mtf_cols[:8]},
-            note="生产默认 mtf_enabled=true; 辅周期由合成主面板 resample",
+            {"n_mtf_cols": len(mtf_cols), "sample": mtf_cols[:8],
+             "n_macro_cols": len(macro_cols)},
+            note="生产默认 mtf_enabled=true; 辅周期由合成主面板 resample; "
+                 "macro 列数为 0 表示本机无日历库(该面自动退化, 不算失败)",
         ))
         results.append(CheckResult(
-            "全链路空对照(MTF开): 随机游走 OOF AUC≈0.5",
+            "全链路空对照(生产特征面): 随机游走 OOF AUC≈0.5",
             ok_m,
-            {"auc": round(auc_m, 4), "max": null_auc_max, "n_events": len(ds_m.y)},
-            note="覆盖生产 MTF 特征面; 新闻 as_feature 仍关(与现行 config 对齐)",
+            {"auc": round(auc_m, 4), "max": null_auc_max, "n_events": len(ds_m.y),
+             "n_macro_cols": len(macro_cols)},
+            note="覆盖生产 MTF + 宏观日历特征面; 新闻 as_feature 仍关(与现行 config 对齐)",
         ))
     except Exception as e:
         results.append(CheckResult(
-            "全链路空对照(MTF开)", None, {"error": repr(e)},
+            "全链路空对照(生产特征面)", None, {"error": repr(e)},
             note="跳过(可能缺依赖或数据)",
         ))
 

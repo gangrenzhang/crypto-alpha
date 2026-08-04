@@ -11,6 +11,18 @@ import numpy as np
 import pandas as pd
 
 
+def resolve_embargo_size(n: int, pct: float) -> int:
+    """禁运样本数 = ``int(n*pct)``, 但 ``pct>0`` 时至少 1 根。
+
+    ``int()`` 截断会让小样本(如 n=80、pct=0.01)静默得到 0 —— 配置写了禁运却完全没有
+    禁运, 恰好发生在最容易过拟合的小样本上。向上保底 1 根既不改大样本行为
+    (n*pct≥1 时结果不变), 也不会让禁运在小样本上无声失效。
+    """
+    if pct is None or float(pct) <= 0 or int(n) <= 0:
+        return 0
+    return max(int(int(n) * float(pct)), 1)
+
+
 def get_embargo_times(times: pd.DatetimeIndex, pct: float) -> pd.Series:
     """为每个样本时间返回其禁运截止时间。"""
     step = int(times.shape[0] * pct)
@@ -53,7 +65,7 @@ class PurgedKFold:
             self.t1 = self.t1.copy()
             self.t1.index = t_idx
         indices = np.arange(X.shape[0])
-        embargo = int(X.shape[0] * self.embargo_pct)
+        embargo = resolve_embargo_size(X.shape[0], self.embargo_pct)
         test_ranges = [
             (i[0], i[-1] + 1) for i in np.array_split(indices, self.n_splits)
         ]
