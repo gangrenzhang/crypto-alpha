@@ -122,6 +122,38 @@ cryptoCurrency/
 
 ## 4. 数据层
 
+### 4.0 训练依赖数据总表与开关板（`config/training_data.yaml`）
+
+训练用到的数据源**只有下面 7 类**，每类在 `config/training_data.yaml` 里有且只有一个 `true/false` 开关。`Config.load` 会把开关同步到散落的遗留键（`resolve_training_data_toggles` → `apply_training_data_toggles`），因此**只改这一个文件即可**；若 `config.yaml` 里同名遗留键与之冲突，开关板胜出并发 `UserWarning`。
+
+| 开关 | 数据文件 | 加载函数 | 门控点 | 产出特征列 |
+|------|----------|----------|--------|------------|
+| `ohlcv` | `data/raw/{SYM}__{timeframe}.parquet` | `data/fetch.load_symbol_data` | **硬依赖**，设 `false` 在 `Config.load` 直接抛错 | 全部技术指标 + `logprice_fd*` |
+| `funding` | 同上 parquet 的 `funding_rate` 列 | `data/fetch.fetch_derivatives` | `features.use_funding` → `add_technical_features` | `funding_z` |
+| `open_interest` | 同上 parquet 的 `open_interest` 列 | 同上（`_paginate_oi`，粒度跟随主周期） | `features.use_open_interest` | `oi_change` |
+| `mtf` | `data/raw/{SYM}__{2h,4h,1d}.parquet` | `data/fetch.load_aux_timeframes` | `features.mtf_enabled` → `add_mtf_features` | `tf2h_*` / `tf4h_*` / `tf1d_*` / `mtf_confluence` |
+| `macro_calendar` | `data/macro_calendar/events.parquet`（全局表） | `data/macro_calendar.load_macro_events` | `macro_calendar.as_feature` → `add_macro_calendar_features` | `MACRO_FEATURE_COLS`（10 列） |
+| `news` | `data/news/{SYM}.parquet`（面板，由 `data/news_raw/corpus.parquet` 重建） | `data/news.ensure_news_panel` | `news.as_feature` → `add_news_features` | `NEWS_FEATURE_COLS` |
+| `liquidations` | `data/liquidations/{SYM}.parquet` + parquet 的 `liq_long`/`liq_short` 列 | `data/liquidations.attach_liquidations_to_ohlcv` | `features.use_liquidations` **或** `data.fetch_liquidations` | `liq_imbalance*` / `liq_total_z` / `liq_align` |
+
+`ohlcv` 那一行的原始列（`open/high/low/close/volume`）与 `funding_rate`/`open_interest`/`liq_long`/`liq_short`/`atr_14` **不入模**——`features.feature_columns` 显式排除这些非平稳绝对量，建模只用其相对/标准化派生列。清算是**双门控 OR**：`use_liquidations` 来自开关板，`data.fetch_liquidations` 是遗留键，任一为真即启用（保证只改遗留键的旧脚本/测试仍生效）。
+
+**当前完整度（口径：2020-01-01 → 2026-07-31，主周期 30m，BTC/USDT + ETH/USDT）**
+
+| 数据 | 覆盖 | 判定 | 说明 |
+|------|------|------|------|
+| `ohlcv` 30m | 99.9%（BTC 30 处断点 / ETH 15 处） | **完整** | BTC 自 2017-08，ETH 自 2020-01-01；断点为交易所维护窗 |
+| `mtf` 2h/4h/1d | 99.97% / 99.99% / 100% | **完整** | 与主周期同源 |
+| `funding` | 2020 年起逐年 100% 非空 | **完整** | |
+| `macro_calendar` | 事件表 2020-01→2026-12；`has_recent_macro` ≈0.92 | **部分** | 见下方「悬崖」 |
+| `news` | 语料 2020 全年 + 2021 上半年 + 2022 回填中；2023–2025 **空** | **不完整** | 面板仅 2020–2021；默认 `false` |
+| `open_interest` | 非空 ≈0.3%，首个观测 2026-07-24 | **不完整** | 公开 REST 只给近端约 30 天 |
+| `liquidations` | BTC 仅 2026-07-21 一小时共 66 条；ETH 为空 | **不完整** | 公开 REST 盖不住多年 WF |
+
+**宏观日历的「数值悬崖」**：事件数从 2020–2024 的每月 120–146 条，在 2025-04 之后跌到每月 8–39 条——FF GitHub 归档停在 2023，HF 数据集（`Ehsanrs2/Forex_Factory_Calendar`）冻结在 2025-04-07，之后只剩 Fed 日程 + 手工央行日程 + FF 本周。后果是**注意力通道尚可、surprise 通道塌陷**：`macro_surprise` 非零占比从 2020–2024 的 ≈0.78–0.84 掉到 2025 的 0.23、2026 的 0.00。`has_recent_macro` 看不出这个问题（它只问「窗内有没有任意事件」），因此另记 `attrs.macro_surprise_coverage`，并可用 `macro_calendar.min_surprise_coverage_warn>0` 转成 `macro_surprise_sparse` degradation。补齐需 `FRED_API_KEY`（ALFRED 首印，覆盖美国 CPI/NFP）或付费日历源。
+
+**为什么 `news` / `liquidations` 默认 `false`**：训练窗内大段为空时，特征恒为中性值，模型会把「没有数据」学成「这类信号无 alpha」，并污染后续实盘对比。回填到覆盖训练窗后再打开。
+
 ### 4.1 数据获取流程（无需预先准备数据集）
 
 **数据源接口已内置**：行情/衍生品走 `ccxt`，新闻走多源适配器（RSS/API）。OHLCV/funding/OI 等主路径可自动拉取、缓存再训练；**清算全史例外**——公开 REST 盖不住多年 WF，若要训练窗真有清算特征，需 `--import-csv`/付费源或自建 WS 积累（见 §4.2「缺清算覆盖」）。
@@ -348,7 +380,7 @@ PYTHONPATH=src python scripts/validate_news_alignment.py
 | `released_at` | actual 变为可得的时刻（UTC；讲话类常 = scheduled） |
 | `previous` / `forecast` / `actual` | 前值 / 预测 / 公布（**讲话可空，无利多/利空字段**） |
 | `print_kind` | `first_print` \| `current_vintage` \| `n/a`（首印 vs 现行修订） |
-| `schedule_source` | `bls_official` \| `forexfactory` \| `heuristic` \| `federalreserve` \| `federalreserve_historical` \| `centralbank_historical` |
+| `schedule_source` | `bls_official` \| `forexfactory` \| `forexfactory_dateonly` \| `heuristic` \| `federalreserve` \| `federalreserve_historical` \| `centralbank_historical` |
 | `unit` / `source` / `event_id` | 单位、来源、稳定主键 |
 
 **如何构建完整库**
@@ -373,7 +405,10 @@ PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 | Fed 历史日程（手工） | US | 2023–2024 FOMC 会议/纪要/褐皮书 | `schedule_source=federalreserve_historical` |
 | 非美央行历史日程（手工） | EU/GB/JP | 2024–2026 ECB/BOE/BOJ 利率决议（2026 官方日程已核验） | `schedule_source=centralbank_historical` |
 | FF GitHub 归档 2020–2023 | **全球** | actual/forecast/previous | `forexfactory_hist` |
+| HF `Ehsanrs2/Forex_Factory_Calendar` 2024–2025-04 | **全球** | actual/forecast/previous；补 FF 归档停更后的缺口 | `forexfactory_hf`，由 `scripts/16_import_hf_ff_calendar.py` 导入 |
 | FF 本周 JSON | 全球近端 | 近一周中高影响 | 近端补强 |
+
+**缺盘中时刻的事件必须归到 UTC 日终（曾是前视泄漏）**：FF 系两个源在原始行没有盘中时刻时都会**编**一个时刻，而且编早了——HF 数据集把无时刻行写成本地 `00:00:00`（`Asia/Tehran`），换算成 UTC 落到**前一天傍晚**（`2024-01-11T00:00+03:30` → `2024-01-10 20:30Z`），而这批行里就有美国 CPI、非农这类带 `actual` 的重磅数值，等于把 surprise 比真实公布（`2024-01-11 13:30Z`）**提前约 17 小时**喂进特征；FF GitHub 归档则把 `All Day`/`Tentative` 归到中午 CST（`04:00Z`），同样早于当天绝大多数欧美公布。修复后统一走 `data/macro_calendar.date_only_release_ts`，取该**本地日历日的 UTC 日终**（`D 23:59:59Z`）——任何时区的本地日 D 都在此之前结束，故保证「不早于真实公布」，代价只是该事件推迟到当日收尾才可见——并标 `schedule_source=forexfactory_dateonly`，在跨源去重里给 −20 分，使同事件若另有精确时刻源必定让位。影响量级：HF 源 2003 条里 885 条（44%）时刻是编的，其中 718 条带 `actual`；FF 归档另有 125 条 All-Day 行。用 `scripts/19_repair_macro_dateonly_times.py` 从本地缓存重建这两个源的行（不触网，其余源原样保留，自动备份 `events.parquet.bak`）。重定后主周期特征覆盖率不变（`has_recent_macro` 仍 ≈0.92），但 22% 的 bar 上 `macro_surprise` 取值改变——说明泄漏此前是**真实生效**的。
 
 **首印 vs 修订**：特征默认 `prefer_first_print=true`，同公布窗优先 `first_print`；构建需 `FRED_API_KEY` 拉 ALFRED，否则 BLS 用现行修订版(warn)。
 
@@ -412,6 +447,7 @@ PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 
 - 空库 → `macro_calendar_unavailable`（`env_guard` 权重 20）  
 - `min_coverage_warn>0` 且 `has_recent_macro` 过低 → `macro_features_sparse`（权重 10；默认 warn=0）  
+- `min_surprise_coverage_warn>0` 且 `macro_surprise_raw` 非零占比过低 → `macro_surprise_sparse`（默认 warn=0）。覆盖率**始终**写入 `attrs.macro_surprise_coverage`，与 `attrs.macro_feature_coverage` 并列。两者必须分开看：日程表在、数值断供时前者仍高、后者已塌（本库 2025-05 起即如此，见 §4.0）  
 
 **勿做**：把图中「利多/利空金银」标签原样当 BTC 方向；删掉 `events.parquet` 却保持 `as_feature=true`；用新闻 GDELT 标题冒充宏观日历；把 BLS naive forecast 当成调查中位数。
 
@@ -1021,7 +1057,9 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `run_news_backfill_robust.py` | **推荐**稳健回填+重建面板+校验 | `--start` `--no-resume` `--providers` |
 | `validate_news_alignment.py` | 语料/面板网格/PIT/覆盖率抽查 | `--symbol` |
 | `14_import_macro_calendar.py` | 导入宏观日历 CSV → events.parquet | `--csv` `--replace` |
-| `15_build_macro_calendar.py` | BLS 官方日程+ALFRED 首印+Fed+FF 全球历史 → events.parquet | `--start` `--refresh-bls-schedule` `--refresh-alfred` `--export-csv` |
+| `15_build_macro_calendar.py` | BLS 官方日程+ALFRED 首印+Fed+FF 全球历史 → events.parquet；末尾自动跑 `16_` 补 2024+ | `--start` `--refresh-bls-schedule` `--refresh-alfred` `--export-csv` |
+| `16_import_hf_ff_calendar.py` | HF Forex Factory 缓存 → events.parquet（补 FF 归档停更后的 2024+） | `--csv` `--start` `--min-importance` |
+| `19_repair_macro_dateonly_times.py` | 从本地缓存重建 FF 系事件行，修正「缺盘中时刻」被编早的伪时刻（不触网，自动备份） | `--dry-run` `--hf-start` |
 | `validate_macro_calendar_alignment.py` | 宏观日历 PIT（含单事件隔离 surprise_raw） | |
 | `10_run_all.py` | 全专家联跑 + HTML | `--experts` `--symbols` `--cpcv` `--walkforward` `--open` |
 | `11_make_canvas.py` | Cursor Canvas | `--out` |
@@ -1109,6 +1147,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - [x] `backtest_deploy.not_for_go_live` + 看板「部署·偏乐观·勿拍板」  
 - [x] 新闻历史回填：满额切分、failed/pending/truncated 续跑补洞、UTC 秒去重键、PIT 校验脚本（§4.3.1；语料仍受 GDELT 429，corpus 待续跑）
 - [x] 宏观日历：BLS 官方日程(含硬编码补充)+ALFRED 首印+FF 全球历史+FF 本周沉淀+Fed/非美央行手工历史日程(至 2026，ECB 14:15 CET)(~6.3k) + 跨源去重(首印硬规则) + surprise 分流 + `as_feature=true`（§4.3.2）
+- [x] **日历事件缺盘中时刻时归 UTC 日终**（`date_only_release_ts`）：源写本地午夜会换算到前一天傍晚，把 CPI/非农的 `actual` 提前约 17h 泄漏；曾影响 HF 源 44% 的行（718 条带 actual）与 FF 归档 125 条 All-Day 行，修复后 22% 的 bar 上 `macro_surprise` 改值（§4.3.2，`tests/test_macro_calendar_dateonly.py`）
 
 **防过拟合**
 
@@ -1161,6 +1200,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | OI 历史粒度 | 已跟随主周期请求（30m 主周期→30m OI）；交易所不支持该粒度时回退 1h，此时 30m 面板上仍有半数 bar 为 ffill 复制值 | ★ 换支持细粒度 OI 的源，或把 `oi_change` 明确按可用粒度计算 |
 | 宏观源 TLS | 默认校验证书；证书失败才 `-k` 且**打印告警**；`CRYPTO_ALPHA_ALLOW_INSECURE_TLS=0` 可禁降级 | ★ 修好本机证书链后设 0，彻底关掉降级口 |
 | 清算历史覆盖 | **现状缺口**：管道已通，但公开源（Gate tip / Binance REST 停维护 / UM Vision 空）**盖不住**典型 train/test 窗；回填 `ok` 常= tip 入库；WF 多见 `derivatives_liquidations_unavailable`；特征填 0 ≠ 已学清算 alpha。HF/GitHub 无多年 Binance USDT 全库 | ★★★ 付费聚合/CSV import（历史 WF）+ Binance WS 常驻（同所未来） |
+| 宏观 surprise 悬崖（2025-05 起） | 事件表本身不空（Fed/央行日程仍在，`has_recent_macro`≈0.70–0.76），但 `forecast`/`actual` 断供：FF 归档停在 2023、HF 数据集冻结在 2025-04-07，`macro_surprise` 非零占比从 ≈0.82 掉到 2025 的 0.23、2026 的 0.00。已把数值通道单独量化为 `attrs.macro_surprise_coverage` + 可选 `macro_surprise_sparse` | ★★★ 配 `FRED_API_KEY` 走 ALFRED 首印（覆盖美国 CPI/NFP），或接付费日历 |
+| 新闻语料覆盖 | 语料仅 2020 全年 + 2021 上半年，2022 GDELT-GAL 回填进行中，2023–2025 为空；面板只到 2021。`training_data.news` 默认 `false`，避免多年空新闻被学成「新闻无 alpha」 | ★★★ 跑完 `scripts/18_backfill_news_2022_2025.py` 再重建面板并打开开关 |
+| 持仓量历史 | `open_interest` 非空仅 ≈0.3%（首个观测 2026-07-24）——公开 REST 只给近端约 30 天，多年训练窗上 `oi_change`≈0。开关虽默认 `true`，实际近乎无信息 | ★★ 换有历史 OI 的源，或在长回测里关掉 `training_data.open_interest` 让缺失显式化 |
 | 微观结构 | funding/OI/清算已分页接入；失败填 0；无 CVD/链上 | ★★ CVD / 链上 |
 | `06_decide` 每次全量重训 | 决策 JSON 已含 audit 指纹；仍无模型权重落盘，延迟高 | ★★ 持久化部署模型（serve 路径已训一次复用） |
 | TimesFM | 前向未实现 → 回退 naive 且 **`degraded=True`** 写入元数据 | ★★ 实现原生 forecast 或固定 chronos/naive |

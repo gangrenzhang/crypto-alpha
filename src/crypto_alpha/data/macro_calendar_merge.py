@@ -14,6 +14,7 @@ _SOURCE_SCORE = {
     "bls": 90,
     "forexfactory_hist": 55,
     "forexfactory_week": 50,
+    "forexfactory_hf": 45,
     "federalreserve": 40,
     "import": 10,
     "test": 5,
@@ -25,6 +26,8 @@ _SCHEDULE_SCORE = {
     "forexfactory": 10,
     "heuristic": 0,
     "import": 0,
+    # 源只给了日期、时刻是我们保守推的日终: 同事件若另有精确时刻源, 必须让位
+    "forexfactory_dateonly": -20,
 }
 
 _PRINT_SCORE = {

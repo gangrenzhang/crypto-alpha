@@ -41,17 +41,37 @@ def build_feature_matrix(
     except Exception:
         oi_bars = int(fcfg.get("oi_change_bars", 24) or 24)
 
+    use_funding = bool(fcfg.get("use_funding", True))
+    use_oi = bool(fcfg.get("use_open_interest", True))
+    # 清算双门控兼容: training_data → use_liquidations; 旧代码/测试常只改
+    # data.fetch_liquidations。任一为 true 即启用特征(与「打开清算源」语义一致)。
+    dcfg = cfg["data"] if hasattr(cfg, "__getitem__") else {}
+    try:
+        fetch_liq = bool((dcfg or {}).get("fetch_liquidations", False))
+    except Exception:
+        fetch_liq = False
+    use_liq = bool(fcfg.get("use_liquidations", False)) or fetch_liq
+
     # 冷缓存 OHLCV 常无清算: 从独立事件库按每根 K 线时间桶对齐喂入 liq_long/liq_short
     panel = df
-    try:
-        from ..data.liquidations import attach_liquidations_to_ohlcv
+    if use_liq:
+        try:
+            from ..data.liquidations import attach_liquidations_to_ohlcv
 
-        panel = attach_liquidations_to_ohlcv(df, cfg, symbol)
-    except Exception as e:
-        print(f"[warn] 清算事件库对齐失败({e}); 继续无清算列。")
-        panel = df
+            panel = attach_liquidations_to_ohlcv(df, cfg, symbol)
+        except Exception as e:
+            print(f"[warn] 清算事件库对齐失败({e}); 继续无清算列。")
+            panel = df
 
-    feat = add_technical_features(panel, windows, vol_window, oi_change_bars=oi_bars)
+    feat = add_technical_features(
+        panel,
+        windows,
+        vol_window,
+        oi_change_bars=oi_bars,
+        use_funding=use_funding,
+        use_open_interest=use_oi,
+        use_liquidations=use_liq,
+    )
 
     # 衍生品不可用时特征已填 0; 记 degradations 供看板/审计(不阻断主流程)
     degradations: list[str] = list(getattr(feat, "attrs", {}).get("degradations") or [])
@@ -73,15 +93,23 @@ def build_feature_matrix(
     except Exception:
         pass
 
-    if "funding_rate" in panel.columns and panel["funding_rate"].isna().all():
+    if (
+        use_funding
+        and "funding_rate" in panel.columns
+        and panel["funding_rate"].isna().all()
+    ):
         tag = "derivatives_funding_unavailable"
         if tag not in degradations:
             degradations.append(tag)
-    if "open_interest" in panel.columns and panel["open_interest"].isna().all():
+    if (
+        use_oi
+        and "open_interest" in panel.columns
+        and panel["open_interest"].isna().all()
+    ):
         tag = "derivatives_oi_unavailable"
         if tag not in degradations:
             degradations.append(tag)
-    if "liq_long" in panel.columns and "liq_short" in panel.columns:
+    if use_liq and "liq_long" in panel.columns and "liq_short" in panel.columns:
         ll, ls = panel["liq_long"], panel["liq_short"]
         if ll.isna().all() and ls.isna().all():
             tag = "derivatives_liquidations_unavailable"

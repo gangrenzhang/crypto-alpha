@@ -67,6 +67,9 @@ def test_liquidations_sparse_degradation_when_prefix_nan():
 
     cfg = Config.load()
     cfg.raw["features"]["mtf_enabled"] = False
+    # 显式打开清算特征门控(training_data.liquidations 默认 false)
+    cfg.raw["features"]["use_liquidations"] = True
+    cfg.raw["data"]["fetch_liquidations"] = True
     n = 2500
     idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
     rng = np.random.default_rng(1)
@@ -128,6 +131,8 @@ def test_liquidations_nan_does_not_wipe_samples_and_tags_degradation():
 
     cfg = Config.load()
     cfg.raw["features"]["mtf_enabled"] = False
+    cfg.raw["features"]["use_liquidations"] = True
+    cfg.raw["data"]["fetch_liquidations"] = True
     n = 2500
     idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
     rng = np.random.default_rng(0)

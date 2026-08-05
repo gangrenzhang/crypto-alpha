@@ -1,0 +1,45 @@
+# ============================================================
+# 训练依赖数据开关（建议只改本文件）
+# ------------------------------------------------------------
+# true  = 进入 prepare_dataset 特征面 / 训练可用
+# false = 训练时跳过该数据源（不读对应文件或不生成对应特征）
+#
+# 启动时 Config.load 会把这里同步到遗留键:
+#   news.as_feature / macro_calendar.as_feature /
+#   features.mtf_enabled / data.fetch_liquidations /
+#   features.use_funding / use_open_interest / use_liquidations
+#
+# 也可在 config.yaml 写同名 training_data: 段; 若本文件存在则以本文件为准。
+# ============================================================
+
+# 主周期 OHLCV — 硬依赖。文件: data/raw/{SYMBOL}__{timeframe}.parquet
+# 设 false 会在加载配置时直接报错（无法训练）。
+ohlcv: true
+
+# 资金费率 → 特征 funding_z
+# 文件: 与主周期同一 parquet 的列 funding_rate
+funding: true
+
+# 持仓量 → 特征 oi_change
+# 文件: 与主周期同一 parquet 的列 open_interest
+# 注意: 公开 REST 常仅近端≈30 天; 历史多为 NaN→特征≈0
+open_interest: true
+
+# 多时间框架辅周期 → tf2h_* / tf4h_* / tf1d_* / mtf_confluence
+# 文件: data/raw/{SYMBOL}__{2h,4h,1d}.parquet
+mtf: true
+
+# 宏观日历 → macro_* / has_recent_macro
+# 文件: data/macro_calendar/events.parquet
+macro_calendar: true
+
+# 新闻数值特征 → news_*
+# 文件: data/news/{SYMBOL}.parquet
+# （面板由 data/news_raw/corpus.parquet 回填后重建）
+# 语料/面板未覆盖训练窗前请保持 false，避免「空新闻」被误读为无 alpha
+news: false
+
+# 清算事件 → liq_imbalance* / liq_total_z / liq_align
+# 文件: data/liquidations/{SYMBOL}.parquet
+# 公开源盖不住多年训练窗时请保持 false
+liquidations: false

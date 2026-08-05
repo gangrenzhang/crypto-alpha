@@ -149,9 +149,18 @@ def fetch_gdelt_gal_history(
     chunk_minutes = 120 if day_chunk else 60
 
     def _iter_stamps(t0: datetime, t1: datetime):
+        # GAL 按官方说明多在每个一刻钟后的几分钟成簇落盘(其余分钟常 404)。
+        # 只请求 m%15 ∈ {1,2,3} 可少约 80% HTTP, 覆盖实测命中文件。
+        sparse = True
+        if cfg is not None:
+            try:
+                sparse = bool(cfg["news"].get("history", {}).get("gdelt_gal_sparse_minutes", True))
+            except Exception:
+                sparse = True
         t = t0
         while t <= t1:
-            yield t
+            if (not sparse) or ((t.minute % 15) in (1, 2, 3)):
+                yield t
             t = t + timedelta(minutes=1)
 
     def _fetch_one(ts: datetime) -> tuple[datetime, list[dict], str]:

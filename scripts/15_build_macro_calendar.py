@@ -60,6 +60,19 @@ def main() -> int:
         df.to_csv(csv_path, index=False)
         print(f"[ok] CSV → {csv_path}", flush=True)
 
+    # FF GitHub 归档仅到 2023; 本地有 HF 缓存时自动补 2024+, 避免重建后再次悬崖
+    hf_csv = macro_events_path(cfg).parent / "ff_hist_cache" / "hf_forex_factory_cache.csv"
+    if hf_csv.exists():
+        import subprocess
+
+        print(f"[hf] 检测到 {hf_csv.name}, 自动补齐 2024+ …", flush=True)
+        rc = subprocess.run(
+            [sys.executable, "scripts/16_import_hf_ff_calendar.py", "--start", "2024-01-01"],
+            check=False,
+        ).returncode
+        if rc != 0:
+            print(f"[warn] HF 自动导入退出码 {rc}", flush=True)
+
     cur = load_macro_events(cfg)
     print(f"[ok] 回读校验 {len(cur)} 条", flush=True)
     print(

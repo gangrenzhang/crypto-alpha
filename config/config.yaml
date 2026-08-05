@@ -2,6 +2,11 @@
 # 加密货币多专家集成预测系统 — 全局配置
 # 所有脚本从此文件读取参数, 保证可复现
 # ============================================================
+#
+# 训练依赖数据开关请改同目录 training_data.yaml（true/false 即可）。
+# Config.load 会同步到下方 news.as_feature / macro_calendar.as_feature /
+# features.mtf_enabled / data.fetch_liquidations 等遗留键。
+# ============================================================
 
 project:
   name: crypto-alpha
@@ -79,6 +84,7 @@ news:
     gdelt_backend: gal         # gal=静态分钟文件(推荐, 绕开 DOC 429); doc=DOC API
     gdelt_gal_workers: 24      # GAL 并发下载数
     gdelt_gal_flush_minutes: 180  # 每推进约 N 分钟进度刷盘一次
+    gdelt_gal_sparse_minutes: true  # 只拉一刻钟后 1/2/3 分文件(其余多 404)
     max_windows: 8000          # 含满额自动切分后的请求上限; 不够可续跑
 
     max_pages: 400             # CryptoCompare 分页数安全上限
@@ -145,6 +151,10 @@ macro_calendar:
   numeric_print_kind: first_print   # 与 ALFRED/BLS 首印对齐; 需 FRED_API_KEY 构建时拉取
   min_coverage_warn: 0.0           # >0 时 has_recent_macro 过低 → macro_features_sparse(计入 env_guard); 日历天生稀疏, 默认关
   require_min_coverage: false      # true=覆盖率不足 fail-fast
+  # has_recent_macro 只看「窗内有无任意可见事件」, 会掩盖「日程还在但 forecast/actual
+  # 断供」的时段(本库 2025-05 起 surprise 覆盖从 ≈0.82 跌到 ≈0.23)。>0 时数值通道
+  # 覆盖率过低 → macro_surprise_sparse; 覆盖率始终写入 attrs.macro_surprise_coverage。
+  min_surprise_coverage_warn: 0.0
 
 # ---------------- 特征 ----------------
 features:

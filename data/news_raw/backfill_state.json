@@ -1,21 +1,21 @@
 {
   "range": [
-    "2026-01-01T00:00:00+00:00",
-    "2026-07-30T10:55:28.976652+00:00"
+    "2023-01-01T00:00:00+00:00",
+    "2024-01-01T00:00:00+00:00"
   ],
   "providers": [
     "gdelt"
   ],
-  "total": 262143,
-  "note": "GAL crypto-only campaign from 2020-01-01",
+  "total": 396173,
+  "note": "18_backfill_news_2022_2025 durable campaign",
   "gdelt_backend": "gal",
-  "gdelt_gal_cursor": "2026-01-01T02:00:00+00:00",
-  "last_run": "2026-08-04T01:05:28.752852+00:00",
+  "gdelt_gal_cursor": "2023-03-05T17:49:00+00:00",
+  "last_run": "2026-08-05T02:59:22.080992+00:00",
   "gdelt_gal_stats": {
-    "files": 120,
-    "ok": 10,
-    "missing_404": 110,
-    "err": 0,
-    "matched": 7
+    "files": 18360,
+    "ok": 16307,
+    "missing_404": 1867,
+    "err": 186,
+    "matched": 12744
   }
 }

@@ -948,6 +948,10 @@ def test_derivatives_nan_does_not_wipe_samples():
 
     cfg = Config.load()
     cfg.raw["features"]["mtf_enabled"] = False
+    # 本例断言三类衍生品列的兜底; training_data 默认关清算, 需显式打开
+    cfg.raw["features"]["use_funding"] = True
+    cfg.raw["features"]["use_open_interest"] = True
+    cfg.raw["features"]["use_liquidations"] = True
     n = 2500  # 足够 FFD 窗口 + 滚动指标冷启动
     idx = pd.date_range("2023-01-01", periods=n, freq="1h", tz="UTC")
     rng = np.random.default_rng(0)

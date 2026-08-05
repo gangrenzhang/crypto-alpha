@@ -52,16 +52,44 @@ def _empty_macro_features(
     return feat
 
 
-def _maybe_warn_macro_coverage(feat: pd.DataFrame, mcfg: dict, symbol: str) -> None:
-    thr = float(mcfg.get("min_coverage_warn", 0.0))
-    if thr <= 0:
+def _record_surprise_coverage(feat: pd.DataFrame, mcfg: dict, symbol: str) -> None:
+    """单独记 surprise 通道覆盖率。
+
+    ``has_recent_macro`` 只要窗内有**任意**可见事件(含讲话/会议)就为 1, 会掩盖
+    「事件表还在、但 forecast/actual 断供」的时段(本库 2025-05 起即如此)。此处把
+    数值通道单独量化写入 attrs, 阈值为正时另记 degradation。
+    """
+    if "macro_surprise_raw" in feat.columns:
+        raw = pd.Series(feat["macro_surprise_raw"]).fillna(0.0).astype(float)
+        cov = float((raw != 0.0).mean()) if len(raw) else 0.0
+    else:
+        cov = 0.0
+    feat.attrs["macro_surprise_coverage"] = cov
+
+    thr = float(mcfg.get("min_surprise_coverage_warn", 0.0))
+    if thr <= 0 or cov >= thr:
         return
+    tag = f"macro_surprise_sparse(coverage={cov:.4f},threshold={thr:.4f})"
+    deg = list(feat.attrs.get("degradations") or [])
+    if tag not in deg:
+        deg.append(tag)
+    feat.attrs["degradations"] = deg
+    print(
+        f"[macro] WARN: {symbol} 宏观 surprise 覆盖率 {cov:.2%} < {thr:.0%}; "
+        f"事件表可能只剩日程而无 forecast/actual(检查 2025-05 之后的数值源)。"
+    )
+
+
+def _maybe_warn_macro_coverage(feat: pd.DataFrame, mcfg: dict, symbol: str) -> None:
     if "has_recent_macro" in feat.columns:
         cov = float(pd.Series(feat["has_recent_macro"]).fillna(0.0).astype(float).mean())
     else:
         cov = 0.0
     feat.attrs["macro_feature_coverage"] = cov
-    if cov >= thr:
+    _record_surprise_coverage(feat, mcfg, symbol)
+
+    thr = float(mcfg.get("min_coverage_warn", 0.0))
+    if thr <= 0 or cov >= thr:
         return
     tag = f"macro_features_sparse(coverage={cov:.4f},threshold={thr:.4f})"
     deg = list(feat.attrs.get("degradations") or [])

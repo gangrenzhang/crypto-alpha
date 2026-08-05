@@ -940,7 +940,16 @@ def _append_raw_store(cfg, items: list[dict]) -> tuple[int, int]:
     combined = new if cur is None else pd.concat([cur, new], ignore_index=True)
     combined["published_at"] = pd.to_datetime(combined["published_at"], utc=True).dt.floor("s")
     before = 0 if cur is None else len(cur)
-    combined = combined.drop_duplicates(subset=["source", "title", "published_at"]).sort_values("published_at")
+    combined = combined.drop_duplicates(subset=["source", "title", "published_at"])
+    if combined.empty:
+        return 0, before
+    # pandas 2.3.x + py3.14: DatetimeArray.argsort / sort_values on tz-aware
+    # datetimes can raise IndexError; numpy int64 argsort is reliable.
+    order = np.argsort(
+        combined["published_at"].to_numpy(dtype="datetime64[ns]").view("i8"),
+        kind="mergesort",
+    )
+    combined = combined.iloc[order].reset_index(drop=True)
     p = _raw_store_path(cfg)
     p.parent.mkdir(parents=True, exist_ok=True)
     combined.to_parquet(p, engine="pyarrow", index=False)

@@ -63,11 +63,19 @@ def add_technical_features(
     vol_window: int,
     *,
     oi_change_bars: int = 24,
+    use_funding: bool = True,
+    use_open_interest: bool = True,
+    use_liquidations: bool = True,
 ) -> pd.DataFrame:
     """在原始 OHLCV(+衍生品) 上追加一组技术指标特征。
 
     ``oi_change_bars``: OI 变化的回看 **bar 数**(应按墙钟≈24h 由调用方换算;
     默认 24 兼容旧 1h 主周期; 30m 主周期应由 build 传入 48)。
+
+    ``use_funding`` / ``use_open_interest`` / ``use_liquidations``: 对应
+    ``training_data.yaml`` 开关; false 时不生成该路衍生特征列。
+    直接调用本函数时三者默认 True(保持历史「有列就衍生」行为);
+    ``build_feature_matrix`` 会按配置显式传入。
     """
     out = df.copy()
     close = out["close"]
@@ -104,12 +112,12 @@ def add_technical_features(
 
     # 衍生品衍生特征(若存在)。拉取失败时源列为全 NaN —— 必须 fillna(0),
     # 否则 prepare_dataset 的 notna().all 会清空全部建模样本(与「优雅降级」冲突)。
-    if "funding_rate" in out.columns:
+    if use_funding and "funding_rate" in out.columns:
         out["funding_z"] = (
             (out["funding_rate"] - rolling_mean(out["funding_rate"], vol_window))
             / (rolling_std(out["funding_rate"], vol_window) + 1e-12)
         ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    if "open_interest" in out.columns:
+    if use_open_interest and "open_interest" in out.columns:
         out["oi_change"] = (
             out["open_interest"].pct_change(oi_bars)
             .replace([np.inf, -np.inf], np.nan).fillna(0.0)
@@ -117,7 +125,11 @@ def add_technical_features(
 
     # 清算衍生特征: 不平衡(空头爆仓−多头爆仓)对价格有短窗推力;
     # 源列全 NaN(接口不可用)时衍生列填 0, 与 funding_z/oi_change 同纪律。
-    if "liq_long" in out.columns and "liq_short" in out.columns:
+    if (
+        use_liquidations
+        and "liq_long" in out.columns
+        and "liq_short" in out.columns
+    ):
         ll = out["liq_long"]
         ls = out["liq_short"]
         if ll.isna().all() and ls.isna().all():

@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from .macro_calendar import DATE_ONLY_SCHEDULE_SOURCE
+
 FF_RAW_BASE = (
     "https://raw.githubusercontent.com/spoluan/forex-factory-scraper/"
     "master/datasets/forex_factory_calendar_{year}.csv"
@@ -67,31 +69,32 @@ def _category(title: str) -> str:
     return "other"
 
 
-def _parse_ff_datetime(date_s, time_s) -> pd.Timestamp | None:
-    """归档时间为 Asia/Shanghai 墙钟 → UTC。"""
+def _parse_ff_datetime(date_s, time_s) -> tuple[pd.Timestamp | None, bool]:
+    """归档时间为 Asia/Shanghai 墙钟 → UTC。返回 ``(ts, date_only)``。
+
+    ``All Day`` / ``Tentative`` / 空时刻只有日期, 归到当日 UTC 日终而非中午 CST —
+    中午 CST(=04:00 UTC)早于当天绝大多数欧美公布, 会把 actual 提前泄漏。
+    """
+    from .macro_calendar import date_only_release_ts
+
     ds = str(date_s).strip()
     ts = str(time_s).strip()
     if not ds or ds.lower() == "nan":
-        return None
+        return None, False
     if not ts or ts.lower() in ("all day", "nan", "tentative", ""):
-        # 全日事件: 中午 CST
-        try:
-            local = pd.Timestamp(f"{ds} 12:00:00").tz_localize("Asia/Shanghai")
-            return local.tz_convert("UTC")
-        except Exception:
-            return None
+        return date_only_release_ts(ds), True
     # 9:30pm / 3:00am
     try:
         local = pd.to_datetime(f"{ds} {ts}", format="mixed")
         if local.tzinfo is None:
             local = local.tz_localize("Asia/Shanghai")
-        return pd.Timestamp(local.tz_convert("UTC"))
+        return pd.Timestamp(local.tz_convert("UTC")), False
     except Exception:
         try:
             local = pd.Timestamp(f"{ds} {ts}").tz_localize("Asia/Shanghai")
-            return local.tz_convert("UTC")
+            return local.tz_convert("UTC"), False
         except Exception:
-            return None
+            return None, False
 
 
 def download_ff_year_csv(year: int, cache_dir: Path) -> Path | None:
@@ -124,7 +127,7 @@ def ff_csv_to_events(path: Path, *, min_importance: int = 3) -> list[dict]:
             continue
         ccy = str(getattr(r, "Currency", "") or "").upper()
         country = CCY_MAP.get(ccy, ccy[:2] if ccy else "XX")
-        ts = _parse_ff_datetime(getattr(r, "Date", None), getattr(r, "Time", None))
+        ts, date_only = _parse_ff_datetime(getattr(r, "Date", None), getattr(r, "Time", None))
         if ts is None:
             continue
         prev = _parse_num(getattr(r, "Previous", None))
@@ -144,7 +147,9 @@ def ff_csv_to_events(path: Path, *, min_importance: int = 3) -> list[dict]:
             "unit": "",
             "source": "forexfactory_hist",
             "print_kind": "first_print" if np.isfinite(act) else "n/a",
-            "schedule_source": "forexfactory",
+            "schedule_source": (
+                DATE_ONLY_SCHEDULE_SOURCE if date_only else "forexfactory"
+            ),
         })
     return events
 

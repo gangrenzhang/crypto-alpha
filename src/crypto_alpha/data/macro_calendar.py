@@ -33,6 +33,9 @@ EVENT_COLUMNS = [
     "schedule_source",  # bls_official | heuristic | forexfactory | federalreserve | import
 ]
 
+# 日历源只给出日期、未给盘中时刻时的标记(FF 归档的 All Day / Tentative / 缺时刻行)
+DATE_ONLY_SCHEDULE_SOURCE = "forexfactory_dateonly"
+
 REQUIRED_COLUMNS = [
     "name",
     "scheduled_at",
@@ -58,6 +61,26 @@ def macro_events_path(cfg) -> Path:
 
 def _to_utc_ts(series) -> pd.Series:
     return pd.to_datetime(series, utc=True, errors="coerce")
+
+
+def date_only_release_ts(local_date) -> pd.Timestamp | None:
+    """源只给出日期(无盘中时刻)时的保守可见时刻: 该本地日 **UTC 日终**。
+
+    绝不可用本地午夜: 本地 00:00 换算成 UTC 常落到**前一天**, 会让 actual/surprise
+    比真实公布早十几小时暴露给特征(前视泄漏)。任何时区的本地日 D 最晚也在
+    ``D 23:59:59 UTC`` 之前结束(UTC+14 的 D 末 = D 09:59:59 UTC), 因此取 UTC 日终
+    可保证「不早于真实公布」, 代价仅是把该事件推迟到当日收尾才可见。
+    """
+    try:
+        d = pd.Timestamp(local_date)
+    except Exception:
+        return None
+    if pd.isna(d):
+        return None
+    if d.tzinfo is not None:
+        # 取**本地**日历日: tz_convert(None) 会先折算到 UTC, 恰好把本地午夜推回前一天
+        d = d.tz_localize(None)
+    return d.normalize().tz_localize("UTC") + pd.Timedelta(hours=23, minutes=59, seconds=59)
 
 
 def normalize_macro_events(df: pd.DataFrame) -> pd.DataFrame:
