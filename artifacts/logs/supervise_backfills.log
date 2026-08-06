@@ -1,0 +1,10 @@
+[supervise 2026-08-05T04:38:31Z] supervisor start
+[supervise 2026-08-05T04:38:31Z] supervisor start
+[supervise 2026-08-05T04:38:31Z] ff_scrape_2025_2026.log: start attempt 1: python -u scripts/21_scrape_ff_calendar.py --start 2025-04-08 --end 2026-07-31 --sleep 1.0
+[supervise 2026-08-05T04:38:31Z] ff_scrape_2025_2026.log: start attempt 1: python -u scripts/21_scrape_ff_calendar.py --start 2025-04-08 --end 2026-07-31 --sleep 1.0
+[supervise 2026-08-05T04:49:23Z] ff_scrape_2025_2026.log: exit=0
+[supervise 2026-08-05T04:49:23Z] ff_scrape_2025_2026.log: exit=0
+[supervise 2026-08-05T04:49:23Z] ff_scrape_2025_2026.log: COMPLETE
+[supervise 2026-08-05T04:49:23Z] ff_scrape_2025_2026.log: COMPLETE
+[supervise 2026-08-05T04:49:24Z] news_backfill_2022_2025.log: start attempt 1: python -u scripts/18_backfill_news_2022_2025.py
+[supervise 2026-08-05T04:49:24Z] news_backfill_2022_2025.log: start attempt 1: python -u scripts/18_backfill_news_2022_2025.py

@@ -1,0 +1,16 @@
+[fetch] ETH/USDT liquidations …
+{
+  "ok": true,
+  "n_fetched": 1,
+  "n_stored_total": 1,
+  "path": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/data/liquidations/ETH_USDT.parquet",
+  "exchanges_tried": [
+    "gate"
+  ],
+  "tip_only": false,
+  "t_min": "2026-08-05 03:00:27+00:00",
+  "t_max": "2026-08-05 03:00:27+00:00"
+}
+[ohlcv] 2020-01-01 00:00:00+00:00 -> 2026-08-04 07:30:00+00:00 n=115479
+[align] bars=115479 finite=0 nonzero_bars=0 liq_long_sum=0.00 liq_short_sum=0.00
+[feat] degradations=None attached=None n_events=None liq_imbalance_absmax=None

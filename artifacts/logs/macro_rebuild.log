@@ -1,0 +1,6 @@
+[ff-hist] 2020: 1420 events (impact>=3)
+[ff-hist] 2021: 1297 events (impact>=3)
+[ff-hist] 2022: 1328 events (impact>=3)
+[ff-hist] 2023: 1501 events (impact>=3)
+[macro-build] FF 时刻吸附官方日程: 4 行
+[macro-build] WARN: 未设置 FRED_API_KEY → BLS 数值用 current_vintage (非首印)。申请: https://fred.stlouisfed.org/docs/api/api_key.html

@@ -1,0 +1,302 @@
+[cfg] train_start= 2020-09-14T00:00:00Z
+[cfg] test_start = 2024-09-14T00:00:00Z
+[cfg] test_end   = 2026-07-18T00:00:00Z
+[cfg] open_interest= True
+[cfg] news= False liquidations= False
+
+[prepare] BTC/USDT ...
+[warn] BTC/USDT: tip 来自备用所 gate (主所 binance); 历史缓存与 tip 可能存在微观价差接缝。
+[prepare] panel bars=156885 2017-08-17 04:00:00+00:00 → 2026-08-04 07:30:00+00:00
+[prepare] events=29691 n_features=95 data_source=cache
+
+[walk-forward] fitting train → backtest test ...
+[deep_ts] WARN: deep_ts_train_includes_post_cutoff(n_pre=0,n_post=11759)
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: divide by zero encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: overflow encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:219: RuntimeWarning: invalid value encountered in matmul
+  raw_prediction = X @ weights_xp + intercept_xp
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: divide by zero encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: overflow encountered in matmul
+  ret = a @ b
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/utils/extmath.py:229: RuntimeWarning: invalid value encountered in matmul
+  ret = a @ b
+
+========== BTC Walk-Forward 结果 ==========
+训练窗: [2020-09-14T00:00:00Z, 2024-09-14T00:00:00Z)
+回测窗: [2024-09-14T00:00:00Z, 2026-07-18T00:00:00Z]
+开仓笔数 n_opened_trades = 0
+胜率 win_rate            = 0.0
+总收益 total_return      = 0.0
+最大回撤 max_drawdown    = 0.0
+夏普 sharpe             = None
+摘要 -> /Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/walkforward_BTC_USDT.json
+{
+  "symbol": "BTC/USDT",
+  "mode": "walk_forward_train_then_test",
+  "evaluation_unit": "walk_forward",
+  "split_kind": "single_cut_holdout",
+  "note": "真外推(single-cut holdout, 非滚动再训练): 仅训练窗拟合; 测试窗 predict+deploy 门控; 阈值在全部训练 OOF 冻结, 禁止测试窗刷 thr。勿与 research OOF / train_and_validate.backtest_deploy 成交数直接对比。",
+  "data_source": "cache",
+  "panel_bars": 156885,
+  "panel_start": "2017-08-17 04:00:00+00:00",
+  "panel_end": "2026-08-04 07:30:00+00:00",
+  "train_start": "2020-09-14 00:00:00+00:00",
+  "train_end_exclusive": "2024-09-14 00:00:00+00:00",
+  "recompute_sample_weight_on_split": true,
+  "label_deadline": "2024-09-14 00:00:00+00:00",
+  "embargo_bars": 0,
+  "embargo_delta": "0 days 00:00:00",
+  "backtest_start": "2024-09-14 00:00:00+00:00",
+  "backtest_end": "2026-07-18 00:00:00+00:00",
+  "prob_threshold_effective": 0.55,
+  "slip_ref_trgt": 0.007544865055199024,
+  "n_train_events": 14288,
+  "n_test_events": 5766,
+  "n_opened_trades": 0,
+  "n_wins": 0,
+  "n_losses": 0,
+  "win_rate": 0.0,
+  "total_return": 0.0,
+  "max_drawdown": 0.0,
+  "initial_capital": 10000.0,
+  "final_capital": 10000.0,
+  "train_oof_report": {
+    "n": 14288,
+    "auc": 0.5210204257259546,
+    "brier": 0.24975830648504907,
+    "logloss": 0.6926652502228029,
+    "accuracy": 0.5149776035834267,
+    "base_rate": 0.4979003359462486
+  },
+  "test_report": {
+    "n": 5766,
+    "auc": 0.5216837347168293,
+    "brier": 0.24989080532559182,
+    "logloss": 0.6929287733514526,
+    "accuracy": 0.5142212972597988,
+    "base_rate": 0.508324661810614
+  },
+  "backtest_metrics": {
+    "n_events": 5766,
+    "n_trades": 0,
+    "n_halted": 0,
+    "total_return": 0.0,
+    "sharpe": 0.0,
+    "sharpe_annualized": 0.0,
+    "max_drawdown": 0.0,
+    "max_drawdown_realized": 0.0,
+    "mark_to_market": true,
+    "avg_uniqueness": 1.0,
+    "n_trades_effective": 0.0,
+    "win_rate": 0.0,
+    "avg_pnl": 0.0,
+    "portfolio_mode": "portfolio",
+    "sharpe_equity": 0.0,
+    "sharpe_equity_annualized": 0.0,
+    "sharpe_equity_mtm": 0.0,
+    "sharpe_equity_mtm_annualized": 0.0,
+    "n_skipped_capacity": 0,
+    "calmar": 0.0
+  },
+  "gate_diagnostics": {
+    "prob_threshold": 0.55,
+    "n_events": 5766,
+    "raw_proba": {
+      "mean": 0.4922753232941208,
+      "std": 0.015938915278110994,
+      "min": 0.440027638241781,
+      "max": 0.5587133347772225,
+      "frac_ge_threshold": 0.001040582726326743
+    },
+    "calibrated_proba": {
+      "mean": 0.4975601427059014,
+      "std": 0.006476926344253843,
+      "min": 0.4763422469763619,
+      "max": 0.5245429230754766,
+      "n_unique": 5075,
+      "top_levels": [
+        {
+          "prob": 0.496892,
+          "n": 5,
+          "frac": 0.0008671522719389525
+        },
+        {
+          "prob": 0.500846,
+          "n": 4,
+          "frac": 0.000693721817551162
+        },
+        {
+          "prob": 0.49922,
+          "n": 4,
+          "frac": 0.000693721817551162
+        },
+        {
+          "prob": 0.496406,
+          "n": 4,
+          "frac": 0.000693721817551162
+        },
+        {
+          "prob": 0.496277,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.496107,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.492946,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.497344,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.489468,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.501407,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.495853,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.497326,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        }
+      ]
+    },
+    "gates": {
+      "n_prob_ge_threshold": 0,
+      "frac_prob_ge_threshold": 0.0,
+      "n_confident": 0,
+      "frac_confident": 0.0,
+      "n_prob_and_confident": 0,
+      "frac_prob_and_confident": 0.0,
+      "n_opened_size_gt_0": 0,
+      "frac_opened_size_gt_0": 0.0,
+      "n_pass_gate_but_size_0": 0
+    },
+    "conformal_qhat": 0.5081147264988043,
+    "conformal_min_margin": 0.05,
+    "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
+    "path": "walk_forward_deploy",
+    "threshold_tags": [
+      "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)"
+    ],
+    "health_tags": [],
+    "split_tags": [
+      "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+      "walkforward_purged_label_overlap(n=2)",
+      "walkforward_sample_weight_recomputed(n=14288)"
+    ]
+  },
+  "dropped_experts": [],
+  "degradations": [
+    "ohlcv_tip_exchange_fallback",
+    "deploy_cal_method=sigmoid",
+    "auto_fallback_sigmoid(n_unique=16<20)",
+    "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+    "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+    "walkforward_purged_label_overlap(n=2)",
+    "walkforward_sample_weight_recomputed(n=14288)",
+    "deep_ts:deep_ts_train_includes_post_cutoff(n_pre=0,n_post=11759)"
+  ],
+  "split_tags": [
+    "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+    "walkforward_purged_label_overlap(n=2)",
+    "walkforward_sample_weight_recomputed(n=14288)"
+  ]
+}

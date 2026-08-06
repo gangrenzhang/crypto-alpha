@@ -1,0 +1,4 @@
+[oi] period=30m proxy=http://127.0.0.1:7890
+[oi] {'symbol': 'BTC/USDT', 'ok': True, 'path': '/Users/zhanggangren/Desktop/pyro/crypto-alpha/data/raw/BTC_USDT__30m.parquet', 'oi_points': 500, 'oi_span': '2026-07-25 17:30:00+00:00 → 2026-08-05 03:00:00+00:00', 'before_nn': 0.003180673741912866, 'after_nn': 0.003180673741912866, 'filled_rows': 0}
+[oi] {'symbol': 'ETH/USDT', 'ok': True, 'path': '/Users/zhanggangren/Desktop/pyro/crypto-alpha/data/raw/ETH_USDT__30m.parquet', 'oi_points': 500, 'oi_span': '2026-07-25 17:30:00+00:00 → 2026-08-05 03:00:00+00:00', 'before_nn': 0.004321131980706449, 'after_nn': 0.004321131980706449, 'filled_rows': 0}
+[note] 公开 OI 历史仅约 30 天; 多年训练窗仍会大量 NaN→特征填 0。完整历史需付费/自建采集。

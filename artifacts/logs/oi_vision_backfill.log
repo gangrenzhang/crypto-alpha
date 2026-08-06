@@ -1,0 +1,201 @@
+[oi] BTC/USDT Vision BTCUSDT 2020-09-01 → 2026-08-04 workers=32
+[vision] BTCUSDT 100/2164 ok=100 miss=0 elapsed=4s last=2020-12-19 via=net
+[vision] BTCUSDT 200/2164 ok=200 miss=0 elapsed=7s last=2021-04-04 via=net
+[vision] BTCUSDT 300/2164 ok=300 miss=0 elapsed=10s last=2021-06-23 via=net
+[vision] BTCUSDT 400/2164 ok=400 miss=0 elapsed=15s last=2021-10-08 via=net
+[vision] BTCUSDT 500/2164 ok=500 miss=0 elapsed=19s last=2022-01-11 via=net
+[vision] BTCUSDT 600/2164 ok=600 miss=0 elapsed=24s last=2022-04-27 via=net
+[vision] BTCUSDT 700/2164 ok=700 miss=0 elapsed=28s last=2022-07-29 via=net
+[vision] BTCUSDT 800/2164 ok=800 miss=0 elapsed=32s last=2022-11-16 via=net
+[vision] BTCUSDT 900/2164 ok=900 miss=0 elapsed=35s last=2023-02-22 via=net
+[vision] BTCUSDT 1000/2164 ok=1000 miss=0 elapsed=38s last=2023-05-15 via=net
+[vision] BTCUSDT 1100/2164 ok=1100 miss=0 elapsed=42s last=2023-09-11 via=net
+[vision] BTCUSDT 1200/2164 ok=1200 miss=0 elapsed=45s last=2023-12-04 via=net
+[warn] BTCUSDT 2024-03-04: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)>
+[warn] BTCUSDT 2024-02-06: <urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1081)>
+[warn] BTCUSDT 2024-03-02: Remote end closed connection without response
+[vision] BTCUSDT 1300/2164 ok=1297 miss=3 elapsed=121s last=2024-04-05 via=net
+[vision] BTCUSDT 1400/2164 ok=1397 miss=3 elapsed=125s last=2024-06-27 via=net
+[vision] BTCUSDT 1500/2164 ok=1497 miss=3 elapsed=129s last=2024-10-19 via=net
+[warn] BTCUSDT 2024-03-12: <urlopen error _ssl.c:1063: The handshake operation timed out>
+[vision] BTCUSDT 1600/2164 ok=1596 miss=4 elapsed=133s last=2025-01-30 via=net
+[warn] BTCUSDT 2024-03-15: <urlopen error _ssl.c:1063: The handshake operation timed out>
+[vision] BTCUSDT 1700/2164 ok=1695 miss=5 elapsed=136s last=2025-05-11 via=net
+[warn] BTCUSDT 2024-03-14: The read operation timed out
+[warn] BTCUSDT 2024-03-11: Remote end closed connection without response
+[warn] BTCUSDT 2024-02-07: The read operation timed out
+[vision] BTCUSDT 1800/2164 ok=1792 miss=8 elapsed=140s last=2025-08-06 via=net
+[vision] BTCUSDT 1900/2164 ok=1892 miss=8 elapsed=144s last=2025-11-16 via=net
+[vision] BTCUSDT 2000/2164 ok=1992 miss=8 elapsed=147s last=2026-03-07 via=net
+[vision] BTCUSDT 2100/2164 ok=2092 miss=8 elapsed=150s last=2026-06-02 via=net
+Traceback (most recent call last):
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 269, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 253, in main
+    info = backfill_symbol(
+        cfg, symbol, start=start, end=end, proxy=proxy,
+        workers=args.workers, cache_dir=cache_dir,
+    )
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 201, in backfill_symbol
+    oi = fetch_vision_oi(bn, s0, end, proxy=proxy, workers=workers, cache_dir=cache_dir / bn)
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 141, in fetch_vision_oi
+    d, s, src = fut.result()
+                ~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/_base.py", line 443, in result
+    return self.__get_result()
+           ~~~~~~~~~~~~~~~~~^^
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/_base.py", line 395, in __get_result
+    raise self._exception
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/thread.py", line 86, in run
+    result = ctx.run(self.task)
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/concurrent/futures/thread.py", line 73, in run
+    return fn(*args, **kwargs)
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 130, in one
+    s = _fetch_day_oi(opener, sym, d)
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 74, in _fetch_day_oi
+    raw = resp.read()
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 500, in read
+    s = self._safe_read(self.length)
+  File "/Library/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 652, in _safe_read
+    raise IncompleteRead(data, amt - len(data))
+http.client.IncompleteRead: IncompleteRead(0 bytes read, 11349 more expected)
+[oi] BTC/USDT Vision BTCUSDT 2020-09-01 → 2026-08-04 workers=16
+[vision] BTCUSDT 100/2164 ok=100 miss=0 err=0 elapsed=0s last=2020-12-13 via=cache
+[vision] BTCUSDT 200/2164 ok=200 miss=0 err=0 elapsed=0s last=2021-03-17 via=cache
+[vision] BTCUSDT 300/2164 ok=300 miss=0 err=0 elapsed=0s last=2021-06-27 via=cache
+[vision] BTCUSDT 400/2164 ok=400 miss=0 err=0 elapsed=0s last=2021-10-06 via=cache
+[vision] BTCUSDT 500/2164 ok=500 miss=0 err=0 elapsed=0s last=2022-01-14 via=cache
+[vision] BTCUSDT 600/2164 ok=600 miss=0 err=0 elapsed=0s last=2022-04-19 via=cache
+[vision] BTCUSDT 700/2164 ok=700 miss=0 err=0 elapsed=0s last=2022-07-31 via=cache
+[vision] BTCUSDT 800/2164 ok=800 miss=0 err=0 elapsed=0s last=2022-11-09 via=cache
+[vision] BTCUSDT 900/2164 ok=900 miss=0 err=0 elapsed=0s last=2023-02-17 via=cache
+[vision] BTCUSDT 1000/2164 ok=1000 miss=0 err=0 elapsed=0s last=2023-06-05 via=cache
+[vision] BTCUSDT 1100/2164 ok=1100 miss=0 err=0 elapsed=1s last=2023-09-06 via=cache
+[vision] BTCUSDT 1200/2164 ok=1200 miss=0 err=0 elapsed=1s last=2023-12-13 via=cache
+[vision] BTCUSDT 1300/2164 ok=1300 miss=0 err=0 elapsed=1s last=2024-03-27 via=cache
+[vision] BTCUSDT 1400/2164 ok=1400 miss=0 err=0 elapsed=1s last=2024-07-09 via=cache
+[vision] BTCUSDT 1500/2164 ok=1500 miss=0 err=0 elapsed=1s last=2024-10-15 via=cache
+[vision] BTCUSDT 1600/2164 ok=1600 miss=0 err=0 elapsed=1s last=2025-01-25 via=cache
+[vision] BTCUSDT 1700/2164 ok=1700 miss=0 err=0 elapsed=1s last=2025-05-07 via=cache
+[vision] BTCUSDT 1800/2164 ok=1800 miss=0 err=0 elapsed=1s last=2025-08-14 via=cache
+[vision] BTCUSDT 1900/2164 ok=1900 miss=0 err=0 elapsed=1s last=2025-11-25 via=cache
+[vision] BTCUSDT 2000/2164 ok=2000 miss=0 err=0 elapsed=1s last=2026-03-03 via=cache
+[vision] BTCUSDT 2100/2164 ok=2100 miss=0 err=0 elapsed=1s last=2026-06-13 via=cache
+[vision] BTCUSDT 2164/2164 ok=2163 miss=1 err=0 elapsed=2s last=2024-03-12 via=net
+Traceback (most recent call last):
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 284, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 268, in main
+    info = backfill_symbol(
+        cfg, symbol, start=start, end=end, proxy=proxy,
+        workers=args.workers, cache_dir=cache_dir,
+    )
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 216, in backfill_symbol
+    oi = fetch_vision_oi(bn, s0, end, proxy=proxy, workers=workers, cache_dir=cache_dir / bn)
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 170, in fetch_vision_oi
+    out = pd.concat(parts).sort_index()
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/series.py", line 4088, in sort_index
+    return super().sort_index(
+           ~~~~~~~~~~~~~~~~~~^
+        axis=axis,
+        ^^^^^^^^^^
+    ...<7 lines>...
+        key=key,
+        ^^^^^^^^
+    )
+    ^
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/generic.py", line 5331, in sort_index
+    indexer = get_indexer_indexer(
+        target, level, ascending, kind, na_position, sort_remaining, key
+    )
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/sorting.py", line 113, in get_indexer_indexer
+    indexer = nargsort(
+        target,
+    ...<2 lines>...
+        na_position=na_position,
+    )
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/sorting.py", line 425, in nargsort
+    return items.argsort(
+           ~~~~~~~~~~~~~^
+        ascending=ascending,
+        ^^^^^^^^^^^^^^^^^^^^
+        kind=kind,
+        ^^^^^^^^^^
+        na_position=na_position,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/arrays/base.py", line 848, in argsort
+    return nargsort(
+        values,
+    ...<3 lines>...
+        mask=np.asarray(self.isna()),
+    )
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/sorting.py", line 439, in nargsort
+    indexer = non_nan_idx[non_nans.argsort(kind=kind)]
+              ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+IndexError: index 864 is out of bounds for axis 0 with size 0
+[oi] BTC/USDT Vision BTCUSDT 2020-09-01 → 2026-08-04 workers=16
+[vision] BTCUSDT 100/2164 ok=100 miss=0 err=0 elapsed=0s last=2020-12-08 via=cache
+[vision] BTCUSDT 200/2164 ok=200 miss=0 err=0 elapsed=0s last=2021-03-18 via=cache
+[vision] BTCUSDT 300/2164 ok=300 miss=0 err=0 elapsed=0s last=2021-06-26 via=cache
+[vision] BTCUSDT 400/2164 ok=400 miss=0 err=0 elapsed=0s last=2021-10-13 via=cache
+[vision] BTCUSDT 500/2164 ok=500 miss=0 err=0 elapsed=0s last=2022-01-10 via=cache
+[vision] BTCUSDT 600/2164 ok=600 miss=0 err=0 elapsed=0s last=2022-04-20 via=cache
+[vision] BTCUSDT 700/2164 ok=700 miss=0 err=0 elapsed=0s last=2022-07-27 via=cache
+[vision] BTCUSDT 800/2164 ok=800 miss=0 err=0 elapsed=0s last=2022-11-10 via=cache
+[vision] BTCUSDT 900/2164 ok=900 miss=0 err=0 elapsed=0s last=2023-02-15 via=cache
+[vision] BTCUSDT 1000/2164 ok=1000 miss=0 err=0 elapsed=0s last=2023-05-25 via=cache
+[vision] BTCUSDT 1100/2164 ok=1100 miss=0 err=0 elapsed=1s last=2023-09-02 via=cache
+[vision] BTCUSDT 1200/2164 ok=1200 miss=0 err=0 elapsed=1s last=2023-12-12 via=cache
+[vision] BTCUSDT 1300/2164 ok=1300 miss=0 err=0 elapsed=1s last=2024-03-08 via=cache
+[vision] BTCUSDT 1400/2164 ok=1400 miss=0 err=0 elapsed=1s last=2024-06-30 via=cache
+[vision] BTCUSDT 1500/2164 ok=1500 miss=0 err=0 elapsed=1s last=2024-10-10 via=cache
+[vision] BTCUSDT 1600/2164 ok=1600 miss=0 err=0 elapsed=1s last=2025-01-17 via=cache
+[vision] BTCUSDT 1700/2164 ok=1700 miss=0 err=0 elapsed=1s last=2025-04-25 via=cache
+[vision] BTCUSDT 1800/2164 ok=1800 miss=0 err=0 elapsed=1s last=2025-07-31 via=cache
+[vision] BTCUSDT 1900/2164 ok=1900 miss=0 err=0 elapsed=1s last=2025-11-13 via=cache
+[vision] BTCUSDT 2000/2164 ok=2000 miss=0 err=0 elapsed=1s last=2026-02-25 via=cache
+[vision] BTCUSDT 2100/2164 ok=2100 miss=0 err=0 elapsed=1s last=2026-06-04 via=cache
+[vision] BTCUSDT 2164/2164 ok=2163 miss=1 err=0 elapsed=2s last=2026-08-04 via=net
+Traceback (most recent call last):
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 293, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 277, in main
+    info = backfill_symbol(
+        cfg, symbol, start=start, end=end, proxy=proxy,
+        workers=args.workers, cache_dir=cache_dir,
+    )
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 229, in backfill_symbol
+    aligned = align_to_panel(oi, pd.DatetimeIndex(pd.to_datetime(df.index, utc=True)))
+  File "/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/20_backfill_oi_vision.py", line 192, in align_to_panel
+    }).sort_values("t")
+       ~~~~~~~~~~~^^^^^
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/frame.py", line 7222, in sort_values
+    indexer = nargsort(
+        k, kind=kind, ascending=ascending, na_position=na_position, key=key
+    )
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/sorting.py", line 425, in nargsort
+    return items.argsort(
+           ~~~~~~~~~~~~~^
+        ascending=ascending,
+        ^^^^^^^^^^^^^^^^^^^^
+        kind=kind,
+        ^^^^^^^^^^
+        na_position=na_position,
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/arrays/base.py", line 848, in argsort
+    return nargsort(
+        values,
+    ...<3 lines>...
+        mask=np.asarray(self.isna()),
+    )
+  File "/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/pandas/core/sorting.py", line 439, in nargsort
+    indexer = non_nan_idx[non_nans.argsort(kind=kind)]
+              ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+IndexError: index 0 is out of bounds for axis 0 with size 0

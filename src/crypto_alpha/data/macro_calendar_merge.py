@@ -15,6 +15,7 @@ _SOURCE_SCORE = {
     "forexfactory_hist": 55,
     "forexfactory_week": 50,
     "forexfactory_hf": 45,
+    "forexfactory_scrape": 48,  # 本机 cloudscraper 日页; 补 HF 冻结后缺口
     "federalreserve": 40,
     "import": 10,
     "test": 5,

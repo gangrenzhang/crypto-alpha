@@ -1,21 +1,21 @@
 {
   "range": [
-    "2023-01-01T00:00:00+00:00",
-    "2024-01-01T00:00:00+00:00"
+    "2024-01-01T00:00:00+00:00",
+    "2025-01-01T00:00:00+00:00"
   ],
   "providers": [
     "gdelt"
   ],
-  "total": 396173,
-  "note": "18_backfill_news_2022_2025 durable campaign",
+  "total": 583056,
+  "note": "resume after wasted 2022 rescan",
   "gdelt_backend": "gal",
-  "gdelt_gal_cursor": "2023-03-05T17:49:00+00:00",
-  "last_run": "2026-08-05T02:59:22.080992+00:00",
+  "gdelt_gal_cursor": "2024-02-04T03:49:00+00:00",
+  "last_run": "2026-08-06T07:27:47.662960+00:00",
   "gdelt_gal_stats": {
-    "files": 18360,
-    "ok": 16307,
-    "missing_404": 1867,
-    "err": 186,
-    "matched": 12744
+    "files": 9840,
+    "ok": 6178,
+    "missing_404": 3513,
+    "err": 149,
+    "matched": 28297
   }
 }

@@ -1,0 +1,155 @@
+[month-start] 2025-04-08 -> 2025-04-30 at 04:31:11
+[tz] Calendar Time Zone: America/New York
+[ff] 2025-04-08 day_events=4 cumulative=4 days=1/23 ok=True
+[ff] 2025-04-14 day_events=2 cumulative=24 days=7/23 ok=True
+
+[detach-launch] pid-pending at resume
+[tz] Calendar Time Zone: America/New York
+[ckpt] 载入 24 条, 已抓日=7
+[ff] 2025-04-21 day_events=0 cumulative=53 days=14/480 ok=True
+[ff] 2025-04-28 day_events=1 cumulative=80 days=21/480 ok=True
+[ff] 2025-05-05 day_events=2 cumulative=116 days=28/480 ok=True
+[ff] 2025-05-12 day_events=1 cumulative=140 days=35/480 ok=True
+[ff] 2025-05-19 day_events=3 cumulative=172 days=42/480 ok=True
+[ff] 2025-05-26 day_events=2 cumulative=206 days=49/480 ok=True
+[ff] 2025-06-02 day_events=5 cumulative=240 days=56/480 ok=True
+[ff] 2025-06-09 day_events=0 cumulative=267 days=63/480 ok=True
+[ff] 2025-06-16 day_events=3 cumulative=286 days=70/480 ok=True
+[ff] 2025-06-23 day_events=13 cumulative=327 days=77/480 ok=True
+[ff] 2025-06-30 day_events=2 cumulative=358 days=84/480 ok=True
+[ff] 2025-07-07 day_events=0 cumulative=380 days=91/480 ok=True
+[ff] 2025-07-14 day_events=4 cumulative=399 days=98/480 ok=True
+[ff] 2025-07-21 day_events=1 cumulative=429 days=105/480 ok=True
+[ff] 2025-07-28 day_events=1 cumulative=458 days=112/480 ok=True
+
+----- supervise attempt 1 -----
+[tz] Calendar Time Zone: America/New York
+[ckpt] 载入 458 条, 已抓日=112
+[ff] 2025-08-04 day_events=1 cumulative=498 days=119/480 ok=True
+[ff] 2025-08-04 day_events=1 cumulative=498 days=119/480 ok=True
+[ff] 2025-08-11 day_events=1 cumulative=516 days=126/480 ok=True
+[ff] 2025-08-11 day_events=1 cumulative=516 days=126/480 ok=True
+[ff] 2025-08-18 day_events=0 cumulative=546 days=133/480 ok=True
+[ff] 2025-08-25 day_events=2 cumulative=588 days=140/480 ok=True
+[ff] 2025-08-18 day_events=0 cumulative=546 days=133/480 ok=True
+[ff] 2025-09-01 day_events=0 cumulative=608 days=147/480 ok=True
+[ff] 2025-08-25 day_events=2 cumulative=588 days=140/480 ok=True
+[ff] 2025-09-08 day_events=0 cumulative=632 days=154/480 ok=True
+[ff] 2025-09-01 day_events=0 cumulative=608 days=147/480 ok=True
+[ff] 2025-09-15 day_events=2 cumulative=656 days=161/480 ok=True
+[ff] 2025-09-08 day_events=0 cumulative=632 days=154/480 ok=True
+[ff] 2025-09-22 day_events=2 cumulative=693 days=168/480 ok=True
+[ff] 2025-09-15 day_events=2 cumulative=656 days=161/480 ok=True
+[ff] 2025-09-22 day_events=2 cumulative=693 days=168/480 ok=True
+[ff] 2025-09-29 day_events=5 cumulative=729 days=175/480 ok=True
+[ff] 2025-10-06 day_events=2 cumulative=750 days=182/480 ok=True
+[ff] 2025-09-29 day_events=5 cumulative=729 days=175/480 ok=True
+[ff] 2025-10-13 day_events=1 cumulative=762 days=189/480 ok=True
+[ff] 2025-10-06 day_events=2 cumulative=750 days=182/480 ok=True
+[ff] 2025-10-20 day_events=1 cumulative=788 days=196/480 ok=True
+[ff] 2025-10-13 day_events=1 cumulative=762 days=189/480 ok=True
+[ff] 2025-10-27 day_events=2 cumulative=817 days=203/480 ok=True
+[ff] 2025-10-20 day_events=1 cumulative=788 days=196/480 ok=True
+[ff] 2025-11-03 day_events=8 cumulative=857 days=210/480 ok=True
+[ff] 2025-10-27 day_events=2 cumulative=817 days=203/480 ok=True
+[ff] 2025-11-10 day_events=1 cumulative=882 days=217/480 ok=True
+[ff] 2025-11-03 day_events=8 cumulative=857 days=210/480 ok=True
+[ff] 2025-11-17 day_events=8 cumulative=897 days=224/480 ok=True
+[ff] 2025-11-10 day_events=1 cumulative=882 days=217/480 ok=True
+[ff] 2025-11-24 day_events=2 cumulative=927 days=231/480 ok=True
+[ff] 2025-11-17 day_events=8 cumulative=897 days=224/480 ok=True
+[ff] 2025-12-01 day_events=4 cumulative=961 days=238/480 ok=True
+[ff] 2025-11-24 day_events=2 cumulative=927 days=231/480 ok=True
+[ff] 2025-12-08 day_events=3 cumulative=984 days=245/480 ok=True
+[ff] 2025-12-01 day_events=4 cumulative=961 days=238/480 ok=True
+[ff] 2025-12-15 day_events=5 cumulative=1018 days=252/480 ok=True
+[ff] 2025-12-08 day_events=3 cumulative=984 days=245/480 ok=True
+[ff] 2025-12-22 day_events=0 cumulative=1061 days=259/480 ok=True
+[ff] 2025-12-15 day_events=5 cumulative=1018 days=252/480 ok=True
+[ff] 2025-12-29 day_events=1 cumulative=1072 days=266/480 ok=True
+[ff] 2025-12-22 day_events=0 cumulative=1061 days=259/480 ok=True
+[ff] 2026-01-05 day_events=2 cumulative=1077 days=273/480 ok=True
+[ff] 2025-12-29 day_events=1 cumulative=1072 days=266/480 ok=True
+[ff] 2026-01-12 day_events=0 cumulative=1099 days=280/480 ok=True
+[ff] 2026-01-05 day_events=2 cumulative=1077 days=273/480 ok=True
+[ff] 2026-01-19 day_events=5 cumulative=1123 days=287/480 ok=True
+[ff] 2026-01-12 day_events=0 cumulative=1099 days=280/480 ok=True
+[ff] 2026-01-26 day_events=3 cumulative=1165 days=294/480 ok=True
+[ff] 2026-01-19 day_events=5 cumulative=1123 days=287/480 ok=True
+[ff] 2026-02-02 day_events=6 cumulative=1195 days=301/480 ok=True
+[ff] 2026-01-26 day_events=3 cumulative=1165 days=294/480 ok=True
+[ff] 2026-02-09 day_events=1 cumulative=1222 days=308/480 ok=True
+[ff] 2026-02-02 day_events=6 cumulative=1195 days=301/480 ok=True
+[ff] 2026-02-16 day_events=0 cumulative=1240 days=315/480 ok=True
+[ff] 2026-02-09 day_events=1 cumulative=1222 days=308/480 ok=True
+[ff] 2026-02-23 day_events=2 cumulative=1284 days=322/480 ok=True
+[ff] 2026-02-16 day_events=0 cumulative=1240 days=315/480 ok=True
+[ff] 2026-03-02 day_events=7 cumulative=1307 days=329/480 ok=True
+[ff] 2026-02-23 day_events=2 cumulative=1284 days=322/480 ok=True
+[ff] 2026-03-09 day_events=1 cumulative=1327 days=336/480 ok=True
+[ff] 2026-03-02 day_events=7 cumulative=1307 days=329/480 ok=True
+[ff] 2026-03-16 day_events=8 cumulative=1353 days=343/480 ok=True
+[ff] 2026-03-09 day_events=1 cumulative=1327 days=336/480 ok=True
+[ff] 2026-03-23 day_events=1 cumulative=1388 days=350/480 ok=True
+[ff] 2026-03-16 day_events=8 cumulative=1353 days=343/480 ok=True
+[ff] 2026-03-30 day_events=3 cumulative=1412 days=357/480 ok=True
+[ff] 2026-03-23 day_events=1 cumulative=1388 days=350/480 ok=True
+[ff] 2026-04-06 day_events=2 cumulative=1431 days=364/480 ok=True
+[ff] 2026-03-30 day_events=3 cumulative=1412 days=357/480 ok=True
+[ff] 2026-04-13 day_events=0 cumulative=1452 days=371/480 ok=True
+[ff] 2026-04-06 day_events=2 cumulative=1431 days=364/480 ok=True
+[ff] 2026-04-20 day_events=6 cumulative=1478 days=378/480 ok=True
+[ff] 2026-04-13 day_events=0 cumulative=1452 days=371/480 ok=True
+[ff] 2026-04-27 day_events=3 cumulative=1507 days=385/480 ok=True
+[ff] 2026-04-20 day_events=6 cumulative=1478 days=378/480 ok=True
+[ff] 2026-05-04 day_events=1 cumulative=1543 days=392/480 ok=True
+[ff] 2026-04-27 day_events=3 cumulative=1507 days=385/480 ok=True
+[ff] 2026-05-11 day_events=0 cumulative=1573 days=399/480 ok=True
+[ff] 2026-05-04 day_events=1 cumulative=1543 days=392/480 ok=True
+[ff] 2026-05-18 day_events=1 cumulative=1587 days=406/480 ok=True
+[ff] 2026-05-11 day_events=0 cumulative=1573 days=399/480 ok=True
+[ff] 2026-05-25 day_events=0 cumulative=1614 days=413/480 ok=True
+[ff] 2026-05-18 day_events=1 cumulative=1587 days=406/480 ok=True
+[ff] 2026-06-01 day_events=2 cumulative=1642 days=420/480 ok=True
+[ff] 2026-05-25 day_events=0 cumulative=1614 days=413/480 ok=True
+[ff] 2026-06-08 day_events=0 cumulative=1667 days=427/480 ok=True
+[ff] 2026-06-01 day_events=2 cumulative=1642 days=420/480 ok=True
+[ff] 2026-06-15 day_events=3 cumulative=1686 days=434/480 ok=True
+[ff] 2026-06-08 day_events=0 cumulative=1667 days=427/480 ok=True
+[ff] 2026-06-22 day_events=6 cumulative=1717 days=441/480 ok=True
+[ff] 2026-06-15 day_events=3 cumulative=1686 days=434/480 ok=True
+[ff] 2026-06-29 day_events=1 cumulative=1743 days=448/480 ok=True
+[ff] 2026-06-22 day_events=6 cumulative=1717 days=441/480 ok=True
+[ff] 2026-07-06 day_events=1 cumulative=1766 days=455/480 ok=True
+[ff] 2026-06-29 day_events=1 cumulative=1743 days=448/480 ok=True
+[ff] 2026-07-13 day_events=0 cumulative=1776 days=462/480 ok=True
+[ff] 2026-07-06 day_events=1 cumulative=1766 days=455/480 ok=True
+[ff] 2026-07-20 day_events=5 cumulative=1803 days=469/480 ok=True
+[ff] 2026-07-13 day_events=0 cumulative=1776 days=462/480 ok=True
+[ff] 2026-07-27 day_events=2 cumulative=1823 days=476/480 ok=True
+[ff] 2026-07-31 day_events=7 cumulative=1852 days=480/480 ok=True
+[ckpt] 已写 data/macro_calendar/ff_hist_cache/ff_scrape_checkpoint.parquet n=1852 days=480
+[parse] n=1852 2025-04-08 14:00:00+00:00 → 2026-07-31 14:00:00+00:00 surprise就绪=1246 (67.3%)
+       月份 {'2025-04': 98, '2025-05': 136, '2025-06': 124, '2025-07': 131, '2025-08': 119, '2025-09': 129, '2025-10': 112, '2025-11': 107, '2025-12': 119, '2026-01': 113, '2026-02': 112, '2026-03': 117, '2026-04': 122, '2026-05': 100, '2026-06': 108, '2026-07': 105}
+[ok] 新增 event_id≈1828; 库 8162 → 9990
+  2020: n=1488 surprise可算=875
+  2021: n=1384 surprise可算=814
+  2022: n=1384 surprise可算=850
+  2023: n=1500 surprise可算=1077
+  2024: n=1615 surprise可算=1144
+  2025: n=1693 surprise可算=1035
+  2026: n=926 surprise可算=517
+[ff] 2026-07-20 day_events=5 cumulative=1803 days=469/480 ok=True
+[ff] 2026-07-27 day_events=2 cumulative=1823 days=476/480 ok=True
+[ff] 2026-07-31 day_events=7 cumulative=1852 days=480/480 ok=True
+[ckpt] 已写 data/macro_calendar/ff_hist_cache/ff_scrape_checkpoint.parquet n=1852 days=480
+[parse] n=1852 2025-04-08 14:00:00+00:00 → 2026-07-31 14:00:00+00:00 surprise就绪=1246 (67.3%)
+       月份 {'2025-04': 98, '2025-05': 136, '2025-06': 124, '2025-07': 131, '2025-08': 119, '2025-09': 129, '2025-10': 112, '2025-11': 107, '2025-12': 119, '2026-01': 113, '2026-02': 112, '2026-03': 117, '2026-04': 122, '2026-05': 100, '2026-06': 108, '2026-07': 105}
+[ok] 新增 event_id≈0; 库 9990 → 9990
+  2020: n=1488 surprise可算=875
+  2021: n=1384 surprise可算=814
+  2022: n=1384 surprise可算=850
+  2023: n=1500 surprise可算=1077
+  2024: n=1615 surprise可算=1144
+  2025: n=1693 surprise可算=1035
+  2026: n=926 surprise可算=517

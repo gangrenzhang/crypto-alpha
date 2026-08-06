@@ -147,10 +147,12 @@ cryptoCurrency/
 | `funding` | 2020 年起逐年 100% 非空 | **完整** | |
 | `macro_calendar` | 事件表 2020-01→2026-12；`has_recent_macro` ≈0.92 | **部分** | 见下方「悬崖」 |
 | `news` | 语料 2020 全年 + 2021 上半年 + 2022 回填中；2023–2025 **空** | **不完整** | 面板仅 2020–2021；默认 `false` |
-| `open_interest` | 非空 ≈0.3%，首个观测 2026-07-24 | **不完整** | 公开 REST 只给近端约 30 天 |
-| `liquidations` | BTC 仅 2026-07-21 一小时共 66 条；ETH 为空 | **不完整** | 公开 REST 盖不住多年 WF |
+| `open_interest` | BTC 训练窗 ≈90%（Vision 自 2020-09）；ETH ≈71%（Vision 自 2021-12） | **基本完整** | 见下方 Vision 回填；2020-01–08 / ETH 2020–2021-11 仍空 |
+| `liquidations` | BTC tip 约 72 条（2026-07-21→近端）；ETH tip 1 条 | **不完整** | 公开 REST 盖不住多年 WF；需付费/CSV/`--import-csv` |
 
-**宏观日历的「数值悬崖」**：事件数从 2020–2024 的每月 120–146 条，在 2025-04 之后跌到每月 8–39 条——FF GitHub 归档停在 2023，HF 数据集（`Ehsanrs2/Forex_Factory_Calendar`）冻结在 2025-04-07，之后只剩 Fed 日程 + 手工央行日程 + FF 本周。后果是**注意力通道尚可、surprise 通道塌陷**：`macro_surprise` 非零占比从 2020–2024 的 ≈0.78–0.84 掉到 2025 的 0.23、2026 的 0.00。`has_recent_macro` 看不出这个问题（它只问「窗内有没有任意事件」），因此另记 `attrs.macro_surprise_coverage`，并可用 `macro_calendar.min_surprise_coverage_warn>0` 转成 `macro_surprise_sparse` degradation。补齐需 `FRED_API_KEY`（ALFRED 首印，覆盖美国 CPI/NFP）或付费日历源。
+**持仓量 Vision 回填**：Binance Vision `data/futures/um/daily/metrics/{SYM}/` 提供 **5m** OI 快照（BTCUSDT 自 2020-09-01，ETHUSDT 自 2021-12-01）。`scripts/20_backfill_oi_vision.py` 并发拉日 zip → as-of 对齐到主周期，只填空位；日包缓存在 `data/raw/_oi_vision_cache/`。REST tip（`17_backfill_oi_tip.py`，≈30 天）仍可补最末端。
+
+**宏观日历的「数值悬崖」与补法**：HF 数据集冻结在 2025-04-07 后，仅剩 Fed/手工央行日程 → surprise 塌陷。现用 `scripts/21_scrape_ff_calendar.py`（cloudscraper，会话时区钉死 `America/New_York`，防代理 IP 落到 Asia/Tokyo 把 CPI 显示成 9:30pm）按日抓 FF HTML 补 2025-04-08→近端，源名 `forexfactory_scrape`。BLS Public API 在部分网络被 Akamai 403；有 `FRED_API_KEY` 时仍优先 ALFRED 首印。`has_recent_macro` 掩盖数值断供，故另记 `attrs.macro_surprise_coverage` / 可选 `macro_surprise_sparse`。
 
 **为什么 `news` / `liquidations` 默认 `false`**：训练窗内大段为空时，特征恒为中性值，模型会把「没有数据」学成「这类信号无 alpha」，并污染后续实盘对比。回填到覆盖训练窗后再打开。
 
@@ -406,6 +408,7 @@ PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 | 非美央行历史日程（手工） | EU/GB/JP | 2024–2026 ECB/BOE/BOJ 利率决议（2026 官方日程已核验） | `schedule_source=centralbank_historical` |
 | FF GitHub 归档 2020–2023 | **全球** | actual/forecast/previous | `forexfactory_hist` |
 | HF `Ehsanrs2/Forex_Factory_Calendar` 2024–2025-04 | **全球** | actual/forecast/previous；补 FF 归档停更后的缺口 | `forexfactory_hf`，由 `scripts/16_import_hf_ff_calendar.py` 导入 |
+| FF 日页 scrape（cloudscraper） | **全球** 2025-04-08→近端 | actual/forecast/previous；补 HF 冻结后缺口 | `forexfactory_scrape`，`scripts/21_scrape_ff_calendar.py`（须先钉 ET 时区） |
 | FF 本周 JSON | 全球近端 | 近一周中高影响 | 近端补强 |
 
 **缺盘中时刻的事件必须归到 UTC 日终（曾是前视泄漏）**：FF 系两个源在原始行没有盘中时刻时都会**编**一个时刻，而且编早了——HF 数据集把无时刻行写成本地 `00:00:00`（`Asia/Tehran`），换算成 UTC 落到**前一天傍晚**（`2024-01-11T00:00+03:30` → `2024-01-10 20:30Z`），而这批行里就有美国 CPI、非农这类带 `actual` 的重磅数值，等于把 surprise 比真实公布（`2024-01-11 13:30Z`）**提前约 17 小时**喂进特征；FF GitHub 归档则把 `All Day`/`Tentative` 归到中午 CST（`04:00Z`），同样早于当天绝大多数欧美公布。修复后统一走 `data/macro_calendar.date_only_release_ts`，取该**本地日历日的 UTC 日终**（`D 23:59:59Z`）——任何时区的本地日 D 都在此之前结束，故保证「不早于真实公布」，代价只是该事件推迟到当日收尾才可见——并标 `schedule_source=forexfactory_dateonly`，在跨源去重里给 −20 分，使同事件若另有精确时刻源必定让位。影响量级：HF 源 2003 条里 885 条（44%）时刻是编的，其中 718 条带 `actual`；FF 归档另有 125 条 All-Day 行。用 `scripts/19_repair_macro_dateonly_times.py` 从本地缓存重建这两个源的行（不触网，其余源原样保留，自动备份 `events.parquet.bak`）。重定后主周期特征覆盖率不变（`has_recent_macro` 仍 ≈0.92），但 22% 的 bar 上 `macro_surprise` 取值改变——说明泄漏此前是**真实生效**的。
@@ -1060,6 +1063,8 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `15_build_macro_calendar.py` | BLS 官方日程+ALFRED 首印+Fed+FF 全球历史 → events.parquet；末尾自动跑 `16_` 补 2024+ | `--start` `--refresh-bls-schedule` `--refresh-alfred` `--export-csv` |
 | `16_import_hf_ff_calendar.py` | HF Forex Factory 缓存 → events.parquet（补 FF 归档停更后的 2024+） | `--csv` `--start` `--min-importance` |
 | `19_repair_macro_dateonly_times.py` | 从本地缓存重建 FF 系事件行，修正「缺盘中时刻」被编早的伪时刻（不触网，自动备份） | `--dry-run` `--hf-start` |
+| `20_backfill_oi_vision.py` | Binance Vision UM daily metrics → 多年 `open_interest`（5m as-of 主周期） | `--start` `--end` `--workers` |
+| `21_scrape_ff_calendar.py` | cloudscraper 抓 FF 日页 → 补 2025-04+ 宏观数值 | `--start` `--end` `--sleep` `--dry-run` |
 | `validate_macro_calendar_alignment.py` | 宏观日历 PIT（含单事件隔离 surprise_raw） | |
 | `10_run_all.py` | 全专家联跑 + HTML | `--experts` `--symbols` `--cpcv` `--walkforward` `--open` |
 | `11_make_canvas.py` | Cursor Canvas | `--out` |
@@ -1200,9 +1205,9 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | OI 历史粒度 | 已跟随主周期请求（30m 主周期→30m OI）；交易所不支持该粒度时回退 1h，此时 30m 面板上仍有半数 bar 为 ffill 复制值 | ★ 换支持细粒度 OI 的源，或把 `oi_change` 明确按可用粒度计算 |
 | 宏观源 TLS | 默认校验证书；证书失败才 `-k` 且**打印告警**；`CRYPTO_ALPHA_ALLOW_INSECURE_TLS=0` 可禁降级 | ★ 修好本机证书链后设 0，彻底关掉降级口 |
 | 清算历史覆盖 | **现状缺口**：管道已通，但公开源（Gate tip / Binance REST 停维护 / UM Vision 空）**盖不住**典型 train/test 窗；回填 `ok` 常= tip 入库；WF 多见 `derivatives_liquidations_unavailable`；特征填 0 ≠ 已学清算 alpha。HF/GitHub 无多年 Binance USDT 全库 | ★★★ 付费聚合/CSV import（历史 WF）+ Binance WS 常驻（同所未来） |
-| 宏观 surprise 悬崖（2025-05 起） | 事件表本身不空（Fed/央行日程仍在，`has_recent_macro`≈0.70–0.76），但 `forecast`/`actual` 断供：FF 归档停在 2023、HF 数据集冻结在 2025-04-07，`macro_surprise` 非零占比从 ≈0.82 掉到 2025 的 0.23、2026 的 0.00。已把数值通道单独量化为 `attrs.macro_surprise_coverage` + 可选 `macro_surprise_sparse` | ★★★ 配 `FRED_API_KEY` 走 ALFRED 首印（覆盖美国 CPI/NFP），或接付费日历 |
-| 新闻语料覆盖 | 语料仅 2020 全年 + 2021 上半年，2022 GDELT-GAL 回填进行中，2023–2025 为空；面板只到 2021。`training_data.news` 默认 `false`，避免多年空新闻被学成「新闻无 alpha」 | ★★★ 跑完 `scripts/18_backfill_news_2022_2025.py` 再重建面板并打开开关 |
-| 持仓量历史 | `open_interest` 非空仅 ≈0.3%（首个观测 2026-07-24）——公开 REST 只给近端约 30 天，多年训练窗上 `oi_change`≈0。开关虽默认 `true`，实际近乎无信息 | ★★ 换有历史 OI 的源，或在长回测里关掉 `training_data.open_interest` 让缺失显式化 |
+| 宏观 surprise 悬崖（2025-05 起） | HF 冻在 2025-04-07；已用 `21_scrape_ff_calendar.py` 抓 FF 日页补洞（钉 ET）。BLS API 在本机网络可能 403；有 `FRED_API_KEY` 可再叠 ALFRED 首印 | ★★ 跑完 scrape 后复核 `macro_surprise_coverage`；可选 FRED |
+| 新闻语料覆盖 | 2020 全年 + 2021 上半年已有；`18_backfill_news_2022_2025` 进行中，结束后自动补 2021H2 并重建面板。`training_data.news` 仍默认 `false` | ★★★ 回填完成且面板覆盖训练窗后再打开开关 |
+| 持仓量历史 | 已用 Binance Vision UM metrics 回填：BTC 自 2020-09、ETH 自 2021-12（训练窗覆盖约 90%/71%）。更早段落与 5m→30m as-of 缝仍可能有 NaN | ★ 接受日频 as-of，或关掉训练窗前的 `open_interest` |
 | 微观结构 | funding/OI/清算已分页接入；失败填 0；无 CVD/链上 | ★★ CVD / 链上 |
 | `06_decide` 每次全量重训 | 决策 JSON 已含 audit 指纹；仍无模型权重落盘，延迟高 | ★★ 持久化部署模型（serve 路径已训一次复用） |
 | TimesFM | 前向未实现 → 回退 naive 且 **`degraded=True`** 写入元数据 | ★★ 实现原生 forecast 或固定 chronos/naive |

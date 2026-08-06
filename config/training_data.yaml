@@ -22,7 +22,9 @@ funding: true
 
 # 持仓量 → 特征 oi_change
 # 文件: 与主周期同一 parquet 的列 open_interest
-# 注意: 公开 REST 常仅近端≈30 天; 历史多为 NaN→特征≈0
+# Vision 回填后: BTC 自 2020-09、ETH 自 2021-12 才有;
+# 当前 WF train_start=2020-09-14 且本次只训 BTC → 开。
+# 若训练起点早于 2020-09 或联跑 ETH 全史, 请改 false。
 open_interest: true
 
 # 多时间框架辅周期 → tf2h_* / tf4h_* / tf1d_* / mtf_confluence

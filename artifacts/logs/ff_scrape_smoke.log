@@ -1,0 +1,6 @@
+[ff] 2025-05-11 cumulative_events=25 days=7/7
+[parse] n=25 2025-05-05 19:30:00+00:00 → 2025-05-10 14:30:00+00:00 surprise就绪=13 (52.0%)
+/Users/zhanggangren/Desktop/pyro/crypto-alpha/scripts/21_scrape_ff_calendar.py:216: UserWarning: Converting to PeriodArray/Index representation will drop timezone information.
+  print(f"       月份 {t.dt.to_period('M').value_counts().sort_index().to_dict()}", flush=True)
+       月份 {Period('2025-05', 'M'): 25}
+[dry-run] 未写库

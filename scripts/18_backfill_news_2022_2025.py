@@ -64,13 +64,19 @@ def main() -> int:
     if os.environ.get("RESET_GAL_CURSOR", "").strip() in ("1", "true", "yes"):
         _reset_cursor_to(cfg, "2022-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00")
 
-    years = [2022, 2023, 2024, 2025]
-    for y in years:
-        y0 = f"{y}-01-01T00:00:00Z"
-        y1 = f"{y + 1}-01-01T00:00:00Z"
-        print(f"[year-start] {y0} -> {y1}", flush=True)
+    # 先续跑 2022–2025(GAL cursor 在窗内才续); 最后补 2021H2
+    # (cursor 已越过 2021 时, 2021H2 会整段重扫, 靠语料去重, 不拖累主战役)
+    spans: list[tuple[str, str, str]] = [
+        ("2022", "2022-01-01T00:00:00Z", "2023-01-01T00:00:00Z"),
+        ("2023", "2023-01-01T00:00:00Z", "2024-01-01T00:00:00Z"),
+        ("2024", "2024-01-01T00:00:00Z", "2025-01-01T00:00:00Z"),
+        ("2025", "2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+        ("2021H2", "2021-07-01T00:00:00Z", "2022-01-01T00:00:00Z"),
+    ]
+    for label, y0, y1 in spans:
+        print(f"[year-start] {label} {y0} -> {y1}", flush=True)
         stats = backfill_news(cfg, start=y0, end=y1, providers=["gdelt"])
-        print(f"[year-done] {y} stats={stats}", flush=True)
+        print(f"[year-done] {label} stats={stats}", flush=True)
         raw = _load_raw_store(cfg)
         if raw is not None and len(raw):
             ts = pd.to_datetime(raw["published_at"], utc=True)

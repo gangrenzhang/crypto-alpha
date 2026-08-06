@@ -1,0 +1,17 @@
+[fetch] BTC/USDT liquidations …
+{
+  "ok": true,
+  "n_fetched": 6,
+  "n_stored_total": 72,
+  "path": "/Users/zhanggangren/Desktop/pyro/crypto-alpha/data/liquidations/BTC_USDT.parquet",
+  "exchanges_tried": [
+    "gate"
+  ],
+  "tip_only": false,
+  "t_min": "2026-07-21 04:54:46+00:00",
+  "t_max": "2026-08-05 03:00:27+00:00"
+}
+[ohlcv] 2017-08-17 04:00:00+00:00 -> 2026-08-04 07:30:00+00:00 n=156885
+[align] bars=156885 finite=1 nonzero_bars=1 liq_long_sum=0.00 liq_short_sum=1839.05
+[align] last_nonzero_bar=2026-07-21 04:30:00+00:00
+[feat] degradations=None attached=None n_events=None liq_imbalance_absmax=None

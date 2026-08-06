@@ -208,8 +208,8 @@ validation:
   walkforward:
     enabled_in_run_all: false
     require_in_run_all: false
-    train_start: null            # 可选; 如 "2020-01-01T00:00:00Z" 丢掉更早训练事件
-    test_start: "2022-09-14T00:00:00Z"
+    train_start: "2020-09-14T00:00:00Z"  # 对齐 BTC Vision OI 可用起点
+    test_start: "2024-09-14T00:00:00Z"   # 训练 [train_start, test_start); 测试自此后
     test_end: "2026-07-18T00:00:00Z"  # null=用该币种面板末根
     embargo_bars: 0          # 额外标签禁运(主周期 bar); 0=仅要求 t1 < test_start
     # true(默认)=仅用训练子集重算 uniqueness×|ret|×衰减, 权重归一化常数不含测试窗信息;
