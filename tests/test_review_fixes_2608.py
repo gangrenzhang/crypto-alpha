@@ -203,12 +203,20 @@ def test_deep_ts_es_split_never_leaks_post_cutoff_silently():
     assert idx[tr2].max() < idx[24]
     assert any(t.startswith("deep_ts_es_off_small_pre_cutoff") for t in tags2)
 
-    # pre 段过小训不动 → 唯一允许含 post 的出口, 必须显式留痕
+    # pre 段过小训不动 → 默认弃权(空训练集), 不再含 post
     tr3, va3, tags3 = resolve_early_stop_split(
         idx, val_frac=0.2, patience=5, es_cutoff_time=idx[3], return_tags=True,
     )
-    assert va3 is None and len(tr3) == len(idx)
-    assert any(t.startswith("deep_ts_train_includes_post_cutoff") for t in tags3)
+    assert va3 is None and len(tr3) == 0
+    assert any(t.startswith("deep_ts_oof_abstain_insufficient_pre") for t in tags3)
+
+    # 显式消融: include_post_cutoff_in_train=True 才允许旧 fallback
+    tr4, va4, tags4 = resolve_early_stop_split(
+        idx, val_frac=0.2, patience=5, es_cutoff_time=idx[3],
+        include_post_cutoff_in_train=True, return_tags=True,
+    )
+    assert va4 is None and len(tr4) == len(idx)
+    assert any(t.startswith("deep_ts_train_includes_post_cutoff") for t in tags4)
 
 
 def test_calibrator_single_class_falls_back_instead_of_crashing():

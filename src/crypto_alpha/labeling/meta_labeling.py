@@ -108,7 +108,17 @@ def build_meta_labels(df: pd.DataFrame, cfg) -> pd.DataFrame:
     high = df["high"] if "high" in df.columns else close
     low = df["low"] if "low" in df.columns else close
 
-    side = primary_signal(close, kind=lc["primary_signal"], lookback=int(lc["primary_lookback"]))
+    conf = None
+    min_conf = float(lc.get("min_confluence", 0.0) or 0.0)
+    if min_conf > 0 and "mtf_confluence" in df.columns:
+        conf = df["mtf_confluence"]
+    side = primary_signal(
+        close,
+        kind=lc["primary_signal"],
+        lookback=int(lc["primary_lookback"]),
+        confluence=conf,
+        min_confluence=min_conf,
+    )
     trgt = _barrier_target(df, close, lc, vol_window)
 
     t_events, full_sampling = resolve_event_times(close, trgt, lc)

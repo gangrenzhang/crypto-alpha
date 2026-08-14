@@ -23,6 +23,7 @@ _LIVE_ENV_KEYS: tuple[str, ...] = (
     "news_features_sparse",
     "macro_calendar_unavailable",
     "macro_features_sparse",
+    "macro_surprise_sparse",
     "derivatives_funding_unavailable",
     "derivatives_oi_unavailable",
     "derivatives_liquidations_unavailable",
@@ -40,6 +41,8 @@ _SEVERITY: list[tuple[str, int]] = [
     ("macro_calendar_unavailable", 20),
     # 日历事件天生稀疏; 权重低于新闻, 且需配置 min_coverage_warn>0 才会打标
     ("macro_features_sparse", 10),
+    # surprise 通道断供(日程还在但 forecast/actual 不可用); min_surprise_coverage_warn>0 时打标
+    ("macro_surprise_sparse", 15),
     ("derivatives_funding_unavailable", 10),
     ("derivatives_oi_unavailable", 10),
     ("derivatives_liquidations_unavailable", 10),

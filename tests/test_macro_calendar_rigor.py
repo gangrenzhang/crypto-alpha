@@ -105,21 +105,44 @@ def test_dedupe_prefers_first_print_over_current_vintage():
 
 
 def test_dedupe_alfred_beats_ff_among_first_prints():
-    """组内有多行 first_print 时按得分竞争: ALFRED > FF。"""
+    """组内有多行 first_print 时按得分竞争: ALFRED > FF(actual/日程), forecast 用调查源。"""
     ts = pd.Timestamp("2021-03-05 13:30:00Z")
-    base = {
-        "name": "Nonfarm Payrolls", "country": "US", "category": "employment",
-        "importance": 5, "scheduled_at": ts, "released_at": ts,
-        "previous": 100.0, "forecast": 150.0, "actual": 379.0,
-        "unit": "k", "print_kind": "first_print",
-    }
     df = pd.DataFrame([
-        {**base, "source": "forexfactory_hist", "schedule_source": "forexfactory"},
-        {**base, "source": "alfred_bls", "schedule_source": "bls_official"},
+        {
+            "name": "Nonfarm Payrolls", "country": "US", "category": "employment",
+            "importance": 5, "scheduled_at": ts, "released_at": ts,
+            "previous": 100.0, "forecast": 150.0, "actual": 379.0,
+            "unit": "k", "print_kind": "first_print",
+            "source": "forexfactory_hist", "schedule_source": "forexfactory",
+        },
+        {
+            "name": "Nonfarm Payrolls", "country": "US", "category": "employment",
+            "importance": 5, "scheduled_at": ts, "released_at": ts,
+            # ALFRED 不得用 previous 冒充 survey forecast
+            "previous": 100.0, "forecast": np.nan, "actual": 379.0,
+            "unit": "k", "print_kind": "first_print",
+            "source": "alfred_bls", "schedule_source": "bls_official",
+        },
     ])
     out = dedupe_cross_source_events(df)
     assert len(out) == 1
     assert out.iloc[0]["source"] == "alfred_bls"
+    assert float(out.iloc[0]["forecast"]) == 150.0
+
+
+def test_dedupe_strips_alfred_naive_forecast_without_ff():
+    """仅有 ALFRED 且 forecast≡previous → 去重后 forecast 清空(surprise 不可用)。"""
+    ts = pd.Timestamp("2021-03-05 13:30:00Z")
+    df = pd.DataFrame([{
+        "name": "Nonfarm Payrolls", "country": "US", "category": "employment",
+        "importance": 5, "scheduled_at": ts, "released_at": ts,
+        "previous": 100.0, "forecast": 100.0, "actual": 379.0,
+        "unit": "k", "print_kind": "first_print",
+        "source": "alfred_bls", "schedule_source": "bls_official",
+    }])
+    out = dedupe_cross_source_events(df)
+    assert len(out) == 1
+    assert not np.isfinite(float(out.iloc[0]["forecast"]))
 
 
 def test_dedupe_keeps_current_vintage_when_no_first_print():
@@ -334,9 +357,9 @@ def test_filter_prefer_first_print():
             "event_id": "US|Nonfarm Payrolls|20210305T133000Z|fp",
             "name": "Nonfarm Payrolls", "country": "US", "category": "employment",
             "importance": 5, "scheduled_at": ts, "released_at": ts,
-            "previous": 1.0, "forecast": 1.0, "actual": 2.0,
-            "unit": "k", "source": "alfred_bls",
-            "print_kind": "first_print", "schedule_source": "bls_official",
+            "previous": 1.0, "forecast": 1.5, "actual": 2.0,
+            "unit": "k", "source": "forexfactory_hist",
+            "print_kind": "first_print", "schedule_source": "forexfactory",
         },
         {
             "event_id": "US|Nonfarm Payrolls|20210305T133000Z|cv",
@@ -351,3 +374,21 @@ def test_filter_prefer_first_print():
     assert len(out) == 1
     assert float(out.iloc[0]["actual"]) == 2.0
     assert out.iloc[0]["print_kind"] == "first_print"
+
+
+def test_filter_bans_current_vintage_surprise():
+    """仅有 current_vintage 时保留行(注意力), 但清空数值 → surprise 不可用。"""
+    ts = pd.Timestamp("2025-08-01 12:30:00Z")
+    df = pd.DataFrame([{
+        "event_id": "US|Nonfarm Payrolls|cv",
+        "name": "Nonfarm Payrolls", "country": "US", "category": "employment",
+        "importance": 5, "scheduled_at": ts, "released_at": ts,
+        "previous": 100.0, "forecast": 100.0, "actual": 73.0,
+        "unit": "k", "source": "bls",
+        "print_kind": "current_vintage", "schedule_source": "bls_official",
+    }])
+    out = filter_events_for_features(df, prefer_first_print=True)
+    assert len(out) == 1
+    assert out.iloc[0]["importance"] == 5
+    assert not np.isfinite(float(out.iloc[0]["actual"]))
+    assert not np.isfinite(float(out.iloc[0]["forecast"]))

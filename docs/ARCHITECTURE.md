@@ -413,9 +413,9 @@ PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 
 **缺盘中时刻的事件必须归到 UTC 日终（曾是前视泄漏）**：FF 系两个源在原始行没有盘中时刻时都会**编**一个时刻，而且编早了——HF 数据集把无时刻行写成本地 `00:00:00`（`Asia/Tehran`），换算成 UTC 落到**前一天傍晚**（`2024-01-11T00:00+03:30` → `2024-01-10 20:30Z`），而这批行里就有美国 CPI、非农这类带 `actual` 的重磅数值，等于把 surprise 比真实公布（`2024-01-11 13:30Z`）**提前约 17 小时**喂进特征；FF GitHub 归档则把 `All Day`/`Tentative` 归到中午 CST（`04:00Z`），同样早于当天绝大多数欧美公布。修复后统一走 `data/macro_calendar.date_only_release_ts`，取该**本地日历日的 UTC 日终**（`D 23:59:59Z`）——任何时区的本地日 D 都在此之前结束，故保证「不早于真实公布」，代价只是该事件推迟到当日收尾才可见——并标 `schedule_source=forexfactory_dateonly`，在跨源去重里给 −20 分，使同事件若另有精确时刻源必定让位。影响量级：HF 源 2003 条里 885 条（44%）时刻是编的，其中 718 条带 `actual`；FF 归档另有 125 条 All-Day 行。用 `scripts/19_repair_macro_dateonly_times.py` 从本地缓存重建这两个源的行（不触网，其余源原样保留，自动备份 `events.parquet.bak`）。重定后主周期特征覆盖率不变（`has_recent_macro` 仍 ≈0.92），但 22% 的 bar 上 `macro_surprise` 取值改变——说明泄漏此前是**真实生效**的。
 
-**首印 vs 修订**：特征默认 `prefer_first_print=true`，同公布窗优先 `first_print`；构建需 `FRED_API_KEY` 拉 ALFRED，否则 BLS 用现行修订版(warn)。
+**首印 vs 修订**：特征默认 `prefer_first_print=true`，同公布窗优先 `first_print`；构建需 `FRED_API_KEY` 拉 ALFRED。无首印仅剩 `current_vintage` 时：**仍保留事件行供注意力通道**，但 `ban_current_vintage_surprise=true`（默认）会清空 `previous/forecast/actual` → surprise=NaN，禁止把现行修订值钉在历史 `released_at` 当 PIT surprise。
 
-**跨源去重**：`(country, canonical_name, release_hour)` 合并 BLS 与 FF 重复；基础优先级 `alfred_bls` > `bls` > `forexfactory_hist`，并叠加**首印硬规则**（与特征层 `prefer_first_print` 语义对齐）：组内若存在 `first_print` 且带数值的行，则仅在 `first_print` 行中按得分选胜者——`current_vintage`（BLS 现行口径，其 forecast≡previous 无预测意义）不得覆盖 FF 首印；同为 `first_print` 时 ALFRED 仍高于 FF。canonical name 映射覆盖 FOMC 会议/纪要/褐皮书及 ECB/BOE/BOJ 利率决议，并统一 FF 命名差异（如 "Federal Funds Rate"/"FOMC Statement" → "FOMC Rate Decision"、"Main Refinancing Rate" → "ECB Rate Decision"、"Official Bank Rate" → "BOE Rate Decision"、"BOJ Monetary Policy Statement" → "BOJ Rate Decision"），避免同一决议多行并存。
+**跨源去重与调查 forecast**：`(country, canonical_name, release_hour)` 合并 BLS/ALFRED 与 FF。基础优先级 `alfred_bls` > `bls` > `forexfactory_*`，并叠加**首印硬规则**：组内有 `first_print` 数值行时淘汰 `current_vintage`。同为 `first_print` 时 ALFRED 仍可胜出（更好的 actual/官方日程），但 **forecast 字段优先取同组 ForexFactory 调查中位数**——BLS/ALFRED 构建时 `forecast` 刻意写 NaN（不再写 `previous` 冒充）；若胜出后仍是 naive（`forecast≡previous`）或缺失，则 `forecast=NaN`，surprise 通道关闭。特征层另有 `strip_naive_forecast=true`：对已落盘的旧库在加载时同样清空 naive forecast。canonical name 映射覆盖 FOMC/ECB/BOE/BOJ 命名差异，避免同一决议多行并存。
 
 **美联储日历不含他国指标**：`calendar.json` 仅为联储/FOMC 日程；欧元区/英国/日本央行利率决议来自**手工构建的历史日程**（2024–2026，仅利率决议，无 actual/forecast/previous），FF 归档仅覆盖 2020–2023。
 
@@ -423,7 +423,7 @@ PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 
 **FF 本周沉淀**：`ff_week` API 仅覆盖当周，每次全量重建会把上周及更早的 FF 周度数值整批丢弃（FF 归档 2023 年后停更，无法回补）。`build_and_save_macro_calendar` 在保存前将存量库中 `source=forexfactory_week` 行并入新构建结果统一去重（`merge_carryover_events`，幂等），实现周度数值逐周累积。
 
-**手工历史日程（已知局限）**：Fed 历史日程（2023–2024 FOMC 会议/纪要/褐皮书，各 8 场/年）与非美央行历史日程（2024–2026 ECB/BOE/BOJ 利率决议，各 8 场/年）为硬编码常量，`previous`/`forecast`/`actual` 全为 NaN → 仅贡献**注意力通道**（importance / hours_since / has_recent / hours_to_next），不贡献 **surprise 通道**（需 forecast+actual）。`scheduled_at == released_at`（利率决议发布时刻 ≈ 计划时刻），`macro_awaiting_release` 不触发。时区转换：ECB **14:15 CET**（2022-07-21 起由 13:45 改为 14:15，`Europe/Berlin`，自动 DST）、BOE 12:00 London（`Europe/London`，自动 DST）、BOJ 12:00 JST（`Asia/Tokyo`，无 DST）、Fed 14:00 ET（`America/New_York`，自动 DST）。
+**手工历史日程（已知局限）**：Fed 历史日程（2023–2024 FOMC 会议/纪要/褐皮书，各 8 场/年）与非美央行历史日程（2024–2026 ECB/BOE/BOJ 利率决议，各 8 场/年）为硬编码常量，`previous`/`forecast`/`actual` 全为 NaN → 仅贡献**注意力通道**（importance / hours_since / has_recent / hours_to_next），不贡献 **surprise 通道**（需 forecast+actual）。`scheduled_at == released_at`（利率决议发布时刻 ≈ 计划时刻）；在 `buffer_minutes` 窗内 `macro_awaiting_release` **仍可为 1**（与「已进入传播缓冲、actual 尚未计入 surprise」一致）。时区转换：ECB **14:15 CET**（2022-07-21 起由 13:45 改为 14:15，`Europe/Berlin`，自动 DST）、BOE 12:00 London（`Europe/London`，自动 DST）、BOJ 12:00 JST（`Asia/Tokyo`，无 DST）、Fed 14:00 ET（`America/New_York`，自动 DST）。
 
 **PIT 纪律（严谨）**
 
@@ -452,7 +452,7 @@ PYTHONPATH=src python scripts/validate_macro_calendar_alignment.py
 - `min_coverage_warn>0` 且 `has_recent_macro` 过低 → `macro_features_sparse`（权重 10；默认 warn=0）  
 - `min_surprise_coverage_warn>0` 且 `macro_surprise_raw` 非零占比过低 → `macro_surprise_sparse`（默认 warn=0）。覆盖率**始终**写入 `attrs.macro_surprise_coverage`，与 `attrs.macro_feature_coverage` 并列。两者必须分开看：日程表在、数值断供时前者仍高、后者已塌（本库 2025-05 起即如此，见 §4.0）  
 
-**勿做**：把图中「利多/利空金银」标签原样当 BTC 方向；删掉 `events.parquet` 却保持 `as_feature=true`；用新闻 GDELT 标题冒充宏观日历；把 BLS naive forecast 当成调查中位数。
+**勿做**：把图中「利多/利空金银」标签原样当 BTC 方向；删掉 `events.parquet` 却保持 `as_feature=true`；用新闻 GDELT 标题冒充宏观日历；把 BLS/ALFRED 的 `forecast≡previous`（naive）当成调查中位数 surprise。
 
 **抓取安全（`data/http_curl.py`）**：BLS / Fed / ALFRED / ForexFactory 的数值会**直接变成特征与决策依据**，因此统一走 `curl_bytes`：① 默认**校验 TLS**；② 仅当失败原因明确是证书/TLS（curl 退出码 35/51/58/59/60/77/83 或 stderr 含 `certificate`/`SSL` 等）才用 `-k` 重试一次，并**按主机打印一次性告警**；③ 超时 / 404 / 代理不可达等**不做**不安全重试，原样抛出。`CRYPTO_ALPHA_ALLOW_INSECURE_TLS=0` 可完全禁止降级（证书失败即失败）。此前四个宏观源各自 `subprocess.run(["curl", "-k", ...])`，等于对这些源无条件接受任意证书——被中间人替换的 CPI/NFP 会静默进入训练与实盘且无任何痕迹。
 
@@ -663,7 +663,7 @@ OHLCV(+衍生品: funding/OI/清算)
 - `BCEWithLogitsLoss` 加权（反传与日志均为 `sum(loss·w)/sum(w)`）；**时间切分** `val_frac` + `early_stop_patience`  
 - **早停因果性**：全量部署 fit 用时间序**末尾** `val_frac`（最近样本）。Purged OOF / CPCV 折内由 `stacking` / `evaluate` 传入 `es_cutoff_time=测试折最早时刻`：验证集**只**从 cutoff **之前**的训练样本中取末尾 `val_frac`  
 - **OOF 训练样本（D2）**：默认 `experts.deep_ts.oof_include_post_cutoff: false` — 折内训练**不含** post-cutoff（防 lookback 吃到测试期行情导致 OOF 乐观）；设 `true` 仅作消融对照。部署全量 fit（无 cutoff）不受该开关影响  
-- **早停回退分级（`resolve_early_stop_split`，默认口径下）**：① pre 段够训且够切 val → 正常早停，梯度与验证都只用 pre；② pre 够训但切不出 val（`len(pre) < min_val+min_train`）→ **仍只训 pre** + 关早停，记 `deep_ts_es_off_small_pre_cutoff(n_pre=…)`；③ pre 根本训不动（如首折训练集整体位于测试折之后）→ 唯一允许含 post 的出口，记 `deep_ts_train_includes_post_cutoff(n_pre=…,n_post=…)`。旧实现在 ②③ 都直接返回全样本，等于**静默**把 post-cutoff 喂进梯度，使 `oof_include_post_cutoff=false` 的承诺在这些折上失效且不留痕。标签经 `fit` 汇入专家 `degraded_reason` → `degradations`  
+- **早停回退分级（`resolve_early_stop_split`，默认口径下）**：① pre 段够训且够切 val → 正常早停，梯度与验证都只用 pre；② pre 够训但切不出 val（`len(pre) < min_val+min_train`）→ **仍只训 pre** + 关早停，记 `deep_ts_es_off_small_pre_cutoff(n_pre=…)`；③ pre 根本训不动（如首折训练集整体位于测试折之后）→ **弃权**（空训练集，该折 `predict` 返回 NaN），记 `deep_ts_oof_abstain_insufficient_pre`；仅当 `oof_include_post_cutoff=true` 时才允许含 post 的旧出口并记 `deep_ts_train_includes_post_cutoff`。标签经 `fit` 汇入专家 `degraded_reason` → `degradations`  
 - 特征标准化 **仅用训练段**统计量（不含 early-stopping 验证段）  
 - `device: auto`；无 torch → 探测阶段跳过  
 
@@ -1060,7 +1060,7 @@ python scripts/train_llm_qlora.py             # 需大显存 GPU
 | `run_news_backfill_robust.py` | **推荐**稳健回填+重建面板+校验 | `--start` `--no-resume` `--providers` |
 | `validate_news_alignment.py` | 语料/面板网格/PIT/覆盖率抽查 | `--symbol` |
 | `14_import_macro_calendar.py` | 导入宏观日历 CSV → events.parquet | `--csv` `--replace` |
-| `15_build_macro_calendar.py` | BLS 官方日程+ALFRED 首印+Fed+FF 全球历史 → events.parquet；末尾自动跑 `16_` 补 2024+ | `--start` `--refresh-bls-schedule` `--refresh-alfred` `--export-csv` |
+| `23_wf_ablation.py` | 固定 WF 窗的标注/专家/特征消融；输出 `artifacts/wf_ablation_summary.json`；不达稳定可分性则禁止 P2 放宽门控 |
 | `16_import_hf_ff_calendar.py` | HF Forex Factory 缓存 → events.parquet（补 FF 归档停更后的 2024+） | `--csv` `--start` `--min-importance` |
 | `19_repair_macro_dateonly_times.py` | 从本地缓存重建 FF 系事件行，修正「缺盘中时刻」被编早的伪时刻（不触网，自动备份） | `--dry-run` `--hf-start` |
 | `20_backfill_oi_vision.py` | Binance Vision UM daily metrics → 多年 `open_interest`（5m as-of 主周期） | `--start` `--end` `--workers` |
@@ -1146,7 +1146,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 - [x] MTF 共振主方向严格取 `labeling.primary_lookback`（不按列名猜回看窗）  
 - [x] `side=0` 事件不进标注（避免 TP=SL=入场价的「必亏」假标签）  
 - [x] `synthetic_fallback` 主行情时辅周期强制从 main 重采样（禁止混真实高周期）  
-- [x] DeepTS 折内早停：`es_cutoff_time` 限制 val 不得用测试折之后样本；**默认禁 post-cutoff 训练**（`oof_include_post_cutoff=false`）；pre 段切不出 val 时**关早停也只训 pre**，唯一含 post 的出口必须留 `deep_ts_train_includes_post_cutoff` 标签  
+- [x] DeepTS 折内早停：`es_cutoff_time` 限制 val 不得用测试折之后样本；**默认禁 post-cutoff 训练**（`oof_include_post_cutoff=false`）；pre 段切不出 val 时**关早停也只训 pre**；pre 训不动时**弃权**（`deep_ts_oof_abstain_insufficient_pre`）；仅显式 `oof_include_post_cutoff=true` 才允许含 post 并留 `deep_ts_train_includes_post_cutoff`  
 - [x] 校准 `method=auto`：唯一台阶过少回退 sigmoid；单类阻塞回退（`cal_single_class_fallback_isotonic`，不再抛错炸折）；未知 method 拒绝  
 - [x] CPCV 组合内校准/保形**拟合异常 → 全组合弃权**（`confident=False`），不确定不开仓  
 - [x] `backtest_deploy.not_for_go_live` + 看板「部署·偏乐观·勿拍板」  
@@ -1205,7 +1205,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | OI 历史粒度 | 已跟随主周期请求（30m 主周期→30m OI）；交易所不支持该粒度时回退 1h，此时 30m 面板上仍有半数 bar 为 ffill 复制值 | ★ 换支持细粒度 OI 的源，或把 `oi_change` 明确按可用粒度计算 |
 | 宏观源 TLS | 默认校验证书；证书失败才 `-k` 且**打印告警**；`CRYPTO_ALPHA_ALLOW_INSECURE_TLS=0` 可禁降级 | ★ 修好本机证书链后设 0，彻底关掉降级口 |
 | 清算历史覆盖 | **现状缺口**：管道已通，但公开源（Gate tip / Binance REST 停维护 / UM Vision 空）**盖不住**典型 train/test 窗；回填 `ok` 常= tip 入库；WF 多见 `derivatives_liquidations_unavailable`；特征填 0 ≠ 已学清算 alpha。HF/GitHub 无多年 Binance USDT 全库 | ★★★ 付费聚合/CSV import（历史 WF）+ Binance WS 常驻（同所未来） |
-| 宏观 surprise 悬崖（2025-05 起） | HF 冻在 2025-04-07；已用 `21_scrape_ff_calendar.py` 抓 FF 日页补洞（钉 ET）。BLS API 在本机网络可能 403；有 `FRED_API_KEY` 可再叠 ALFRED 首印 | ★★ 跑完 scrape 后复核 `macro_surprise_coverage`；可选 FRED |
+| 宏观 surprise 悬崖（2025-05 起） | HF 冻在 2025-04-07；已用 `21_scrape_ff_calendar.py` 抓 FF 日页补洞（钉 ET）。BLS API 在本机网络可能 403；有 `FRED_API_KEY` 可再叠 ALFRED 首印。**调查 forecast**：ALFRED/BLS 不再写 `forecast≡previous`；去重时 forecast 优先 FF；`ban_current_vintage_surprise` + `strip_naive_forecast`；`min_surprise_coverage_warn` 默认 0.5 | ★★ 全量重建日历后复核 coverage；旧库加载时也会 strip naive |
 | 新闻语料覆盖 | 2020 全年 + 2021 上半年已有；`18_backfill_news_2022_2025` 进行中，结束后自动补 2021H2 并重建面板。`training_data.news` 仍默认 `false` | ★★★ 回填完成且面板覆盖训练窗后再打开开关 |
 | 持仓量历史 | 已用 Binance Vision UM metrics 回填：BTC 自 2020-09、ETH 自 2021-12（训练窗覆盖约 90%/71%）。更早段落与 5m→30m as-of 缝仍可能有 NaN | ★ 接受日频 as-of，或关掉训练窗前的 `open_interest` |
 | 微观结构 | funding/OI/清算已分页接入；失败填 0；无 CVD/链上 | ★★ CVD / 链上 |
@@ -1217,7 +1217,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | CPCV 默认关 | 有代码；评估单元为**组合**非完整路径；组合内校准/保形已与部署**时间切分**对齐；跳过/同批回退进 `degradations` | ★★★ 上线前必跑；★★ 真路径重建 |
 | Stacking 二阶泄漏 | nested OOF 一层特征仍非 full-nested（影响很小）；小样本回退已 warn+`degradations`；LLM 伪 OOF 默认不进 meta | ★ full-nested |
 | 剪枝报告窗 | 多专家时主面板 AUC/夏普与专家 `base_report` 共用**后半窗**；部署仍全量。未剪枝时仍砍半报告偏保守——若需全窗对照可另报 | ★ 可选同时输出 full + holdout |
-| OOF ≠ walk-forward | Purged/CPCV ≠ 真外推；**已有**库级 `run_walkforward`（`split_kind=single_cut_holdout`）+ 联跑/发布闸 + 看板基线卡；**仍不是**多锚点滚动再训练 | ★★ 发布设 `require_in_run_all`；★★ 滚动多窗 WF |
+| OOF ≠ walk-forward | Purged/CPCV ≠ 真外推；**已有**库级 `run_walkforward`（`split_kind=single_cut_holdout`）+ 联跑/发布闸 + 看板基线卡；**仍不是**多锚点滚动再训练。标注/专家/特征消融见 `scripts/23_wf_ablation.py`（固定 WF 窗；**禁止**在 test AUC≈0.5 时放宽门控） | ★★ 发布设 `require_in_run_all`；★★ 滚动多窗 WF |
 | WF `test_end` 默认 | 现默认 `null`=面板末（旧脚本曾硬编码截止日）；与历史 artifact 数字不可直接纵向对比 | ★ 对比旧结果时显式传 `--test-end` |
 | integrity 空对照 | 精简面 + **MTF 开**空对照已进 `12_audit`；新闻 `as_feature` 打开后须再加新闻面空对照 | ★ 打开新闻特征时补闸门 |
 | 实验日志 / DSR | `log_experiments` 抬 trials 下限；仍须人工把 `dsr_n_trials` 调到真实规模 | ★★ 发布前核对 |
@@ -1275,7 +1275,7 @@ pytest -q tests/test_smoke.py tests/test_leakage.py tests/test_design_fixes.py t
 | `locked_notional` | 组合回测中未平仓的**名义额**合计（`Σ size×entry_equity`），并发上限按它与盯市权益比较 |
 | `neutral_fill_value` | 整列缺失/冷启动时的中性填充：`rsi_*`→50、其余→0（`RSI_NEUTRAL` / `is_rsi_like`） |
 | `decision_panel_stale` | 决策所用 bar 落后墙钟超过 `max_closed_bar_lag` 根的时效标签（只标注不改数值） |
-| `deep_ts_es_off_small_pre_cutoff` / `deep_ts_train_includes_post_cutoff` | DeepTS 早停回退标签：② 只训 pre 但关早停；③ pre 训不动才含 post（唯一允许，必须留痕） |
+| `deep_ts_es_off_small_pre_cutoff` / `deep_ts_oof_abstain_insufficient_pre` / `deep_ts_train_includes_post_cutoff` | DeepTS 早停回退：② 只训 pre 但关早停；③ 默认弃权（OOF=NaN）；仅 `oof_include_post_cutoff=true` 时含 post |
 | `cal_single_class_fallback_isotonic` | 单类标签下 Platt 回退 isotonic 常数映射（此前直接抛错） |
 
 ---

@@ -115,10 +115,12 @@ def normalize_macro_events(df: pd.DataFrame) -> pd.DataFrame:
     eid = out["event_id"]
     need_id = eid.isna() | (eid.astype(str).str.strip() == "") | (eid.astype(str) == "nan")
     if bool(need_id.any()):
+        # 含 source: 跨源同名同刻行在去重前必须共存, 供字段级合并调查 forecast
         gen = (
             out["country"].astype(str) + "|"
             + out["name"].astype(str) + "|"
-            + out["scheduled_at"].dt.strftime("%Y%m%dT%H%M%SZ").fillna("")
+            + out["scheduled_at"].dt.strftime("%Y%m%dT%H%M%SZ").fillna("") + "|"
+            + out["source"].astype(str)
         )
         out.loc[need_id, "event_id"] = gen.loc[need_id].astype(str).values
     out["event_id"] = out["event_id"].astype(str)

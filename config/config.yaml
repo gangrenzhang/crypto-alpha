@@ -147,14 +147,17 @@ macro_calendar:
   feature_halflife_hours: 24       # 指数衰减半衰期
   horizon_hours: 168               # hours_to_next 上限(7 天)
   min_importance: 3                # 1–5; 低于此星级不进特征
-  prefer_first_print: true          # 数值事件优先 first_print; 无首印时保留 current_vintage
+  prefer_first_print: true          # 数值事件优先 first_print; 无首印时保留行但清空数值(见 ban_*)
   numeric_print_kind: first_print   # 与 ALFRED/BLS 首印对齐; 需 FRED_API_KEY 构建时拉取
+  # true=current_vintage 行清空 previous/forecast/actual → surprise=NaN(防修订值软前视)
+  ban_current_vintage_surprise: true
+  # true=非调查源且 forecast≡previous 时清空 forecast(ALFRED/BLS naive 不得进 surprise)
+  strip_naive_forecast: true
   min_coverage_warn: 0.0           # >0 时 has_recent_macro 过低 → macro_features_sparse(计入 env_guard); 日历天生稀疏, 默认关
   require_min_coverage: false      # true=覆盖率不足 fail-fast
   # has_recent_macro 只看「窗内有无任意可见事件」, 会掩盖「日程还在但 forecast/actual
-  # 断供」的时段(本库 2025-05 起 surprise 覆盖从 ≈0.82 跌到 ≈0.23)。>0 时数值通道
-  # 覆盖率过低 → macro_surprise_sparse; 覆盖率始终写入 attrs.macro_surprise_coverage。
-  min_surprise_coverage_warn: 0.0
+  # 断供」的时段。>0 时数值通道覆盖率过低 → macro_surprise_sparse。
+  min_surprise_coverage_warn: 0.5
 
 # ---------------- 特征 ----------------
 features:
@@ -185,6 +188,8 @@ labeling:
   # 主模型信号来源: momentum(动量) / meanrev(均值回归)
   primary_signal: momentum
   primary_lookback: 48         # ≈ 原 24×1h 墙钟
+  # >0 时用面板 mtf_confluence 过滤主信号(低于阈值 → side=0 丢弃事件); 0=关闭
+  min_confluence: 0.0
   min_cusum_events: 50         # CUSUM 事件少于此数则退回全量采样
   cusum_min_periods: 100       # 因果扩展中位数阈值的最小样本数(≈原 50×1h)
   serve_require_cusum: true    # 实盘/最新决策须落在 CUSUM 事件上(与训练对齐; 全量回退时自动放宽)
@@ -283,8 +288,9 @@ ensemble:
   meta_learner: logistic   # logistic / gbdt
   # 元学习器 C 正则
   C: 1.0
-  # 弱专家剪枝: OOF AUC 低于此阈值(0.5=随机)的专家自动剔除(至少保留 1 个)。设 0 关闭。
-  min_expert_auc: 0.5
+  # 弱专家剪枝: OOF AUC 低于此阈值的专家自动剔除(至少保留 1 个)。设 0 关闭。
+  # 0.52: 接近随机的专家不进 meta, 减少噪声稀释(审计 P1)。
+  min_expert_auc: 0.52
   # 伪 OOF 专家(如 LLM: fit 只加载 adapter)默认不进入元学习器, 避免污染 nested OOF/回测
   # false=仍把冻结分数喂给 meta(不推荐; 会记 degradations)
   exclude_pseudo_oof_from_meta: true

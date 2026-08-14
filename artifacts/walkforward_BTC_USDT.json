@@ -30,18 +30,18 @@
   "final_capital": 10000.0,
   "train_oof_report": {
     "n": 14288,
-    "auc": 0.5210204257259546,
-    "brier": 0.24975830648504907,
-    "logloss": 0.6926652502228029,
-    "accuracy": 0.5149776035834267,
+    "auc": 0.5229679200317205,
+    "brier": 0.2495886905131875,
+    "logloss": 0.6923248544287861,
+    "accuracy": 0.5138577827547592,
     "base_rate": 0.4979003359462486
   },
   "test_report": {
     "n": 5766,
-    "auc": 0.5216837347168293,
-    "brier": 0.24989080532559182,
-    "logloss": 0.6929287733514526,
-    "accuracy": 0.5142212972597988,
+    "auc": 0.5180587973718873,
+    "brier": 0.24993079466734971,
+    "logloss": 0.6930086785399713,
+    "accuracy": 0.49739854318418314,
     "base_rate": 0.508324661810614
   },
   "backtest_metrics": {
@@ -70,76 +70,76 @@
     "prob_threshold": 0.55,
     "n_events": 5766,
     "raw_proba": {
-      "mean": 0.4922753232941208,
-      "std": 0.015938915278110994,
-      "min": 0.440027638241781,
-      "max": 0.5587133347772225,
-      "frac_ge_threshold": 0.001040582726326743
+      "mean": 0.4897959065812769,
+      "std": 0.017992038254933073,
+      "min": 0.44193826874936415,
+      "max": 0.5623804233329314,
+      "frac_ge_threshold": 0.0029483177245924383
     },
     "calibrated_proba": {
-      "mean": 0.4975601427059014,
-      "std": 0.006476926344253843,
-      "min": 0.4763422469763619,
-      "max": 0.5245429230754766,
-      "n_unique": 5075,
+      "mean": 0.4944826844526475,
+      "std": 0.00901328835472191,
+      "min": 0.470531414875231,
+      "max": 0.5308180742729107,
+      "n_unique": 5281,
       "top_levels": [
         {
-          "prob": 0.496892,
-          "n": 5,
-          "frac": 0.0008671522719389525
-        },
-        {
-          "prob": 0.500846,
+          "prob": 0.495481,
           "n": 4,
           "frac": 0.000693721817551162
         },
         {
-          "prob": 0.49922,
-          "n": 4,
-          "frac": 0.000693721817551162
-        },
-        {
-          "prob": 0.496406,
-          "n": 4,
-          "frac": 0.000693721817551162
-        },
-        {
-          "prob": 0.496277,
+          "prob": 0.501442,
           "n": 3,
           "frac": 0.0005202913631633715
         },
         {
-          "prob": 0.496107,
+          "prob": 0.48894,
           "n": 3,
           "frac": 0.0005202913631633715
         },
         {
-          "prob": 0.492946,
+          "prob": 0.493236,
           "n": 3,
           "frac": 0.0005202913631633715
         },
         {
-          "prob": 0.497344,
+          "prob": 0.495842,
           "n": 3,
           "frac": 0.0005202913631633715
         },
         {
-          "prob": 0.489468,
+          "prob": 0.486456,
           "n": 3,
           "frac": 0.0005202913631633715
         },
         {
-          "prob": 0.501407,
+          "prob": 0.497234,
           "n": 3,
           "frac": 0.0005202913631633715
         },
         {
-          "prob": 0.495853,
+          "prob": 0.486423,
           "n": 3,
           "frac": 0.0005202913631633715
         },
         {
-          "prob": 0.497326,
+          "prob": 0.496158,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.498672,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.490731,
+          "n": 3,
+          "frac": 0.0005202913631633715
+        },
+        {
+          "prob": 0.480519,
           "n": 3,
           "frac": 0.0005202913631633715
         }
@@ -156,7 +156,7 @@
       "frac_opened_size_gt_0": 0.0,
       "n_pass_gate_but_size_0": 0
     },
-    "conformal_qhat": 0.5081147264988043,
+    "conformal_qhat": 0.5110143866131827,
     "conformal_min_margin": 0.05,
     "note": "frac_prob_and_confident 为阈值+保形可开仓上限(未计资金); 若其≈frac_prob_ge_threshold 且 n_unique 很小, 说明保形未独立过滤且校准台阶化。",
     "path": "walk_forward_deploy",
@@ -170,16 +170,22 @@
       "walkforward_sample_weight_recomputed(n=14288)"
     ]
   },
-  "dropped_experts": [],
+  "dropped_experts": [
+    [
+      "deep_ts",
+      0.518331301501298
+    ]
+  ],
   "degradations": [
     "ohlcv_tip_exchange_fallback",
     "deploy_cal_method=sigmoid",
-    "auto_fallback_sigmoid(n_unique=16<20)",
+    "auto_fallback_sigmoid(n_unique=17<20)",
     "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
     "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
     "walkforward_purged_label_overlap(n=2)",
     "walkforward_sample_weight_recomputed(n=14288)",
-    "deep_ts:deep_ts_train_includes_post_cutoff(n_pre=0,n_post=11759)"
+    "deep_ts:deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=11759)",
+    "deep_ts:dropped_low_auc(0.518)"
   ],
   "split_tags": [
     "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",

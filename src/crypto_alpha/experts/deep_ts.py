@@ -51,8 +51,10 @@ def resolve_early_stop_split(
     1. pre 足够训 + 足够切 val → 正常早停, 训练仅 pre;
     2. pre 足够训但切不出 val(``len(pre) < min_val+min_train``) → **仍只训 pre**,
        关早停 → tag ``deep_ts_es_off_small_pre_cutoff``;
-    3. pre 不足以训练(如 PurgedKFold 首折训练集整体位于测试折之后) → 只能退回全样本,
-       tag ``deep_ts_train_includes_post_cutoff``。
+    3. pre 不足以训练(如 PurgedKFold 首折训练集整体位于测试折之后) → **弃权**
+       (返回空训练集, tag ``deep_ts_oof_abstain_insufficient_pre``), 不再把
+       post-cutoff 喂进梯度。``include_post_cutoff_in_train=True`` 时仍走旧
+       fallback 并打 ``deep_ts_train_includes_post_cutoff``(仅消融)。
 
     旧实现在情形 2/3 都直接 ``return all_pos, None``, 等于静默把 post-cutoff 样本
     喂进梯度, 使 ``oof_include_post_cutoff=false`` 的承诺在这些折上失效且不留痕。
@@ -87,26 +89,33 @@ def resolve_early_stop_split(
     post = np.where(times >= cutoff)[0]
 
     def _post_cutoff_fallback():
-        """唯一允许把 post-cutoff 喂进梯度的出口: 必须留下降级标签。"""
+        """显式消融口径: 允许 post-cutoff 进梯度时必须留下降级标签。"""
         if len(post):
             tags.append(
                 f"deep_ts_train_includes_post_cutoff(n_pre={len(pre)},n_post={len(post)})"
             )
         return _ret(all_pos, None)
 
+    def _abstain_insufficient_pre():
+        """诚实弃权: 本折 OOF 置空训练 → fit 产出 NaN 概率。"""
+        tags.append(
+            f"deep_ts_oof_abstain_insufficient_pre(n_pre={len(pre)},n_post={len(post)})"
+        )
+        return _ret(np.asarray([], dtype=int), None)
+
     if include_post_cutoff_in_train:
         # 显式消融口径: 旧行为(pre 非 val 段 + 全部 post)
         if n < min_n_for_es or patience <= 0 or val_frac <= 0 or len(pre) < min_pre_cutoff:
-            return _ret(all_pos, None)
+            return _post_cutoff_fallback() if len(pre) < max(min_train, 1) else _ret(all_pos, None)
         n_val = min(max(int(len(pre) * float(val_frac)), min_val), len(pre) - 1)
         if n_val < min_val or len(pre) - n_val < 1:
             return _ret(all_pos, None)
         tr_pos = np.sort(np.concatenate([pre[:-n_val], post])) if len(post) else pre[:-n_val]
         return _ret(tr_pos.astype(int), pre[-n_val:].astype(int))
 
-    # 默认(诚实)口径: post-cutoff 不进梯度, 除非 pre 根本训不动
+    # 默认(诚实)口径: post-cutoff 不进梯度; pre 不够则弃权
     if len(pre) < max(min_train, 1):
-        return _post_cutoff_fallback()
+        return _abstain_insufficient_pre()
 
     es_off = (
         n < min_n_for_es
@@ -216,11 +225,21 @@ class DeepTSExpert(BaseExpert):
             include_post_cutoff_in_train=include_post,
             return_tags=True,
         )
-        # 折内早停回退(尤其「post-cutoff 进了梯度」)必须可追踪 → stacking._sync_degraded
+        # 折内早停回退(尤其「post-cutoff 进了梯度」/弃权)必须可追踪 → stacking._sync_degraded
         if es_tags:
             self.degraded = True
             self.degraded_reason = es_tags[0]
             print(f"[deep_ts] WARN: {self.degraded_reason}", flush=True)
+
+        # pre 不足弃权: 不拟合, predict 返回 NaN → 该折 OOF 空缺
+        if len(tr_pos) == 0:
+            self.abstained_ = True
+            self.model = None
+            self.mu_ = None
+            self.sd_ = None
+            self.device = None
+            return self
+        self.abstained_ = False
 
         # 标准化仅用训练段统计量(不含 early-stopping 验证段)
         tr_flat = Xw[tr_pos].reshape(-1, Xw.shape[-1])
@@ -286,6 +305,9 @@ class DeepTSExpert(BaseExpert):
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         import torch
+
+        if getattr(self, "abstained_", False) or self.model is None:
+            return np.full(len(X), np.nan, dtype=float)
 
         Xw = self._windows(X.index)
         Xw = (Xw - self.mu_) / self.sd_

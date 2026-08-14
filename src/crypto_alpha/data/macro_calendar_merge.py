@@ -69,18 +69,76 @@ def canonical_macro_name(name: str) -> str:
     return s[:120]
 
 
+def _finite(v) -> bool:
+    if v is None:
+        return False
+    try:
+        return bool(np.isfinite(float(v)))
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_survey_source(source: str) -> bool:
+    """ForexFactory 等调查中位数源(有真实 forecast), 非 BLS/ALFRED naive。"""
+    return str(source or "").startswith("forexfactory")
+
+
+def _is_naive_forecast(row) -> bool:
+    """BLS/ALFRED 常把 forecast≡previous; 这不是市场调查中位数。"""
+    if _is_survey_source(str(row.get("source") or "")):
+        return False
+    if not _finite(row.get("forecast")):
+        return True
+    if not _finite(row.get("previous")):
+        return False
+    return bool(np.isclose(float(row["forecast"]), float(row["previous"]), rtol=0.0, atol=1e-9))
+
+
 def _event_score(row) -> float:
     src = _SOURCE_SCORE.get(str(row.get("source") or ""), 0)
     sched = _SCHEDULE_SCORE.get(str(row.get("schedule_source") or ""), 0)
     pk = _PRINT_SCORE.get(str(row.get("print_kind") or ""), 0)
     imp = float(row.get("importance") or 0) * 0.5
-    # 有完整数值略加分
+    # 有完整数值略加分; 调查 forecast 额外加分(避免 ALFRED 空 forecast 被 FF 数值行碾压时丢 actual)
     num = 0.0
     for c in ("previous", "forecast", "actual"):
         v = row.get(c)
         if v is not None and not (isinstance(v, float) and np.isnan(v)):
             num += 1.0
-    return src + sched + pk + imp + num * 0.3
+    survey_bonus = 2.0 if (_is_survey_source(str(row.get("source") or "")) and _finite(row.get("forecast")) and not _is_naive_forecast(row)) else 0.0
+    return src + sched + pk + imp + num * 0.3 + survey_bonus
+
+
+def _pick_survey_forecast(group: pd.DataFrame) -> float:
+    """同组内取最佳调查 forecast(优先非 naive 的 FF 行)。"""
+    best_f = float("nan")
+    best_score = -1e18
+    for r in group.to_dict("records"):
+        if not _is_survey_source(str(r.get("source") or "")):
+            continue
+        if not _finite(r.get("forecast")) or _is_naive_forecast(r):
+            continue
+        sc = _event_score(r)
+        if sc > best_score:
+            best_score = sc
+            best_f = float(r["forecast"])
+    return best_f
+
+
+def _merge_winner_fields(winner: dict, group: pd.DataFrame) -> dict:
+    """胜出行保留 ALFRED/BLS 的 actual/首印, 但 forecast 优先用同组调查源。
+
+    ALFRED/BLS 的 forecast≡previous 无市场语义; 若胜出后仍是 naive/缺失,
+    用 FF 调查中位数覆盖; 仍无调查值则 forecast=NaN(surprise 通道关闭,
+    注意力通道仍可用 importance/hours)。
+    """
+    out = dict(winner)
+    survey_f = _pick_survey_forecast(group)
+    if _finite(survey_f):
+        out["forecast"] = survey_f
+    elif _is_naive_forecast(out) or not _finite(out.get("forecast")):
+        out["forecast"] = float("nan")
+    return out
 
 
 def _dedupe_key(row) -> tuple:
@@ -101,12 +159,14 @@ def _dedupe_key(row) -> tuple:
 
 
 def dedupe_cross_source_events(df: pd.DataFrame) -> pd.DataFrame:
-    """合并多源重复事件; 每组保留综合得分最高的一行。
+    """合并多源重复事件; 每组保留综合得分最高的一行, 并字段级合并调查 forecast。
 
-    硬规则(与 filter_events_for_features 语义对齐): 组内若存在
-    print_kind=first_print 且带数值的行, 则仅在 first_print 行中按得分
-    选胜者 —— current_vintage(BLS 现行口径, forecast≡previous 无意义)
-    不得覆盖首印; 同为 first_print 时 ALFRED(100) 仍自然高于 FF(55)。
+    硬规则(与 filter_events_for_features 语义对齐):
+    1. 组内若存在 print_kind=first_print 且带数值的行, 则仅在 first_print 行中
+       按得分选胜者 —— current_vintage 不得覆盖首印;
+    2. 同为 first_print 时 ALFRED 仍可胜出(更好的 actual/日程), 但 **forecast**
+       优先取同组 ForexFactory 调查中位数; ALFRED/BLS 的 forecast≡previous
+       不得当作市场 surprise 分母。
     """
     if df is None or len(df) == 0:
         return pd.DataFrame(columns=EVENT_COLUMNS)
@@ -123,9 +183,13 @@ def dedupe_cross_source_events(df: pd.DataFrame) -> pd.DataFrame:
     ).notna().any(axis=1)
     grp_has_fp_num = (is_fp & has_num).groupby(tmp["_key"]).transform("max")
     # 组内有首印数值行 → 淘汰全部非首印行, 首印行间再按得分竞争
-    tmp = tmp.loc[~(grp_has_fp_num & ~is_fp)]
-    tmp = tmp.sort_values(["_key", "_score"], ascending=[True, False])
-    tmp = tmp.drop_duplicates(subset=["_key"], keep="first")
+    tmp = tmp.loc[~(grp_has_fp_num & ~is_fp)].copy()
+    merged_rows: list[dict] = []
+    for _, grp in tmp.groupby("_key", sort=False):
+        g = grp.sort_values("_score", ascending=False)
+        winner = _merge_winner_fields(g.iloc[0].to_dict(), g)
+        merged_rows.append(winner)
+    tmp = pd.DataFrame(merged_rows)
     tmp = tmp.drop(columns=["_score", "_key"], errors="ignore")
     return normalize_macro_events(tmp)
 
@@ -135,28 +199,44 @@ def filter_events_for_features(
     *,
     prefer_first_print: bool = True,
     numeric_print_kind: str = "first_print",
+    ban_current_vintage_surprise: bool = True,
+    strip_naive_forecast: bool = True,
 ) -> pd.DataFrame:
-    """特征层可选: 数值事件优先 first_print; 无首印时保留 current_vintage。"""
+    """特征层: 数值事件优先 first_print; 禁止修订版/naive forecast 进 surprise。
+
+    - 有 first_print 时丢同窗 current_vintage 行(修订值软前视)。
+    - 仅剩 current_vintage 时仍保留行供注意力通道, 但清空 previous/forecast/actual
+      → surprise=NaN(``ban_current_vintage_surprise``)。
+    - 非调查源且 forecast≡previous 时清空 forecast(``strip_naive_forecast``)。
+    """
     if events is None or len(events) == 0:
         return events
     ev = normalize_macro_events(events)
-    if not prefer_first_print:
-        return ev
-    want = str(numeric_print_kind or "first_print")
-    numeric_mask = ev[["previous", "forecast", "actual"]].notna().any(axis=1)
-    if not bool(numeric_mask.any()):
-        return ev
-    # 对每个 canonical+country+release hour, 若有 first_print 则丢 current_vintage
-    keep_idx = []
-    ev = ev.copy()
-    ev["_canon"] = ev["name"].map(canonical_macro_name)
-    ev["_hour"] = pd.to_datetime(ev["released_at"], utc=True).dt.floor("h")
-    for key, grp in ev.loc[numeric_mask].groupby(["country", "_canon", "_hour"], sort=False):
-        if want in set(grp["print_kind"].astype(str)):
-            keep_idx.extend(grp.loc[grp["print_kind"].astype(str) == want].index.tolist())
-        else:
-            keep_idx.extend(grp.index.tolist())
-    non_num = ev.loc[~numeric_mask].index.tolist()
-    sel = sorted(set(keep_idx + non_num))
-    out = ev.loc[sel].drop(columns=["_canon", "_hour"], errors="ignore")
+    if prefer_first_print:
+        want = str(numeric_print_kind or "first_print")
+        numeric_mask = ev[["previous", "forecast", "actual"]].notna().any(axis=1)
+        if bool(numeric_mask.any()):
+            keep_idx = []
+            ev = ev.copy()
+            ev["_canon"] = ev["name"].map(canonical_macro_name)
+            ev["_hour"] = pd.to_datetime(ev["released_at"], utc=True).dt.floor("h")
+            for _, grp in ev.loc[numeric_mask].groupby(["country", "_canon", "_hour"], sort=False):
+                if want in set(grp["print_kind"].astype(str)):
+                    keep_idx.extend(grp.loc[grp["print_kind"].astype(str) == want].index.tolist())
+                else:
+                    keep_idx.extend(grp.index.tolist())
+            non_num = ev.loc[~numeric_mask].index.tolist()
+            sel = sorted(set(keep_idx + non_num))
+            ev = ev.loc[sel].drop(columns=["_canon", "_hour"], errors="ignore")
+            ev = normalize_macro_events(ev)
+
+    out = ev.copy()
+    if ban_current_vintage_surprise:
+        cv = out["print_kind"].astype(str).eq("current_vintage")
+        if bool(cv.any()):
+            out.loc[cv, ["previous", "forecast", "actual"]] = np.nan
+    if strip_naive_forecast:
+        for i, row in out.iterrows():
+            if _is_naive_forecast(row) and _finite(row.get("forecast")):
+                out.at[i, "forecast"] = np.nan
     return normalize_macro_events(out)

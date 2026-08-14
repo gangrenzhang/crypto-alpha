@@ -1304,13 +1304,19 @@ def test_deep_ts_early_stop_split_respects_cutoff():
     assert (train_idx[tr2b] >= cutoff).any()
     assert not (train_idx[va2b] >= cutoff).any()
 
-    # 第一折: 训练全在 cutoff 之后 → 关闭早停
+    # 第一折: 训练全在 cutoff 之后 → 默认弃权(空训练集)
     late = idx[60:]
     tr3, va3 = resolve_early_stop_split(
         late, val_frac=0.15, patience=3, es_cutoff_time=idx[40],
     )
     assert va3 is None
-    assert len(tr3) == len(late)
+    assert len(tr3) == 0
+    tr3b, va3b, tags3b = resolve_early_stop_split(
+        late, val_frac=0.15, patience=3, es_cutoff_time=idx[40],
+        include_post_cutoff_in_train=True, return_tags=True,
+    )
+    assert va3b is None and len(tr3b) == len(late)
+    assert any(t.startswith("deep_ts_train_includes_post_cutoff") for t in tags3b)
 
 
 if __name__ == "__main__":

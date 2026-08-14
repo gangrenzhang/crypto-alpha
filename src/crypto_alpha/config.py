@@ -92,6 +92,9 @@ def apply_training_data_toggles(
         ("macro_calendar.as_feature", macro.get("as_feature"), td["macro_calendar"]),
         ("features.mtf_enabled", feat.get("mtf_enabled"), td["mtf"]),
         ("data.fetch_liquidations", data.get("fetch_liquidations"), td["liquidations"]),
+        ("features.use_funding", feat.get("use_funding"), td["funding"]),
+        ("features.use_open_interest", feat.get("use_open_interest"), td["open_interest"]),
+        ("features.use_liquidations", feat.get("use_liquidations"), td["liquidations"]),
     ]
     for label, old, new in checks:
         if old is not None and bool(old) != bool(new):

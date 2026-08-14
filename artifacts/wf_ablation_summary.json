@@ -1,0 +1,264 @@
+{
+  "protocol": "walk_forward_single_cut",
+  "gate_unchanged": true,
+  "p2_gate_tune_allowed": false,
+  "note": "P2 放宽门控仅当某消融: cal_max>=0.55 且 n_confident>0 且 test_auc>=0.55 且 n_opened>=20。否则禁止降 thr/margin 刷成交。",
+  "rows": [
+    {
+      "ablation": "baseline",
+      "overrides": {},
+      "elapsed_sec": 52.7,
+      "n_train_events": 14288,
+      "n_test_events": 5766,
+      "train_auc": 0.5229679200317205,
+      "test_auc": 0.5180587973718873,
+      "cal_max": 0.5308180742729107,
+      "cal_std": 0.00901328835472191,
+      "n_confident": 0,
+      "n_prob_ge_threshold": 0,
+      "n_opened_trades": 0,
+      "win_rate": 0.0,
+      "total_return": 0.0,
+      "prob_threshold_effective": 0.55,
+      "degradations": [
+        "ohlcv_tip_exchange_fallback",
+        "deploy_cal_method=sigmoid",
+        "auto_fallback_sigmoid(n_unique=17<20)",
+        "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+        "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+        "walkforward_purged_label_overlap(n=2)",
+        "walkforward_sample_weight_recomputed(n=14288)",
+        "deep_ts:deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=11759)",
+        "deep_ts:dropped_low_auc(0.518)"
+      ]
+    },
+    {
+      "ablation": "pt_sl_2_1",
+      "overrides": {
+        "labeling": {
+          "pt_sl": [
+            2.0,
+            1.0
+          ]
+        }
+      },
+      "elapsed_sec": 50.0,
+      "n_train_events": 14289,
+      "n_test_events": 5766,
+      "train_auc": 0.5193560970913541,
+      "test_auc": 0.5117263076929706,
+      "cal_max": 0.3501423101466299,
+      "cal_std": 0.005396743438099004,
+      "n_confident": 2773,
+      "n_prob_ge_threshold": 0,
+      "n_opened_trades": 0,
+      "win_rate": 0.0,
+      "total_return": 0.0,
+      "prob_threshold_effective": 0.55,
+      "degradations": [
+        "ohlcv_tip_exchange_fallback",
+        "deploy_cal_method=sigmoid",
+        "auto_fallback_sigmoid(n_unique=13<20)",
+        "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+        "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+        "walkforward_purged_label_overlap(n=1)",
+        "walkforward_sample_weight_recomputed(n=14289)",
+        "deep_ts:deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=11761)",
+        "deep_ts:dropped_low_auc(0.514)"
+      ]
+    },
+    {
+      "ablation": "meanrev",
+      "overrides": {
+        "labeling": {
+          "primary_signal": "meanrev"
+        }
+      },
+      "elapsed_sec": 46.2,
+      "n_train_events": 14288,
+      "n_test_events": 5766,
+      "train_auc": 0.5330761876674676,
+      "test_auc": 0.5202356466407954,
+      "cal_max": 0.5513074426847727,
+      "cal_std": 0.01570702430287198,
+      "n_confident": 30,
+      "n_prob_ge_threshold": 1,
+      "n_opened_trades": 1,
+      "win_rate": 1.0,
+      "total_return": 0.00043844483503763243,
+      "prob_threshold_effective": 0.55,
+      "degradations": [
+        "ohlcv_tip_exchange_fallback",
+        "deploy_cal_method=sigmoid",
+        "auto_fallback_sigmoid(n_unique=13<20)",
+        "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+        "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+        "walkforward_purged_label_overlap(n=2)",
+        "walkforward_sample_weight_recomputed(n=14288)",
+        "deep_ts:deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=11759)",
+        "deep_ts:dropped_low_auc(0.505)"
+      ]
+    },
+    {
+      "ablation": "confluence_05",
+      "overrides": {
+        "labeling": {
+          "min_confluence": 0.5
+        }
+      },
+      "elapsed_sec": 49.8,
+      "n_train_events": 10503,
+      "n_test_events": 4312,
+      "train_auc": 0.5257404439236559,
+      "test_auc": 0.5021128445285481,
+      "cal_max": 0.5314914704804676,
+      "cal_std": 0.00991585124048198,
+      "n_confident": 0,
+      "n_prob_ge_threshold": 0,
+      "n_opened_trades": 0,
+      "win_rate": 0.0,
+      "total_return": 0.0,
+      "prob_threshold_effective": 0.55,
+      "degradations": [
+        "ohlcv_tip_exchange_fallback",
+        "deploy_cal_method=sigmoid",
+        "auto_fallback_sigmoid(n_unique=15<20)",
+        "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+        "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=7234)",
+        "walkforward_purged_label_overlap(n=2)",
+        "walkforward_sample_weight_recomputed(n=10503)",
+        "deep_ts:deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=8644)",
+        "deep_ts:dropped_low_auc(0.516)"
+      ]
+    },
+    {
+      "ablation": "gbdt_only",
+      "overrides": {
+        "experts": {
+          "enabled": [
+            "gbdt"
+          ]
+        }
+      },
+      "elapsed_sec": 28.4,
+      "n_train_events": 14288,
+      "n_test_events": 5766,
+      "train_auc": 0.5229679200317205,
+      "test_auc": 0.5180587973718873,
+      "cal_max": 0.5308180742729107,
+      "cal_std": 0.00901328835472191,
+      "n_confident": 0,
+      "n_prob_ge_threshold": 0,
+      "n_opened_trades": 0,
+      "win_rate": 0.0,
+      "total_return": 0.0,
+      "prob_threshold_effective": 0.55,
+      "degradations": [
+        "ohlcv_tip_exchange_fallback",
+        "deploy_cal_method=sigmoid",
+        "auto_fallback_sigmoid(n_unique=17<20)",
+        "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+        "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+        "walkforward_purged_label_overlap(n=2)",
+        "walkforward_sample_weight_recomputed(n=14288)"
+      ]
+    },
+    {
+      "ablation": "macro_off",
+      "overrides": {
+        "training_data": {
+          "macro_calendar": false
+        }
+      },
+      "elapsed_sec": 56.5,
+      "n_train_events": 14288,
+      "n_test_events": 5766,
+      "train_auc": 0.5276070916130383,
+      "test_auc": 0.5176960749802783,
+      "cal_max": 0.5373016145781565,
+      "cal_std": 0.011051443836177234,
+      "n_confident": 0,
+      "n_prob_ge_threshold": 0,
+      "n_opened_trades": 0,
+      "win_rate": 0.0,
+      "total_return": 0.0,
+      "prob_threshold_effective": 0.55,
+      "degradations": [
+        "ohlcv_tip_exchange_fallback",
+        "deploy_cal_method=sigmoid",
+        "auto_fallback_sigmoid(n_unique=16<20)",
+        "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+        "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+        "walkforward_purged_label_overlap(n=2)",
+        "walkforward_sample_weight_recomputed(n=14288)",
+        "deep_ts:deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=11759)",
+        "deep_ts:dropped_low_auc(0.505)"
+      ]
+    },
+    {
+      "ablation": "mtf_off",
+      "overrides": {
+        "training_data": {
+          "mtf": false
+        }
+      },
+      "elapsed_sec": 45.5,
+      "n_train_events": 14288,
+      "n_test_events": 5766,
+      "train_auc": 0.5180631703573936,
+      "test_auc": 0.5244701021796438,
+      "cal_max": 0.5172172103871028,
+      "cal_std": 0.005200892973183373,
+      "n_confident": 0,
+      "n_prob_ge_threshold": 0,
+      "n_opened_trades": 0,
+      "win_rate": 0.0,
+      "total_return": 0.0,
+      "prob_threshold_effective": 0.55,
+      "degradations": [
+        "ohlcv_tip_exchange_fallback",
+        "deploy_cal_method=sigmoid",
+        "auto_fallback_sigmoid(n_unique=12<20)",
+        "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+        "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+        "walkforward_purged_label_overlap(n=2)",
+        "walkforward_sample_weight_recomputed(n=14288)",
+        "deep_ts:deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=11759)",
+        "deep_ts:dropped_low_auc(0.508)"
+      ]
+    },
+    {
+      "ablation": "oi_off",
+      "overrides": {
+        "training_data": {
+          "open_interest": false
+        }
+      },
+      "elapsed_sec": 52.9,
+      "n_train_events": 14288,
+      "n_test_events": 5766,
+      "train_auc": 0.5211054640116015,
+      "test_auc": 0.5200564181344347,
+      "cal_max": 0.5314010542518837,
+      "cal_std": 0.008490860296900167,
+      "n_confident": 0,
+      "n_prob_ge_threshold": 0,
+      "n_opened_trades": 0,
+      "win_rate": 0.0,
+      "total_return": 0.0,
+      "prob_threshold_effective": 0.55,
+      "degradations": [
+        "ohlcv_tip_exchange_fallback",
+        "deploy_cal_method=sigmoid",
+        "auto_fallback_sigmoid(n_unique=14<20)",
+        "deploy_prob_threshold_resolved(mode=max_of,base=0.5500,effective=0.5500)",
+        "walkforward_train_start=2020-09-14T00:00:00+00:00(dropped_pre_train=9553)",
+        "walkforward_purged_label_overlap(n=2)",
+        "walkforward_sample_weight_recomputed(n=14288)",
+        "deep_ts:deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=11759)",
+        "deep_ts:dropped_low_auc(0.506)"
+      ]
+    }
+  ],
+  "p2_decision": "SKIP: 无消融同时满足 test_auc>=0.55 且 opened>=20。最佳 test_auc=mtf_off=0.5245; meanrev 虽 cal_max>=0.55 但仅 1 笔成交、AUC≈0.52, 属噪声过闸。保持 prob_quantile=0.98 / conformal_min_margin=0.05 / thr 地板 0.55。"
+}

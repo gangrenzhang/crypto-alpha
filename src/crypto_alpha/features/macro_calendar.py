@@ -258,6 +258,10 @@ def add_macro_calendar_features(
             events,
             prefer_first_print=True,
             numeric_print_kind=str(mcfg.get("numeric_print_kind", "first_print")),
+            ban_current_vintage_surprise=bool(
+                mcfg.get("ban_current_vintage_surprise", True)
+            ),
+            strip_naive_forecast=bool(mcfg.get("strip_naive_forecast", True)),
         )
     if events is None or len(events) == 0:
         feat = _empty_macro_features(feat, ttl, horizon)

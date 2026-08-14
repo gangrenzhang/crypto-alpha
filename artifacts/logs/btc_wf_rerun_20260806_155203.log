@@ -1,0 +1,73 @@
+[cfg] train_start= 2020-09-14T00:00:00Z
+[cfg] test_start = 2024-09-14T00:00:00Z
+[cfg] test_end   = 2026-07-18T00:00:00Z
+[cfg] open_interest= True
+[cfg] min_expert_auc= 0.52
+
+[prepare] BTC/USDT ...
+[warn] BTC/USDT: tip 来自备用所 gate (主所 binance); 历史缓存与 tip 可能存在微观价差接缝。
+[prepare] panel=156885 events=29691 feats=95 src=cache
+
+[walk-forward] ...
+/Users/zhanggangren/.matplotlib is not a writable directory
+Matplotlib created a temporary cache directory at /var/folders/1d/lwmkl4t52x1149bz331t5k0c0000gn/T/matplotlib-1osohv_b because there was an issue with the default path (/Users/zhanggangren/.matplotlib); it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+[deep_ts] WARN: deep_ts_oof_abstain_insufficient_pre(n_pre=0,n_post=11759)
+[ensemble] 剔除弱专家(选型半窗): deep_ts(auc=0.518)
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: divide by zero encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: overflow encountered in matmul
+  X_grad = X.T @ grad_pointwise
+/Users/zhanggangren/Desktop/pyro/.venv/lib/python3.14/site-packages/sklearn/linear_model/_linear_loss.py:356: RuntimeWarning: invalid value encountered in matmul
+  X_grad = X.T @ grad_pointwise
+
+========== BTC Walk-Forward 结果 ==========
+训练窗: [2020-09-14T00:00:00Z, 2024-09-14T00:00:00Z)
+回测窗: [2024-09-14T00:00:00Z, 2026-07-18T00:00:00Z]
+开仓笔数 = 0
+胜率     = N/A (0 笔成交, 摘要记 0.0)
+总收益   = 0.0
+最大回撤 = 0.0
+test AUC = 0.5180587973718873
+摘要 -> /Users/zhanggangren/Desktop/pyro/crypto-alpha/artifacts/walkforward_BTC_USDT.json

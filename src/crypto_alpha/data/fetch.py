@@ -1079,7 +1079,7 @@ def load_aux_timeframes(
                 print(f"[warn] 跳过辅周期 {tf}: 细于主周期 {main_tf}。")
                 continue
             if force_resample:
-                aux = resample_ohlcv(main_df, tf)
+                aux = drop_incomplete_last_bar(resample_ohlcv(main_df, tf), tf)
                 src = str(getattr(main_df, "attrs", {}).get("data_source", "synthetic") or "synthetic")
                 out[tf] = _tag_source(aux, src)
                 if src == "synthetic_fallback":
